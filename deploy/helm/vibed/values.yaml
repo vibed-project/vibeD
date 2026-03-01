@@ -62,3 +62,15 @@ persistence:
   storageClass: ""
   accessModes:
     - ReadWriteOnce
+
+metrics:
+  enabled: true
+
+# Authentication for MCP and API endpoints
+auth:
+  enabled: false
+  mode: "apikey"              # "apikey" or "oauth"
+  existingSecret: ""          # Use existing K8s Secret for API key (key: "api-key")
+  tls:
+    enabled: false
+    existingSecret: ""        # Use existing K8s Secret for TLS certs (tls.crt, tls.key)

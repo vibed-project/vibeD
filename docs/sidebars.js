@@ -15,7 +15,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Configuration',
-      items: ['configuration/config-reference', 'configuration/storage', 'configuration/registry'],
+      items: ['configuration/config-reference', 'configuration/authentication', 'configuration/storage', 'configuration/registry'],
     },
     {
       type: 'category',

@@ -2,6 +2,22 @@ server:
   transport: "stdio"
   httpAddr: ":8080"
 
+# Authentication (optional — protects /mcp/ and /api/ endpoints)
+# auth:
+#   enabled: true
+#   mode: "apikey"            # "apikey" or "oauth"
+#   apiKeys:
+#     - key: "env:VIBED_API_KEY"  # Read from env var
+#       name: "default"
+#     - key: "vibed_sk_your_secret_key_here"
+#       name: "ci-pipeline"
+#       scopes: ["deploy"]
+#   tls:
+#     enabled: true
+#     certFile: "/etc/vibed/tls/tls.crt"
+#     keyFile: "/etc/vibed/tls/tls.key"
+#     # autoTLS: true          # Generate self-signed cert for local dev
+
 deployment:
   preferredTarget: "auto"
   namespace: "default"

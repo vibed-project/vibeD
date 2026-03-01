@@ -13,6 +13,7 @@ import (
 	"github.com/maxkorbacher/vibed/internal/config"
 	"github.com/maxkorbacher/vibed/internal/deployer"
 	"github.com/maxkorbacher/vibed/internal/environment"
+	"github.com/maxkorbacher/vibed/internal/metrics"
 	"github.com/maxkorbacher/vibed/internal/storage"
 	"github.com/maxkorbacher/vibed/internal/store"
 	"github.com/maxkorbacher/vibed/pkg/api"
@@ -55,6 +56,7 @@ type Orchestrator struct {
 	factory   *deployer.Factory
 	storage   storage.Storage
 	store     store.ArtifactStore
+	metrics   *metrics.Metrics
 	imageBase string
 	logger    *slog.Logger
 }
@@ -67,6 +69,7 @@ func NewOrchestrator(
 	factory *deployer.Factory,
 	stg storage.Storage,
 	st store.ArtifactStore,
+	m *metrics.Metrics,
 	logger *slog.Logger,
 ) *Orchestrator {
 	imageBase := "vibed-artifacts"
@@ -81,6 +84,7 @@ func NewOrchestrator(
 		factory:   factory,
 		storage:   stg,
 		store:     st,
+		metrics:   m,
 		imageBase: imageBase,
 		logger:    logger,
 	}
@@ -139,16 +143,33 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 
 	// 6. Build container image
 	imageName := fmt.Sprintf("%s/%s:latest", o.imageBase, req.Name)
+	lang := req.Language
+	if lang == "" {
+		lang = "auto"
+	}
+
+	o.metrics.BuildsInFlight.Inc()
+	buildStart := time.Now()
+
 	buildResult, err := o.builder.Build(ctx, builder.BuildRequest{
 		SourceDir: storageRef.LocalPath,
 		ImageName: imageName,
 		Env:       req.EnvVars,
 		Publish:   o.cfg.Registry.Enabled,
 	})
+
+	o.metrics.BuildsInFlight.Dec()
+	buildDur := time.Since(buildStart).Seconds()
+
 	if err != nil {
+		o.metrics.BuildsTotal.WithLabelValues("failed", lang).Inc()
+		o.metrics.BuildDuration.WithLabelValues("failed", lang).Observe(buildDur)
 		o.failArtifact(ctx, artifact, fmt.Sprintf("build failed: %v", err))
 		return nil, &api.ErrBuildFailed{Reason: err.Error()}
 	}
+
+	o.metrics.BuildsTotal.WithLabelValues("success", lang).Inc()
+	o.metrics.BuildDuration.WithLabelValues("success", lang).Observe(buildDur)
 	artifact.ImageRef = buildResult.ImageRef
 
 	// 7. Deploy
@@ -159,11 +180,20 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 		return nil, err
 	}
 
+	deployStart := time.Now()
 	deployResult, err := dep.Deploy(ctx, artifact)
+	deployDur := time.Since(deployStart).Seconds()
+
 	if err != nil {
+		o.metrics.DeploysTotal.WithLabelValues("failed", string(target)).Inc()
+		o.metrics.DeployDuration.WithLabelValues("failed", string(target)).Observe(deployDur)
 		o.failArtifact(ctx, artifact, fmt.Sprintf("deploy failed: %v", err))
 		return nil, &api.ErrDeployFailed{Reason: err.Error()}
 	}
+
+	o.metrics.DeploysTotal.WithLabelValues("success", string(target)).Inc()
+	o.metrics.DeployDuration.WithLabelValues("success", string(target)).Observe(deployDur)
+	o.metrics.ArtifactsActive.WithLabelValues(string(target)).Inc()
 
 	// 8. Update artifact with URL and running status
 	artifact.URL = deployResult.URL
@@ -210,16 +240,33 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 
 	// Rebuild
 	imageName := fmt.Sprintf("%s/%s:latest", o.imageBase, artifact.Name)
+	lang := artifact.Language
+	if lang == "" {
+		lang = "auto"
+	}
+
+	o.metrics.BuildsInFlight.Inc()
+	buildStart := time.Now()
+
 	buildResult, err := o.builder.Build(ctx, builder.BuildRequest{
 		SourceDir: storageRef.LocalPath,
 		ImageName: imageName,
 		Env:       artifact.EnvVars,
 		Publish:   o.cfg.Registry.Enabled,
 	})
+
+	o.metrics.BuildsInFlight.Dec()
+	buildDur := time.Since(buildStart).Seconds()
+
 	if err != nil {
+		o.metrics.BuildsTotal.WithLabelValues("failed", lang).Inc()
+		o.metrics.BuildDuration.WithLabelValues("failed", lang).Observe(buildDur)
 		o.failArtifact(ctx, artifact, fmt.Sprintf("build failed: %v", err))
 		return nil, &api.ErrBuildFailed{Reason: err.Error()}
 	}
+
+	o.metrics.BuildsTotal.WithLabelValues("success", lang).Inc()
+	o.metrics.BuildDuration.WithLabelValues("success", lang).Observe(buildDur)
 	artifact.ImageRef = buildResult.ImageRef
 
 	// Redeploy
@@ -229,11 +276,20 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 		return nil, err
 	}
 
+	target := string(artifact.Target)
+	deployStart := time.Now()
 	deployResult, err := dep.Update(ctx, artifact)
+	deployDur := time.Since(deployStart).Seconds()
+
 	if err != nil {
+		o.metrics.DeploysTotal.WithLabelValues("failed", target).Inc()
+		o.metrics.DeployDuration.WithLabelValues("failed", target).Observe(deployDur)
 		o.failArtifact(ctx, artifact, fmt.Sprintf("deploy failed: %v", err))
 		return nil, &api.ErrDeployFailed{Reason: err.Error()}
 	}
+
+	o.metrics.DeploysTotal.WithLabelValues("success", target).Inc()
+	o.metrics.DeployDuration.WithLabelValues("success", target).Observe(deployDur)
 
 	artifact.URL = deployResult.URL
 	artifact.Status = api.StatusRunning
@@ -244,7 +300,7 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 		ArtifactID: artifact.ID,
 		Name:       artifact.Name,
 		URL:        deployResult.URL,
-		Target:     string(artifact.Target),
+		Target:     target,
 		Status:     string(api.StatusRunning),
 		ImageRef:   buildResult.ImageRef,
 	}, nil
@@ -254,11 +310,13 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 	artifact, err := o.store.Get(ctx, artifactID)
 	if err != nil {
+		o.metrics.DeletesTotal.WithLabelValues("failed").Inc()
 		return err
 	}
 
 	dep, err := o.factory.Get(artifact.Target)
 	if err != nil {
+		o.metrics.DeletesTotal.WithLabelValues("failed").Inc()
 		return err
 	}
 
@@ -270,7 +328,14 @@ func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 		o.logger.Warn("failed to delete storage", "id", artifactID, "error", err)
 	}
 
-	return o.store.Delete(ctx, artifactID)
+	if err := o.store.Delete(ctx, artifactID); err != nil {
+		o.metrics.DeletesTotal.WithLabelValues("failed").Inc()
+		return err
+	}
+
+	o.metrics.DeletesTotal.WithLabelValues("success").Inc()
+	o.metrics.ArtifactsActive.WithLabelValues(string(artifact.Target)).Dec()
+	return nil
 }
 
 // Status returns detailed status for an artifact.

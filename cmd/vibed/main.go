@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -10,19 +11,23 @@ import (
 	"os/signal"
 	"syscall"
 
+	vibedauth "github.com/maxkorbacher/vibed/internal/auth"
 	"github.com/maxkorbacher/vibed/internal/builder"
 	"github.com/maxkorbacher/vibed/internal/config"
 	"github.com/maxkorbacher/vibed/internal/deployer"
 	"github.com/maxkorbacher/vibed/internal/environment"
 	"github.com/maxkorbacher/vibed/internal/frontend"
+	"github.com/maxkorbacher/vibed/internal/health"
 	"github.com/maxkorbacher/vibed/internal/k8s"
 	mcppkg "github.com/maxkorbacher/vibed/internal/mcp"
+	"github.com/maxkorbacher/vibed/internal/metrics"
 	"github.com/maxkorbacher/vibed/internal/orchestrator"
 	"github.com/maxkorbacher/vibed/internal/storage"
 	"github.com/maxkorbacher/vibed/internal/store"
 	"github.com/maxkorbacher/vibed/pkg/api"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	knversioned "knative.dev/serving/pkg/client/clientset/versioned"
 )
 
@@ -51,14 +56,22 @@ func main() {
 		"transport", cfg.Server.Transport,
 		"namespace", cfg.Deployment.Namespace,
 		"storage", cfg.Storage.Backend,
+		"auth", cfg.Auth.Enabled,
+		"tls", cfg.Auth.TLS.Enabled,
 	)
 
+	// Initialize metrics and health checker
+	m := metrics.New()
+	checker := health.NewChecker()
+
 	// Initialize Kubernetes clients
+	checker.SetNotReady("kubernetes", "connecting")
 	k8sClients, err := k8s.NewClients(cfg.Kubernetes)
 	if err != nil {
 		logger.Error("failed to create k8s clients", "error", err)
 		os.Exit(1)
 	}
+	checker.SetReady("kubernetes")
 
 	// Initialize subsystems
 	detector := environment.NewDetector(k8sClients, logger)
@@ -66,6 +79,7 @@ func main() {
 	bldr := builder.NewPackBuilder(cfg.Builder, logger)
 
 	// Initialize storage
+	checker.SetNotReady("storage", "initializing")
 	var stg storage.Storage
 	switch cfg.Storage.Backend {
 	case "local":
@@ -90,8 +104,10 @@ func main() {
 		logger.Error("unsupported storage backend", "backend", cfg.Storage.Backend)
 		os.Exit(1)
 	}
+	checker.SetReady("storage")
 
 	// Initialize artifact store
+	checker.SetNotReady("store", "initializing")
 	var st store.ArtifactStore
 	switch cfg.Store.Backend {
 	case "memory":
@@ -106,6 +122,7 @@ func main() {
 		logger.Error("unsupported store backend", "backend", cfg.Store.Backend)
 		os.Exit(1)
 	}
+	checker.SetReady("store")
 
 	// Initialize deployers
 	factory := deployer.NewFactory()
@@ -128,10 +145,27 @@ func main() {
 	factory.Register(api.TargetWasmCloud, wasmDeployer)
 
 	// Create orchestrator
-	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, logger)
+	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, m, logger)
 
 	// Create MCP server
 	mcpServer := mcppkg.NewServer(orch)
+
+	// Initialize authentication middleware
+	authMiddleware, err := vibedauth.Middleware(cfg.Auth, logger)
+	if err != nil {
+		logger.Error("failed to initialize authentication", "error", err)
+		os.Exit(1)
+	}
+
+	// Initialize TLS configuration
+	tlsConfig, err := vibedauth.NewTLSConfig(cfg.Auth.TLS, logger)
+	if err != nil {
+		logger.Error("failed to initialize TLS", "error", err)
+		os.Exit(1)
+	}
+
+	// Mark server as ready
+	checker.SetReady("server")
 
 	// Run based on transport mode
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -146,10 +180,10 @@ func main() {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, logger)
+		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, authMiddleware, tlsConfig, logger)
 
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, authMiddleware, tlsConfig, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -162,8 +196,15 @@ func main() {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, logger *slog.Logger) {
 	mux := http.NewServeMux()
+
+	// Health check endpoints (always unauthenticated)
+	mux.HandleFunc("/healthz", checker.LivenessHandler())
+	mux.HandleFunc("/readyz", checker.ReadinessHandler())
+
+	// Prometheus metrics endpoint (always unauthenticated)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	// MCP HTTP endpoint
 	mcpHandler := mcp.NewStreamableHTTPHandler(
@@ -176,9 +217,21 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	frontendHandler := frontend.NewHandler(orch)
 	mux.Handle("/", frontendHandler)
 
+	// Build handler chain: auth (selective) → metrics → mux
+	var handler http.Handler = mux
+
+	// Apply auth middleware (skips health/metrics/static paths)
+	if cfg.Auth.Enabled {
+		handler = vibedauth.SkipAuthPaths(authMiddleware)(handler)
+	}
+
+	// Apply metrics middleware (outermost — captures all requests)
+	handler = m.HTTPMiddleware(handler)
+
 	server := &http.Server{
-		Addr:    cfg.Server.HTTPAddr,
-		Handler: mux,
+		Addr:      cfg.Server.HTTPAddr,
+		Handler:   handler,
+		TLSConfig: tlsConfig,
 	}
 
 	go func() {
@@ -187,9 +240,19 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 		server.Close()
 	}()
 
-	logger.Info("starting HTTP server", "addr", cfg.Server.HTTPAddr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Fprintf(os.Stderr, "HTTP server error: %v\n", err)
-		os.Exit(1)
+	if tlsConfig != nil {
+		// TLS enabled — use ListenAndServeTLS with certs from tls.Config
+		scheme := "https"
+		logger.Info("starting HTTPS server", "addr", cfg.Server.HTTPAddr, "scheme", scheme)
+		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "HTTPS server error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		logger.Info("starting HTTP server", "addr", cfg.Server.HTTPAddr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "HTTP server error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }

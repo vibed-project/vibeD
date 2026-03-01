@@ -12,6 +12,7 @@ import (
 // Config holds the complete vibeD configuration.
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
+	Auth       AuthConfig       `yaml:"auth"`
 	Deployment DeploymentConfig `yaml:"deployment"`
 	Builder    BuilderConfig    `yaml:"builder"`
 	Storage    StorageConfig    `yaml:"storage"`
@@ -19,6 +20,29 @@ type Config struct {
 	Store      StoreConfig      `yaml:"store"`
 	Kubernetes KubernetesConfig `yaml:"kubernetes"`
 	Knative    KnativeConfig    `yaml:"knative"`
+}
+
+// AuthConfig holds authentication and TLS settings.
+type AuthConfig struct {
+	Enabled bool         `yaml:"enabled"`
+	Mode    string       `yaml:"mode"` // "apikey" or "oauth"
+	APIKeys []APIKeyConf `yaml:"apiKeys"`
+	TLS     TLSConf      `yaml:"tls"`
+}
+
+// APIKeyConf represents a configured API key.
+type APIKeyConf struct {
+	Key    string   `yaml:"key"`    // Token value or "env:VAR_NAME"
+	Name   string   `yaml:"name"`   // Human-readable name
+	Scopes []string `yaml:"scopes"` // Allowed scopes (empty = all)
+}
+
+// TLSConf holds TLS certificate configuration.
+type TLSConf struct {
+	Enabled  bool   `yaml:"enabled"`
+	CertFile string `yaml:"certFile"` // Path to TLS certificate
+	KeyFile  string `yaml:"keyFile"`  // Path to TLS private key
+	AutoTLS  bool   `yaml:"autoTLS"`  // Auto-generate self-signed cert for dev
 }
 
 type ServerConfig struct {
@@ -196,6 +220,39 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VIBED_KNATIVE_DOMAIN_SUFFIX"); v != "" {
 		cfg.Knative.DomainSuffix = v
 	}
+
+	// Auth overrides
+	if v := os.Getenv("VIBED_AUTH_ENABLED"); v != "" {
+		cfg.Auth.Enabled, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("VIBED_AUTH_MODE"); v != "" {
+		cfg.Auth.Mode = v
+	}
+	// Single API key via env var (appended to any YAML-configured keys)
+	if v := os.Getenv("VIBED_AUTH_API_KEY"); v != "" {
+		cfg.Auth.Enabled = true
+		if cfg.Auth.Mode == "" {
+			cfg.Auth.Mode = "apikey"
+		}
+		cfg.Auth.APIKeys = append(cfg.Auth.APIKeys, APIKeyConf{
+			Key:  v,
+			Name: "env-key",
+		})
+	}
+
+	// TLS overrides
+	if v := os.Getenv("VIBED_TLS_ENABLED"); v != "" {
+		cfg.Auth.TLS.Enabled, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("VIBED_TLS_CERT_FILE"); v != "" {
+		cfg.Auth.TLS.CertFile = v
+	}
+	if v := os.Getenv("VIBED_TLS_KEY_FILE"); v != "" {
+		cfg.Auth.TLS.KeyFile = v
+	}
+	if v := os.Getenv("VIBED_TLS_AUTO"); v != "" {
+		cfg.Auth.TLS.AutoTLS, _ = strconv.ParseBool(v)
+	}
 }
 
 func validate(cfg *Config) error {
@@ -227,6 +284,25 @@ func validate(cfg *Config) error {
 
 	if cfg.Registry.Enabled && cfg.Registry.URL == "" {
 		return fmt.Errorf("registry.url is required when registry.enabled is true")
+	}
+
+	// Validate auth config
+	if cfg.Auth.Enabled {
+		validModes := map[string]bool{"apikey": true, "oauth": true, "": true}
+		if !validModes[cfg.Auth.Mode] {
+			return fmt.Errorf("auth.mode must be one of: apikey, oauth (got %q)", cfg.Auth.Mode)
+		}
+		if (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "") && len(cfg.Auth.APIKeys) == 0 {
+			return fmt.Errorf("at least one API key is required when auth.mode is 'apikey'")
+		}
+	}
+
+	// Validate TLS config
+	if cfg.Auth.TLS.Enabled {
+		hasCerts := cfg.Auth.TLS.CertFile != "" && cfg.Auth.TLS.KeyFile != ""
+		if !hasCerts && !cfg.Auth.TLS.AutoTLS {
+			return fmt.Errorf("TLS enabled but no certificate configured: set certFile/keyFile or enable autoTLS")
+		}
 	}
 
 	_ = strings.ToLower // suppress unused import if needed

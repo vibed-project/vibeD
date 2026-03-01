@@ -9,6 +9,22 @@ data:
     server:
       transport: {{ .Values.config.server.transport | quote }}
       httpAddr: {{ .Values.config.server.httpAddr | quote }}
+    {{- if .Values.auth.enabled }}
+    auth:
+      enabled: true
+      mode: {{ .Values.auth.mode | quote }}
+      {{- if eq .Values.auth.mode "apikey" }}
+      apiKeys:
+        - key: "env:VIBED_AUTH_API_KEY"
+          name: "helm-configured"
+      {{- end }}
+      {{- if .Values.auth.tls.enabled }}
+      tls:
+        enabled: true
+        certFile: "/etc/vibed/tls/tls.crt"
+        keyFile: "/etc/vibed/tls/tls.key"
+      {{- end }}
+    {{- end }}
     deployment:
       preferredTarget: {{ .Values.config.deployment.preferredTarget | quote }}
       namespace: {{ .Values.config.deployment.namespace | quote }}

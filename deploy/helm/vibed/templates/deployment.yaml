@@ -15,6 +15,11 @@ spec:
         {{- include "vibed.selectorLabels" . | nindent 8 }}
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.metrics.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+        {{- end }}
     spec:
       serviceAccountName: {{ include "vibed.serviceAccountName" . }}
       containers:
@@ -26,28 +31,49 @@ spec:
             - "/etc/vibed/vibed.yaml"
             - "--transport"
             - "http"
+          {{- if .Values.auth.enabled }}
+          env:
+            - name: VIBED_AUTH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-auth" (include "vibed.fullname" .)) .Values.auth.existingSecret }}
+                  key: api-key
+          {{- end }}
           ports:
             - name: http
               containerPort: 8080
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /api/targets
+              path: /healthz
               port: http
+              {{- if .Values.auth.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 30
+            timeoutSeconds: 3
           readinessProbe:
             httpGet:
-              path: /api/targets
+              path: /readyz
               port: http
+              {{- if .Values.auth.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 3
             periodSeconds: 10
+            timeoutSeconds: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: config
               mountPath: /etc/vibed
               readOnly: true
+            {{- if .Values.auth.tls.enabled }}
+            - name: tls-certs
+              mountPath: /etc/vibed/tls
+              readOnly: true
+            {{- end }}
             {{- if .Values.persistence.enabled }}
             - name: data
               mountPath: /data/vibed
@@ -56,6 +82,11 @@ spec:
         - name: config
           configMap:
             name: {{ include "vibed.fullname" . }}-config
+        {{- if .Values.auth.tls.enabled }}
+        - name: tls-certs
+          secret:
+            secretName: {{ default (printf "%s-tls" (include "vibed.fullname" .)) .Values.auth.tls.existingSecret }}
+        {{- end }}
         {{- if .Values.persistence.enabled }}
         - name: data
           persistentVolumeClaim:
