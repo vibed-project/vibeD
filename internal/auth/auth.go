@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -137,15 +136,12 @@ func oauthPassthroughVerifier(logger *slog.Logger) mcpauth.TokenVerifier {
 	}
 }
 
-// resolveKeyValue resolves an API key value. If it starts with "env:",
-// the remainder is treated as an environment variable name.
+// resolveKeyValue resolves an API key value using the shared config.ResolveSecret helper.
+// Supports "env:VAR_NAME" and "file:/path" patterns, or literal values.
 func resolveKeyValue(key string) string {
-	if strings.HasPrefix(key, "env:") {
-		envName := strings.TrimPrefix(key, "env:")
-		if v := os.Getenv(envName); v != "" {
-			return v
-		}
-		return key // Fall back to literal if env var not set
+	resolved := config.ResolveSecret(key)
+	if resolved == "" {
+		return key // Fall back to literal if resolution returns empty
 	}
-	return key
+	return resolved
 }

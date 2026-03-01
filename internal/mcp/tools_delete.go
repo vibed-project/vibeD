@@ -10,7 +10,7 @@ import (
 )
 
 type deleteArtifactInput struct {
-	ArtifactID string `json:"artifact_id" jsonschema:"description=ID of the artifact to delete"`
+	ArtifactID string `json:"artifact_id" jsonschema:"ID of the artifact to delete"`
 }
 
 type deleteArtifactOutput struct {

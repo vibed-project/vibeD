@@ -28,6 +28,7 @@ const (
 type Artifact struct {
 	ID         string            `json:"id"`
 	Name       string            `json:"name"`
+	OwnerID    string            `json:"owner_id,omitempty"`
 	Status     ArtifactStatus    `json:"status"`
 	Target     DeploymentTarget  `json:"target"`
 	ImageRef   string            `json:"image_ref,omitempty"`
@@ -45,6 +46,7 @@ type Artifact struct {
 type ArtifactSummary struct {
 	ID        string           `json:"id"`
 	Name      string           `json:"name"`
+	OwnerID   string           `json:"owner_id,omitempty"`
 	Status    ArtifactStatus   `json:"status"`
 	Target    DeploymentTarget `json:"target"`
 	URL       string           `json:"url,omitempty"`
@@ -65,6 +67,7 @@ func (a *Artifact) ToSummary() ArtifactSummary {
 	return ArtifactSummary{
 		ID:        a.ID,
 		Name:      a.Name,
+		OwnerID:   a.OwnerID,
 		Status:    a.Status,
 		Target:    a.Target,
 		URL:       a.URL,

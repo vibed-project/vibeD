@@ -17,8 +17,10 @@ type ArtifactStore interface {
 	// GetByName retrieves an artifact by name. Returns ErrNotFound if not found.
 	GetByName(ctx context.Context, name string) (*api.Artifact, error)
 
-	// List returns all artifacts, optionally filtered by status.
-	List(ctx context.Context, statusFilter string) ([]api.ArtifactSummary, error)
+	// List returns all artifacts, optionally filtered by status and owner.
+	// When ownerID is non-empty, only artifacts belonging to that user are returned.
+	// When ownerID is empty, all artifacts are returned (auth disabled mode).
+	List(ctx context.Context, statusFilter string, ownerID string) ([]api.ArtifactSummary, error)
 
 	// Update replaces the artifact record. Returns ErrNotFound if not found.
 	Update(ctx context.Context, artifact *api.Artifact) error

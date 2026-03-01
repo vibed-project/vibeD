@@ -19,6 +19,16 @@ const sidebars = {
     },
     {
       type: 'category',
+      label: 'Deployment',
+      items: [
+        'deployment/production-guide',
+        'deployment/knative-setup',
+        'deployment/monitoring',
+        'deployment/troubleshooting',
+      ],
+    },
+    {
+      type: 'category',
       label: 'MCP Tools',
       items: ['mcp-tools/overview', 'mcp-tools/deploy-artifact'],
     },

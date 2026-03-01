@@ -9,9 +9,9 @@ import (
 )
 
 type updateArtifactInput struct {
-	ArtifactID string            `json:"artifact_id" jsonschema:"description=ID of the artifact to update"`
-	Files      map[string]string `json:"files" jsonschema:"description=Updated file map (full replacement of source files)"`
-	EnvVars    map[string]string `json:"env_vars,omitempty" jsonschema:"description=Updated environment variables"`
+	ArtifactID string            `json:"artifact_id" jsonschema:"ID of the artifact to update"`
+	Files      map[string]string `json:"files" jsonschema:"Updated file map (full replacement of source files)"`
+	EnvVars    map[string]string `json:"env_vars,omitempty" jsonschema:"Updated environment variables"`
 }
 
 func registerUpdateTool(server *mcp.Server, orch *orchestrator.Orchestrator) {

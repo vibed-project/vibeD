@@ -61,13 +61,16 @@ func (s *MemoryStore) GetByName(_ context.Context, name string) (*api.Artifact, 
 	return &copy, nil
 }
 
-func (s *MemoryStore) List(_ context.Context, statusFilter string) ([]api.ArtifactSummary, error) {
+func (s *MemoryStore) List(_ context.Context, statusFilter string, ownerID string) ([]api.ArtifactSummary, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var summaries []api.ArtifactSummary
 	for _, a := range s.artifacts {
 		if statusFilter != "" && statusFilter != "all" && string(a.Status) != statusFilter {
+			continue
+		}
+		if ownerID != "" && a.OwnerID != ownerID {
 			continue
 		}
 		summaries = append(summaries, a.ToSummary())

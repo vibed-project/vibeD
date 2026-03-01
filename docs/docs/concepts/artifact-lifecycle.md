@@ -45,17 +45,29 @@ deploy_artifact called
 
 If any step fails, the artifact transitions to `failed` with an error message explaining what went wrong.
 
+## Ownership
+
+When [authentication](../configuration/authentication.md) is enabled, each artifact is stamped with the deploying user's identity (`owner_id`). This ensures:
+
+- Users only see their own artifacts when listing
+- Update, delete, status, and log operations verify ownership
+- Per-user storage routing directs artifacts to the user's configured repository
+
+When auth is disabled, `owner_id` is empty and all artifacts are accessible to everyone.
+
 ## Update Flow
 
 Calling `update_artifact` on a running artifact:
-1. Stores new source files (overwrites previous)
-2. Rebuilds the container image
-3. Updates the deployment (new revision for Knative)
-4. Returns the new URL
+1. Verifies the caller owns the artifact (when auth enabled)
+2. Stores new source files (overwrites previous)
+3. Rebuilds the container image
+4. Updates the deployment (new revision for Knative)
+5. Returns the new URL
 
 ## Delete Flow
 
 Calling `delete_artifact`:
-1. Removes the deployment from the cluster
-2. Deletes stored source code and manifests
-3. Removes the artifact record from the store
+1. Verifies the caller owns the artifact (when auth enabled)
+2. Removes the deployment from the cluster
+3. Deletes stored source code and manifests
+4. Removes the artifact record from the store

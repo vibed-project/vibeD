@@ -58,8 +58,8 @@ vibeD is a single Go binary that serves three concerns:
 
 | Subsystem | Interface | Implementations |
 |-----------|-----------|-----------------|
-| **Store** | `ArtifactStore` | In-memory, ConfigMap |
-| **Storage** | `Storage` | Local filesystem, GitHub |
+| **Store** | `ArtifactStore` | In-memory, ConfigMap (both support owner-scoped listing) |
+| **Storage** | `Storage` | Local filesystem, GitHub, GitLab, UserStorageRouter (per-user routing) |
 | **Builder** | `Builder` | Cloud Native Buildpacks (pack) |
 | **Deployer** | `Deployer` | Knative, Kubernetes, wasmCloud |
 | **Registry** | `Registry` | Any OCI-compatible registry |

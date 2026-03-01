@@ -10,8 +10,8 @@ import (
 )
 
 type getArtifactLogsInput struct {
-	ArtifactID string `json:"artifact_id" jsonschema:"description=ID of the artifact"`
-	Lines      int    `json:"lines,omitempty" jsonschema:"description=Number of log lines to return (default: 50)"`
+	ArtifactID string `json:"artifact_id" jsonschema:"ID of the artifact"`
+	Lines      int    `json:"lines,omitempty" jsonschema:"Number of log lines to return (default: 50)"`
 }
 
 type getArtifactLogsOutput struct {

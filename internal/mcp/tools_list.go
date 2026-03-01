@@ -10,7 +10,7 @@ import (
 )
 
 type listArtifactsInput struct {
-	Status string `json:"status,omitempty" jsonschema:"description=Filter by status: running building failed all (default: all)"`
+	Status string `json:"status,omitempty" jsonschema:"Filter by status: running building failed all (default: all)"`
 }
 
 type listArtifactsOutput struct {

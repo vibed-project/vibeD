@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	vibedauth "github.com/maxkorbacher/vibed/internal/auth"
 	"github.com/maxkorbacher/vibed/internal/builder"
 	"github.com/maxkorbacher/vibed/internal/config"
 	"github.com/maxkorbacher/vibed/internal/deployer"
@@ -107,6 +108,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	artifact := &api.Artifact{
 		ID:        artifactID,
 		Name:      req.Name,
+		OwnerID:   vibedauth.UserIDFromContext(ctx),
 		Status:    api.StatusPending,
 		Language:  req.Language,
 		EnvVars:   req.EnvVars,
@@ -225,6 +227,10 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 		return nil, err
 	}
 
+	if err := o.checkOwnership(ctx, artifact); err != nil {
+		return nil, err
+	}
+
 	// Store new source
 	o.updateStatus(ctx, artifact, api.StatusBuilding)
 	storageRef, err := o.storage.StoreSource(ctx, artifact.ID, req.Files)
@@ -314,6 +320,11 @@ func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 		return err
 	}
 
+	if err := o.checkOwnership(ctx, artifact); err != nil {
+		o.metrics.DeletesTotal.WithLabelValues("failed").Inc()
+		return err
+	}
+
 	dep, err := o.factory.Get(artifact.Target)
 	if err != nil {
 		o.metrics.DeletesTotal.WithLabelValues("failed").Inc()
@@ -340,18 +351,31 @@ func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 
 // Status returns detailed status for an artifact.
 func (o *Orchestrator) Status(ctx context.Context, artifactID string) (*api.Artifact, error) {
-	return o.store.Get(ctx, artifactID)
+	artifact, err := o.store.Get(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.checkOwnership(ctx, artifact); err != nil {
+		return nil, err
+	}
+	return artifact, nil
 }
 
-// List returns all artifacts matching the filter.
+// List returns all artifacts matching the filter, scoped to the authenticated user.
+// When auth is disabled (no user in context), all artifacts are returned.
 func (o *Orchestrator) List(ctx context.Context, statusFilter string) ([]api.ArtifactSummary, error) {
-	return o.store.List(ctx, statusFilter)
+	ownerID := vibedauth.UserIDFromContext(ctx)
+	return o.store.List(ctx, statusFilter, ownerID)
 }
 
 // Logs returns recent log lines from a deployed artifact.
 func (o *Orchestrator) Logs(ctx context.Context, artifactID string, lines int) ([]string, error) {
 	artifact, err := o.store.Get(ctx, artifactID)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := o.checkOwnership(ctx, artifact); err != nil {
 		return nil, err
 	}
 
@@ -370,6 +394,20 @@ func (o *Orchestrator) Logs(ctx context.Context, artifactID string, lines int) (
 // ListTargets returns info about available deployment targets.
 func (o *Orchestrator) ListTargets() []api.TargetInfo {
 	return o.detector.ListTargets()
+}
+
+// checkOwnership verifies that the current user owns the artifact.
+// Returns ErrNotFound (not Forbidden) to avoid leaking artifact existence to non-owners.
+// When auth is disabled (ownerID is empty), all ownership checks pass.
+func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifact) error {
+	ownerID := vibedauth.UserIDFromContext(ctx)
+	if ownerID == "" {
+		return nil // Auth disabled — no ownership enforcement
+	}
+	if artifact.OwnerID != "" && artifact.OwnerID != ownerID {
+		return &api.ErrNotFound{ArtifactID: artifact.ID}
+	}
+	return nil
 }
 
 func (o *Orchestrator) updateStatus(ctx context.Context, artifact *api.Artifact, status api.ArtifactStatus) {

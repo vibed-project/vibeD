@@ -3,7 +3,8 @@ BINARY := bin/vibed
 KIND_CLUSTER := vibed-dev
 KNATIVE_VERSION := v1.17.0
 
-.PHONY: build run test clean setup-cluster install-knative install-deps dev teardown lint
+.PHONY: build run test clean setup-cluster install-knative install-deps dev teardown lint \
+       test-integration test-integration-short test-integration-setup test-cleanup
 
 ## Build
 
@@ -44,8 +45,19 @@ build-all: web-build build
 test:
 	$(GO) test ./...
 
-test-integration:
-	$(GO) test -tags=integration ./...
+test-integration-setup:
+	@echo "Loading test images into Kind cluster..."
+	podman pull docker.io/library/nginx:1.27-alpine 2>/dev/null || true
+	kind load docker-image docker.io/library/nginx:1.27-alpine --name $(KIND_CLUSTER) 2>/dev/null || true
+
+test-integration: test-integration-setup
+	$(GO) test -tags=integration -timeout 10m -count=1 -v ./...
+
+test-integration-short: test-integration-setup
+	$(GO) test -tags=integration -short -timeout 5m -count=1 -v ./...
+
+test-cleanup:
+	kubectl delete ns -l vibed-test=true --ignore-not-found
 
 lint:
 	golangci-lint run ./...

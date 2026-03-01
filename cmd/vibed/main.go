@@ -89,20 +89,40 @@ func main() {
 			os.Exit(1)
 		}
 	case "github":
+		token := config.ResolveSecret(cfg.Storage.GitHub.TokenFile)
 		stg, err = storage.NewGitHubStorage(
 			cfg.Storage.GitHub.Owner,
 			cfg.Storage.GitHub.Repo,
 			cfg.Storage.GitHub.Branch,
-			"", // Token from GITHUB_TOKEN env var
+			token,
 			cfg.Storage.Local.BasePath, // Local cache dir
 		)
 		if err != nil {
 			logger.Error("failed to create GitHub storage", "error", err)
 			os.Exit(1)
 		}
+	case "gitlab":
+		token := config.ResolveSecret(cfg.Storage.GitLab.Token)
+		stg, err = storage.NewGitLabStorage(
+			cfg.Storage.GitLab.URL,
+			cfg.Storage.GitLab.ProjectID,
+			cfg.Storage.GitLab.Branch,
+			token,
+			cfg.Storage.Local.BasePath, // Local cache dir
+		)
+		if err != nil {
+			logger.Error("failed to create GitLab storage", "error", err)
+			os.Exit(1)
+		}
 	default:
 		logger.Error("unsupported storage backend", "backend", cfg.Storage.Backend)
 		os.Exit(1)
+	}
+
+	// Wrap storage with per-user routing if any API key has per-user storage configured
+	if cfg.Auth.Enabled && storage.HasPerUserConfigs(cfg.Auth.APIKeys) {
+		stg = storage.NewUserStorageRouter(cfg.Auth.APIKeys, stg, cfg.Storage.Local.BasePath)
+		logger.Info("per-user storage routing enabled")
 	}
 	checker.SetReady("storage")
 

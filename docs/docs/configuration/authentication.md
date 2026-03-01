@@ -50,8 +50,10 @@ auth:
 **Key features:**
 
 - Keys can be literal values or resolved from environment variables using the `env:` prefix
-- Each key has a human-readable `name` used for logging and session binding
+- Keys also support `file:/path/to/token` to read tokens from files
+- Each key has a human-readable `name` used as the user identity (UserID) for ownership
 - Optional `scopes` restrict what the key can do (empty = unrestricted)
+- Optional `storage` block overrides the storage backend for this user (see [Per-User Multi-Repo Storage](./storage.md#per-user-multi-repo-storage))
 - Constant-time comparison prevents timing attacks
 
 ### OAuth Mode
@@ -216,6 +218,21 @@ auth:
     enabled: true
     existingSecret: "vibed-tls"  # References the cert-manager Secret
 ```
+
+## Artifact Ownership
+
+When authentication is enabled, vibeD enforces per-user artifact isolation:
+
+- **Deploy** stamps each artifact with the deploying user's `owner_id` (the API key's `name` field)
+- **List** only returns artifacts owned by the current user
+- **Status**, **Update**, **Delete**, and **Logs** verify ownership before proceeding
+- Accessing another user's artifact returns "not found" (not "forbidden") to avoid leaking artifact existence
+
+When authentication is disabled, ownership checks are skipped and all users see all artifacts.
+
+### Per-User Storage
+
+Each API key can optionally define a dedicated storage backend (GitHub or GitLab repository), ensuring complete artifact isolation. See [Per-User Multi-Repo Storage](./storage.md#per-user-multi-repo-storage) for configuration details.
 
 ## Connecting MCP Clients
 

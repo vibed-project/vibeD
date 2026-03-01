@@ -12,6 +12,23 @@ server:
 #     - key: "vibed_sk_your_secret_key_here"
 #       name: "ci-pipeline"
 #       scopes: ["deploy"]
+#     # Per-user storage: each user gets their own repo
+#     # - key: "env:ALICE_KEY"
+#     #   name: "alice"
+#     #   storage:
+#     #     backend: "github"
+#     #     github:
+#     #       owner: "alice-org"
+#     #       repo: "alice-vibed-artifacts"
+#     #       token: "env:ALICE_GITHUB_TOKEN"
+#     # - key: "env:BOB_KEY"
+#     #   name: "bob"
+#     #   storage:
+#     #     backend: "gitlab"
+#     #     gitlab:
+#     #       url: "https://gitlab.example.com"
+#     #       projectID: 42
+#     #       token: "env:BOB_GITLAB_TOKEN"
 #   tls:
 #     enabled: true
 #     certFile: "/etc/vibed/tls/tls.crt"
@@ -31,6 +48,19 @@ storage:
   backend: "local"
   local:
     basePath: "/tmp/vibed-artifacts"
+  # GitHub storage:
+  # backend: "github"
+  # github:
+  #   owner: "myorg"
+  #   repo: "vibed-artifacts"
+  #   branch: "main"
+  # GitLab storage:
+  # backend: "gitlab"
+  # gitlab:
+  #   url: "https://gitlab.com"
+  #   projectID: 12345
+  #   branch: "main"
+  #   token: "env:GITLAB_TOKEN"
 
 registry:
   enabled: false

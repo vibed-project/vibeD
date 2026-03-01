@@ -101,7 +101,7 @@ func (s *ConfigMapStore) GetByName(ctx context.Context, name string) (*api.Artif
 	return nil, &api.ErrNotFound{ArtifactID: name}
 }
 
-func (s *ConfigMapStore) List(ctx context.Context, statusFilter string) ([]api.ArtifactSummary, error) {
+func (s *ConfigMapStore) List(ctx context.Context, statusFilter string, ownerID string) ([]api.ArtifactSummary, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -121,6 +121,9 @@ func (s *ConfigMapStore) List(ctx context.Context, statusFilter string) ([]api.A
 			continue
 		}
 		if statusFilter != "" && statusFilter != "all" && string(artifact.Status) != statusFilter {
+			continue
+		}
+		if ownerID != "" && artifact.OwnerID != ownerID {
 			continue
 		}
 		summaries = append(summaries, artifact.ToSummary())

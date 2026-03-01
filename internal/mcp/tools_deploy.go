@@ -9,12 +9,12 @@ import (
 )
 
 type deployArtifactInput struct {
-	Name     string            `json:"name" jsonschema:"description=Unique name for the artifact (lowercase and DNS-safe)"`
-	Files    map[string]string `json:"files" jsonschema:"description=Map of relative file path to file content"`
-	Language string            `json:"language,omitempty" jsonschema:"description=Language/framework hint (e.g. nodejs python go static)"`
-	Target   string            `json:"target,omitempty" jsonschema:"description=Deployment target: knative kubernetes wasmcloud or auto (default: auto)"`
-	EnvVars  map[string]string `json:"env_vars,omitempty" jsonschema:"description=Environment variables for the deployed artifact"`
-	Port     int               `json:"port,omitempty" jsonschema:"description=Port the application listens on (auto-detected if not set)"`
+	Name     string            `json:"name" jsonschema:"Unique name for the artifact (lowercase and DNS-safe)"`
+	Files    map[string]string `json:"files" jsonschema:"Map of relative file path to file content"`
+	Language string            `json:"language,omitempty" jsonschema:"Language/framework hint (e.g. nodejs python go static)"`
+	Target   string            `json:"target,omitempty" jsonschema:"Deployment target: knative kubernetes wasmcloud or auto (default: auto)"`
+	EnvVars  map[string]string `json:"env_vars,omitempty" jsonschema:"Environment variables for the deployed artifact"`
+	Port     int               `json:"port,omitempty" jsonschema:"Port the application listens on (auto-detected if not set)"`
 }
 
 func registerDeployTool(server *mcp.Server, orch *orchestrator.Orchestrator) {

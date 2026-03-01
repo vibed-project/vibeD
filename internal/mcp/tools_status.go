@@ -10,7 +10,7 @@ import (
 )
 
 type getArtifactStatusInput struct {
-	ArtifactID string `json:"artifact_id" jsonschema:"description=ID of the artifact to check"`
+	ArtifactID string `json:"artifact_id" jsonschema:"ID of the artifact to check"`
 }
 
 func registerStatusTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
