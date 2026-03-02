@@ -38,6 +38,8 @@ data:
         image: {{ .Values.config.builder.buildah.image | quote }}
         timeout: {{ .Values.config.builder.buildah.timeout | quote }}
         insecure: {{ .Values.config.builder.buildah.insecure }}
+        namespace: {{ .Release.Namespace | quote }}
+        pvcName: {{ printf "%s-data" (include "vibed.fullname" .) | quote }}
       {{- end }}
     storage:
       backend: {{ .Values.config.storage.backend | quote }}
