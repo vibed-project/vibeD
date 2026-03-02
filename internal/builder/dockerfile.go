@@ -35,9 +35,9 @@ func GenerateDockerfile(language string, files map[string]string) string {
 
 	switch language {
 	case "nodejs":
-		return dockerfileNodeJS()
+		return dockerfileNodeJS(files)
 	case "python":
-		return dockerfilePython()
+		return dockerfilePython(files)
 	case "go":
 		return dockerfileGo()
 	default:
@@ -53,7 +53,14 @@ EXPOSE 8080
 `
 }
 
-func dockerfileNodeJS() string {
+func dockerfileNodeJS(files map[string]string) string {
+	entrypoint := "index.js"
+	for _, candidate := range []string{"index.js", "server.js", "app.js", "main.js"} {
+		if _, ok := files[candidate]; ok {
+			entrypoint = candidate
+			break
+		}
+	}
 	return `FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
@@ -65,18 +72,26 @@ FROM node:22-alpine
 WORKDIR /app
 COPY --from=build /app .
 EXPOSE 8080
-CMD ["node", "index.js"]
+CMD ["node", "` + entrypoint + `"]
 `
 }
 
-func dockerfilePython() string {
+func dockerfilePython(files map[string]string) string {
+	// Find the Python entry point: app.py, main.py, or first .py file
+	entrypoint := "app.py"
+	for _, candidate := range []string{"app.py", "main.py", "server.py", "run.py"} {
+		if _, ok := files[candidate]; ok {
+			entrypoint = candidate
+			break
+		}
+	}
 	return `FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt* ./
 RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
 COPY . .
 EXPOSE 8080
-CMD ["python", "main.py"]
+CMD ["python", "` + entrypoint + `"]
 `
 }
 
