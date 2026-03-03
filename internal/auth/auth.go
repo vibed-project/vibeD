@@ -139,9 +139,9 @@ func oauthPassthroughVerifier(logger *slog.Logger) mcpauth.TokenVerifier {
 // resolveKeyValue resolves an API key value using the shared config.ResolveSecret helper.
 // Supports "env:VAR_NAME" and "file:/path" patterns, or literal values.
 func resolveKeyValue(key string) string {
-	resolved := config.ResolveSecret(key)
-	if resolved == "" {
-		return key // Fall back to literal if resolution returns empty
+	resolved, err := config.ResolveSecret(key)
+	if err != nil || resolved == "" {
+		return key // Fall back to literal if resolution fails
 	}
 	return resolved
 }

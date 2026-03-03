@@ -75,6 +75,10 @@ func (d *KnativeDeployer) Update(ctx context.Context, artifact *api.Artifact) (*
 		return nil, fmt.Errorf("getting existing Knative Service: %w", err)
 	}
 
+	if len(existing.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("Knative Service %q has no containers", artifact.Name)
+	}
+
 	existing.Spec.Template.Spec.Containers[0].Image = artifact.ImageRef
 	existing.Spec.Template.Spec.Containers[0].Env = d.buildEnvVars(artifact)
 	if artifact.Port > 0 {

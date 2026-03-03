@@ -75,7 +75,10 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 
 	// 1. Scan source directory for language auto-detection and write Dockerfile
 	files := make(map[string]string)
-	entries, _ := os.ReadDir(req.SourceDir)
+	entries, err := os.ReadDir(req.SourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading source directory %q: %w", req.SourceDir, err)
+	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			files[e.Name()] = ""
@@ -161,7 +164,7 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 	}
 
 	b.logger.Info("creating build Job", "job", jobName, "namespace", b.namespace)
-	_, err := b.clientset.BatchV1().Jobs(b.namespace).Create(ctx, job, metav1.CreateOptions{})
+	_, err = b.clientset.BatchV1().Jobs(b.namespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("creating build Job: %w", err)
 	}

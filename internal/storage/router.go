@@ -125,7 +125,10 @@ func (r *UserStorageRouter) createUserStorage(userID string, cfg *config.UserSto
 		if branch == "" {
 			branch = "main"
 		}
-		token := config.ResolveSecret(cfg.GitHub.Token)
+		token, err := config.ResolveSecret(cfg.GitHub.Token)
+		if err != nil {
+			return nil, fmt.Errorf("resolving GitHub token: %w", err)
+		}
 		return NewGitHubStorage(cfg.GitHub.Owner, cfg.GitHub.Repo, branch, token, localCacheDir)
 
 	case "gitlab":
@@ -140,7 +143,10 @@ func (r *UserStorageRouter) createUserStorage(userID string, cfg *config.UserSto
 		if branch == "" {
 			branch = "main"
 		}
-		token := config.ResolveSecret(cfg.GitLab.Token)
+		token, err := config.ResolveSecret(cfg.GitLab.Token)
+		if err != nil {
+			return nil, fmt.Errorf("resolving GitLab token: %w", err)
+		}
 		return NewGitLabStorage(url, cfg.GitLab.ProjectID, branch, token, localCacheDir)
 
 	default:

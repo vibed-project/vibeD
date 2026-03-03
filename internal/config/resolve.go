@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -10,23 +11,23 @@ import (
 //   - "env:VAR_NAME" — reads from environment variable VAR_NAME
 //   - "file:/path/to/file" — reads file content (trimmed of whitespace)
 //   - anything else — returned as-is (literal value)
-func ResolveSecret(value string) string {
+func ResolveSecret(value string) (string, error) {
 	if strings.HasPrefix(value, "env:") {
 		envName := strings.TrimPrefix(value, "env:")
 		if v := os.Getenv(envName); v != "" {
-			return v
+			return v, nil
 		}
-		return "" // Return empty if env var not set
+		return "", fmt.Errorf("environment variable %q is not set", envName)
 	}
 
 	if strings.HasPrefix(value, "file:") {
 		filePath := strings.TrimPrefix(value, "file:")
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			return "" // Return empty if file can't be read
+			return "", fmt.Errorf("reading secret file %q: %w", filePath, err)
 		}
-		return strings.TrimSpace(string(data))
+		return strings.TrimSpace(string(data)), nil
 	}
 
-	return value
+	return value, nil
 }

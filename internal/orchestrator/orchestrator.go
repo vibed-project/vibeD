@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -108,6 +109,18 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 		return nil, &api.ErrInvalidInput{Field: "files", Message: "at least one file is required"}
 	}
 
+	// 1b. Validate file paths (prevent path traversal)
+	for path := range req.Files {
+		if err := validateFilePath(path); err != nil {
+			return nil, err
+		}
+	}
+
+	// 1c. Check for duplicate name
+	if existing, _ := o.store.GetByName(ctx, req.Name); existing != nil {
+		return nil, &api.ErrAlreadyExists{Name: req.Name}
+	}
+
 	// 2. Generate artifact ID
 	artifactID := generateID()
 	now := time.Now()
@@ -168,6 +181,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	imageName := fmt.Sprintf("%s/%s:latest", o.imageBase, req.Name)
 
 	o.metrics.BuildsInFlight.Inc()
+	defer o.metrics.BuildsInFlight.Dec()
 	buildStart := time.Now()
 
 	buildResult, err := o.builder.Build(ctx, builder.BuildRequest{
@@ -178,7 +192,6 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 		Publish:   o.cfg.Registry.Enabled,
 	})
 
-	o.metrics.BuildsInFlight.Dec()
 	buildDur := time.Since(buildStart).Seconds()
 
 	if err != nil {
@@ -249,6 +262,13 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 		return nil, err
 	}
 
+	// Validate file paths (prevent path traversal)
+	for path := range req.Files {
+		if err := validateFilePath(path); err != nil {
+			return nil, err
+		}
+	}
+
 	// Store new source
 	o.updateStatus(ctx, artifact, api.StatusBuilding)
 	storageRef, err := o.storage.StoreSource(ctx, artifact.ID, req.Files)
@@ -279,6 +299,7 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 	imageName := fmt.Sprintf("%s/%s:latest", o.imageBase, artifact.Name)
 
 	o.metrics.BuildsInFlight.Inc()
+	defer o.metrics.BuildsInFlight.Dec()
 	buildStart := time.Now()
 
 	buildResult, err := o.builder.Build(ctx, builder.BuildRequest{
@@ -289,7 +310,6 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 		Publish:   o.cfg.Registry.Enabled,
 	})
 
-	o.metrics.BuildsInFlight.Dec()
 	buildDur := time.Since(buildStart).Seconds()
 
 	if err != nil {
@@ -468,9 +488,30 @@ func validateName(name string) error {
 	return nil
 }
 
+// validateFilePath rejects file paths that could escape the artifact directory.
+func validateFilePath(path string) error {
+	if path == "" {
+		return &api.ErrInvalidInput{Field: "files", Message: "file path cannot be empty"}
+	}
+	if filepath.IsAbs(path) {
+		return &api.ErrInvalidInput{Field: "files", Message: fmt.Sprintf("absolute paths not allowed: %q", path)}
+	}
+	if strings.Contains(path, "\\") {
+		return &api.ErrInvalidInput{Field: "files", Message: fmt.Sprintf("backslashes not allowed in path: %q", path)}
+	}
+	cleaned := filepath.Clean(path)
+	if strings.HasPrefix(cleaned, "..") {
+		return &api.ErrInvalidInput{Field: "files", Message: fmt.Sprintf("path traversal not allowed: %q", path)}
+	}
+	return nil
+}
+
 func generateID() string {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID if crypto/rand fails
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
 	return fmt.Sprintf("%x", b)
 }
 

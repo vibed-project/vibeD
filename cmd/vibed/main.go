@@ -113,7 +113,11 @@ func main() {
 			os.Exit(1)
 		}
 	case "github":
-		token := config.ResolveSecret(cfg.Storage.GitHub.TokenFile)
+		token, err := config.ResolveSecret(cfg.Storage.GitHub.TokenFile)
+		if err != nil {
+			logger.Error("failed to resolve GitHub token", "error", err)
+			os.Exit(1)
+		}
 		stg, err = storage.NewGitHubStorage(
 			cfg.Storage.GitHub.Owner,
 			cfg.Storage.GitHub.Repo,
@@ -126,7 +130,11 @@ func main() {
 			os.Exit(1)
 		}
 	case "gitlab":
-		token := config.ResolveSecret(cfg.Storage.GitLab.Token)
+		token, err := config.ResolveSecret(cfg.Storage.GitLab.Token)
+		if err != nil {
+			logger.Error("failed to resolve GitLab token", "error", err)
+			os.Exit(1)
+		}
 		stg, err = storage.NewGitLabStorage(
 			cfg.Storage.GitLab.URL,
 			cfg.Storage.GitLab.ProjectID,
