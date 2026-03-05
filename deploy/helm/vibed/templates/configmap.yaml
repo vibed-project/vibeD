@@ -58,3 +58,7 @@ data:
     knative:
       domainSuffix: {{ .Values.config.knative.domainSuffix | quote }}
       ingressClass: {{ .Values.config.knative.ingressClass | quote }}
+    limits:
+      maxTotalFileSize: {{ int .Values.config.limits.maxTotalFileSize }}
+      maxFileCount: {{ int .Values.config.limits.maxFileCount }}
+      maxLogLines: {{ int .Values.config.limits.maxLogLines }}

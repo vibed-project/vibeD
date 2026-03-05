@@ -40,6 +40,11 @@ func handleArtifacts(orch *orchestrator.Orchestrator) http.HandlerFunc {
 				return
 			}
 
+			if r.Method == http.MethodDelete {
+				handleArtifactDelete(orch, artifactID, w, r)
+				return
+			}
+
 			handleArtifactDetail(orch, artifactID, w, r)
 			return
 		}
@@ -78,6 +83,24 @@ func handleArtifactLogs(orch *orchestrator.Orchestrator, id string, w http.Respo
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"artifact_id": id,
 		"logs":        logs,
+	})
+}
+
+func handleArtifactDelete(orch *orchestrator.Orchestrator, id string, w http.ResponseWriter, r *http.Request) {
+	if err := orch.Delete(r.Context(), id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "deleted",
+		"id":     id,
 	})
 }
 

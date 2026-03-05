@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ArtifactSummary, TargetInfo, fetchArtifacts, fetchTargets } from './api/client'
+import { ArtifactSummary, TargetInfo, fetchArtifacts, fetchTargets, deleteArtifact } from './api/client'
 import ArtifactList from './components/ArtifactList'
 import DeploymentTargets from './components/DeploymentTargets'
 import LogViewer from './components/LogViewer'
@@ -23,6 +23,11 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  const handleDelete = useCallback(async (id: string) => {
+    await deleteArtifact(id)
+    setArtifacts((prev) => prev.filter((a) => a.id !== id))
   }, [])
 
   useEffect(() => {
@@ -65,6 +70,7 @@ function App() {
           <ArtifactList
             artifacts={artifacts}
             onViewLogs={(id) => setSelectedArtifactId(id)}
+            onDelete={handleDelete}
           />
         </section>
       </main>

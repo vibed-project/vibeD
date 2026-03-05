@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 
+	"github.com/maxkorbacher/vibed/internal/config"
 	"github.com/maxkorbacher/vibed/internal/orchestrator"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,11 +18,15 @@ type deployArtifactInput struct {
 	Port     int               `json:"port,omitempty" jsonschema:"Port the application listens on (auto-detected if not set)"`
 }
 
-func registerDeployTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
+func registerDeployTool(server *mcp.Server, orch *orchestrator.Orchestrator, limits config.LimitsConfig) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "deploy_artifact",
 		Description: "Deploy a web artifact (website, web app) to the cluster. Provide source files and vibeD handles building a container image and deploying it. Returns the access URL.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input deployArtifactInput) (*mcp.CallToolResult, *orchestrator.DeployResult, error) {
+		if err := validateFileLimits(input.Files, limits); err != nil {
+			return nil, nil, err
+		}
+
 		result, err := orch.Deploy(ctx, orchestrator.DeployRequest{
 			Name:     input.Name,
 			Files:    input.Files,

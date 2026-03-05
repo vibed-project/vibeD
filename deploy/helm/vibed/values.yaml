@@ -1,8 +1,13 @@
+# -- Number of vibeD replicas. Set >= 2 for high availability in production.
 replicaCount: 1
 
 image:
   repository: vibed
+  # -- Image tag. IMPORTANT: Always pin to a specific version in production
+  # (e.g. "0.1.0"). Using "latest" risks deploying untested code.
   tag: "latest"
+  # -- Pull policy. Use "Always" in production to ensure the pinned tag
+  # is re-fetched if the registry image was updated.
   pullPolicy: IfNotPresent
 
 service:
@@ -25,6 +30,23 @@ resources:
   requests:
     cpu: 100m
     memory: 128Mi
+
+# -- Pod-level security context. Applies to all containers in the pod.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534       # nobody
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context for the vibed container.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 serviceAccount:
   create: true
@@ -61,6 +83,14 @@ config:
   knative:
     domainSuffix: "127.0.0.1.sslip.io"
     ingressClass: "kourier.ingress.networking.knative.dev"
+  # -- Resource limits for MCP tool inputs.
+  limits:
+    # -- Max total file content size in bytes (default: 50 MB).
+    maxTotalFileSize: 52428800
+    # -- Max number of files per deploy/update request (default: 500).
+    maxFileCount: 500
+    # -- Max log lines per request (default: 10000).
+    maxLogLines: 10000
 
 persistence:
   enabled: true
@@ -72,8 +102,10 @@ persistence:
 metrics:
   enabled: true
 
-# Authentication for MCP and API endpoints
+# -- Authentication for MCP and API endpoints.
+# IMPORTANT: Enable auth before exposing vibeD outside the cluster.
 auth:
+  # -- Set to true to require API key authentication.
   enabled: false
   mode: "apikey"              # "apikey" or "oauth"
   existingSecret: ""          # Use existing K8s Secret for API key (key: "api-key")

@@ -22,10 +22,18 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "vibed.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: vibed
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           args:
             - "--config"
             - "/etc/vibed/vibed.yaml"
@@ -69,6 +77,8 @@ spec:
             - name: config
               mountPath: /etc/vibed
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
             {{- if .Values.auth.tls.enabled }}
             - name: tls-certs
               mountPath: /etc/vibed/tls
@@ -82,6 +92,8 @@ spec:
         - name: config
           configMap:
             name: {{ include "vibed.fullname" . }}-config
+        - name: tmp
+          emptyDir: {}
         {{- if .Values.auth.tls.enabled }}
         - name: tls-certs
           secret:

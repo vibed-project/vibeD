@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/maxkorbacher/vibed/internal/config"
 	"github.com/maxkorbacher/vibed/internal/orchestrator"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,15 +19,12 @@ type getArtifactLogsOutput struct {
 	Logs string `json:"logs"`
 }
 
-func registerLogsTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
+func registerLogsTool(server *mcp.Server, orch *orchestrator.Orchestrator, limits config.LimitsConfig) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_artifact_logs",
 		Description: "Retrieve recent log lines from a deployed artifact for debugging purposes.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input getArtifactLogsInput) (*mcp.CallToolResult, *getArtifactLogsOutput, error) {
-		lines := input.Lines
-		if lines <= 0 {
-			lines = 50
-		}
+		lines := clampLogLines(input.Lines, limits)
 
 		logs, err := orch.Logs(ctx, input.ArtifactID, lines)
 		if err != nil {

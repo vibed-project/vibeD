@@ -20,6 +20,14 @@ type Config struct {
 	Store      StoreConfig      `yaml:"store"`
 	Kubernetes KubernetesConfig `yaml:"kubernetes"`
 	Knative    KnativeConfig    `yaml:"knative"`
+	Limits     LimitsConfig     `yaml:"limits"`
+}
+
+// LimitsConfig defines resource limits for MCP tool inputs.
+type LimitsConfig struct {
+	MaxTotalFileSize int `yaml:"maxTotalFileSize"` // Max total file content size in bytes (default: 50MB)
+	MaxFileCount     int `yaml:"maxFileCount"`     // Max number of files per deploy/update (default: 500)
+	MaxLogLines      int `yaml:"maxLogLines"`      // Max log lines per request (default: 10000)
 }
 
 // AuthConfig holds authentication and TLS settings.
@@ -196,6 +204,11 @@ func Default() *Config {
 			DomainSuffix: "127.0.0.1.sslip.io",
 			IngressClass: "kourier.ingress.networking.knative.dev",
 		},
+		Limits: LimitsConfig{
+			MaxTotalFileSize: 50 * 1024 * 1024, // 50 MB
+			MaxFileCount:     500,
+			MaxLogLines:      10000,
+		},
 	}
 }
 
@@ -314,6 +327,23 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("VIBED_TLS_AUTO"); v != "" {
 		cfg.Auth.TLS.AutoTLS, _ = strconv.ParseBool(v)
+	}
+
+	// Limits overrides
+	if v := os.Getenv("VIBED_LIMITS_MAX_TOTAL_FILE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Limits.MaxTotalFileSize = n
+		}
+	}
+	if v := os.Getenv("VIBED_LIMITS_MAX_FILE_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Limits.MaxFileCount = n
+		}
+	}
+	if v := os.Getenv("VIBED_LIMITS_MAX_LOG_LINES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Limits.MaxLogLines = n
+		}
 	}
 }
 

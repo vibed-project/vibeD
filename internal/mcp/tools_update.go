@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 
+	"github.com/maxkorbacher/vibed/internal/config"
 	"github.com/maxkorbacher/vibed/internal/orchestrator"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,11 +15,15 @@ type updateArtifactInput struct {
 	EnvVars    map[string]string `json:"env_vars,omitempty" jsonschema:"Updated environment variables"`
 }
 
-func registerUpdateTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
+func registerUpdateTool(server *mcp.Server, orch *orchestrator.Orchestrator, limits config.LimitsConfig) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "update_artifact",
 		Description: "Update an existing deployed artifact with new source files. Triggers a rebuild and redeployment.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input updateArtifactInput) (*mcp.CallToolResult, *orchestrator.DeployResult, error) {
+		if err := validateFileLimits(input.Files, limits); err != nil {
+			return nil, nil, err
+		}
+
 		result, err := orch.Update(ctx, orchestrator.UpdateRequest{
 			ArtifactID: input.ArtifactID,
 			Files:      input.Files,

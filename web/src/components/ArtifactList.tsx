@@ -5,9 +5,10 @@ import './ArtifactList.css'
 interface Props {
   artifacts: ArtifactSummary[]
   onViewLogs: (id: string) => void
+  onDelete: (id: string) => Promise<void>
 }
 
-export default function ArtifactList({ artifacts, onViewLogs }: Props) {
+export default function ArtifactList({ artifacts, onViewLogs, onDelete }: Props) {
   if (artifacts.length === 0) {
     return (
       <div className="empty-state">
@@ -28,6 +29,7 @@ export default function ArtifactList({ artifacts, onViewLogs }: Props) {
           key={artifact.id}
           artifact={artifact}
           onViewLogs={() => onViewLogs(artifact.id)}
+          onDelete={() => onDelete(artifact.id)}
         />
       ))}
     </div>

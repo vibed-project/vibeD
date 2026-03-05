@@ -200,7 +200,7 @@ func main() {
 	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, m, k8sClients.Clientset, logger)
 
 	// Create MCP server
-	mcpServer := mcppkg.NewServer(orch)
+	mcpServer := mcppkg.NewServer(orch, cfg.Limits)
 
 	// Initialize authentication middleware
 	authMiddleware, err := vibedauth.Middleware(cfg.Auth, logger)

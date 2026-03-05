@@ -117,3 +117,41 @@
 .action-primary:hover {
   background: var(--accent-hover);
 }
+
+.action-danger-outline {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.action-danger-outline:hover {
+  background: var(--red);
+  color: white;
+}
+
+.action-danger {
+  background: var(--red);
+  color: white;
+  border-color: var(--red);
+}
+
+.action-danger:hover {
+  background: #dc2626;
+}
+
+.action-danger:disabled,
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.confirm-delete {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.confirm-text {
+  font-size: 0.75rem;
+  color: var(--red);
+  font-weight: 500;
+}

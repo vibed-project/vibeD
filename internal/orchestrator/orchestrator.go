@@ -232,7 +232,12 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	artifact.URL = deployResult.URL
 	artifact.Status = api.StatusRunning
 	artifact.UpdatedAt = time.Now()
-	_ = o.store.Update(ctx, artifact)
+	if err := o.store.Update(ctx, artifact); err != nil {
+		o.logger.Warn("failed to persist deploy result",
+			"artifact_id", artifactID,
+			"error", err,
+		)
+	}
 
 	o.logger.Info("artifact deployed successfully",
 		"id", artifactID,
@@ -348,7 +353,12 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 	artifact.URL = deployResult.URL
 	artifact.Status = api.StatusRunning
 	artifact.UpdatedAt = time.Now()
-	_ = o.store.Update(ctx, artifact)
+	if err := o.store.Update(ctx, artifact); err != nil {
+		o.logger.Warn("failed to persist update result",
+			"artifact_id", artifact.ID,
+			"error", err,
+		)
+	}
 
 	return &DeployResult{
 		ArtifactID: artifact.ID,
@@ -461,14 +471,26 @@ func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifac
 func (o *Orchestrator) updateStatus(ctx context.Context, artifact *api.Artifact, status api.ArtifactStatus) {
 	artifact.Status = status
 	artifact.UpdatedAt = time.Now()
-	_ = o.store.Update(ctx, artifact)
+	if err := o.store.Update(ctx, artifact); err != nil {
+		o.logger.Warn("failed to persist status update",
+			"artifact_id", artifact.ID,
+			"status", status,
+			"error", err,
+		)
+	}
 }
 
 func (o *Orchestrator) failArtifact(ctx context.Context, artifact *api.Artifact, reason string) {
 	artifact.Status = api.StatusFailed
 	artifact.Error = reason
 	artifact.UpdatedAt = time.Now()
-	_ = o.store.Update(ctx, artifact)
+	if err := o.store.Update(ctx, artifact); err != nil {
+		o.logger.Warn("failed to persist artifact failure",
+			"artifact_id", artifact.ID,
+			"reason", reason,
+			"error", err,
+		)
+	}
 }
 
 func validateName(name string) error {
@@ -598,7 +620,12 @@ func (o *Orchestrator) deployStatic(ctx context.Context, artifact *api.Artifact,
 	artifact.URL = deployResult.URL
 	artifact.Status = api.StatusRunning
 	artifact.UpdatedAt = time.Now()
-	_ = o.store.Update(ctx, artifact)
+	if err := o.store.Update(ctx, artifact); err != nil {
+		o.logger.Warn("failed to persist static deploy result",
+			"artifact_id", artifact.ID,
+			"error", err,
+		)
+	}
 
 	o.logger.Info("static artifact deployed (no build)",
 		"id", artifact.ID, "name", artifact.Name,
@@ -680,7 +707,12 @@ func (o *Orchestrator) updateStatic(ctx context.Context, artifact *api.Artifact,
 	artifact.URL = deployResult.URL
 	artifact.Status = api.StatusRunning
 	artifact.UpdatedAt = time.Now()
-	_ = o.store.Update(ctx, artifact)
+	if err := o.store.Update(ctx, artifact); err != nil {
+		o.logger.Warn("failed to persist static update result",
+			"artifact_id", artifact.ID,
+			"error", err,
+		)
+	}
 
 	return &DeployResult{
 		ArtifactID: artifact.ID,

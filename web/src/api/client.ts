@@ -51,6 +51,11 @@ export async function fetchLogs(id: string): Promise<LogsResponse> {
   return res.json();
 }
 
+export async function deleteArtifact(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/artifacts/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Failed to delete artifact: ${res.statusText}`);
+}
+
 export async function fetchTargets(): Promise<TargetInfo[]> {
   const res = await fetch(`${BASE}/api/targets`);
   if (!res.ok) throw new Error(`Failed to fetch targets: ${res.statusText}`);

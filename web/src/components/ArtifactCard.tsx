@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { ArtifactSummary } from '../api/client'
 import './ArtifactCard.css'
 
 interface Props {
   artifact: ArtifactSummary
   onViewLogs: () => void
+  onDelete: () => Promise<void>
 }
 
 const statusConfig: Record<string, { color: string; label: string }> = {
@@ -32,8 +34,20 @@ function timeAgo(dateStr: string): string {
   return `${days}d ago`
 }
 
-export default function ArtifactCard({ artifact, onViewLogs }: Props) {
+export default function ArtifactCard({ artifact, onViewLogs, onDelete }: Props) {
   const status = statusConfig[artifact.status] ?? statusConfig.pending
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await onDelete()
+    } catch {
+      setDeleting(false)
+      setConfirmDelete(false)
+    }
+  }
 
   return (
     <div className="artifact-card">
@@ -66,11 +80,36 @@ export default function ArtifactCard({ artifact, onViewLogs }: Props) {
       <div className="card-footer">
         <span className="card-time">Updated {timeAgo(artifact.updated_at)}</span>
         <div className="card-actions">
-          <button className="action-btn" onClick={onViewLogs}>Logs</button>
-          {artifact.url && (
-            <a href={artifact.url} target="_blank" rel="noopener noreferrer" className="action-btn action-primary">
-              Open
-            </a>
+          {confirmDelete ? (
+            <div className="confirm-delete">
+              <span className="confirm-text">Delete?</span>
+              <button
+                className="action-btn action-danger"
+                onClick={handleDelete}
+                disabled={deleting}
+              >
+                {deleting ? 'Deleting...' : 'Yes'}
+              </button>
+              <button
+                className="action-btn"
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleting}
+              >
+                No
+              </button>
+            </div>
+          ) : (
+            <>
+              <button className="action-btn action-danger-outline" onClick={() => setConfirmDelete(true)}>
+                Delete
+              </button>
+              <button className="action-btn" onClick={onViewLogs}>Logs</button>
+              {artifact.url && (
+                <a href={artifact.url} target="_blank" rel="noopener noreferrer" className="action-btn action-primary">
+                  Open
+                </a>
+              )}
+            </>
           )}
         </div>
       </div>

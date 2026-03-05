@@ -28,35 +28,36 @@
 
 ## Important (v1 Quality)
 
-- [ ] **#7 Silent store update failures**
+- [x] **#7 Silent store update failures**
   Six places in `orchestrator.go` use `_ = o.store.Update(ctx, artifact)`. If the ConfigMap store fails, artifact state becomes inconsistent.
   _Fix: Log store update errors with `slog.Warn`._
 
-- [ ] **#8 No max file size / max lines validation**
+- [x] **#8 No max file size / max lines validation**
   MCP tools accept arbitrarily large file maps (memory exhaustion) and unlimited log line requests.
-  _Fix: Cap at 50MB total files, 10,000 log lines._
+  _Fix: Added configurable `LimitsConfig` (maxTotalFileSize: 50MB, maxFileCount: 500, maxLogLines: 10000). Enforced in deploy/update/logs MCP tools. Configurable via YAML, Helm values, and env vars._
 
 - [ ] **#9 Duplicated code across deployers**
   `buildEnvVars()`, static file volume mounting, and `resolveURL()` are copy-pasted between `knative.go` and `kubernetes.go`.
   _Fix: Extract to shared helpers in `deployer/helpers.go`._
 
-- [ ] **#10 RBAC too permissive for pods**
+- [x] **#10 RBAC too permissive for pods**
   ClusterRole grants `create`, `update`, `delete` on pods. vibeD only needs `get`, `list`, `watch` (it creates Jobs, not bare pods).
-  _Fix: Split RBAC rules into logical groups._
+  _Fix: Split RBAC rules into logical groups — pods/pods-log now read-only._
 
-- [ ] **#11 Frontend missing delete button**
+- [x] **#11 Frontend missing delete button**
   Backend supports `delete_artifact` but the dashboard has no way to delete artifacts. Also missing: search/filter, copy URL.
+  _Fix: Added DELETE /api/artifacts/{id} handler, deleteArtifact() API client function, delete button with inline confirmation in ArtifactCard._
 
 - [ ] **#12 API client has no timeout**
   `fetch()` calls in `api/client.ts` can hang indefinitely.
   _Fix: Add `AbortController` with 30-second timeout._
 
-- [ ] **#13 Helm defaults not production-safe**
+- [x] **#13 Helm defaults not production-safe**
   - `image.tag: "latest"` with `pullPolicy: IfNotPresent` = stale images
   - `replicaCount: 1` = no HA
   - `auth.enabled: false` = no security
   - No `securityContext` (pod runs as root)
-  _Fix: Add comments, set safer defaults, add security context._
+  _Fix: Added podSecurityContext (runAsNonRoot, nobody user, seccomp), container securityContext (no privilege escalation, read-only rootfs, drop ALL caps), /tmp emptyDir, and documentation comments throughout values.yaml._
 
 ## Nice-to-Have (Post-v1)
 

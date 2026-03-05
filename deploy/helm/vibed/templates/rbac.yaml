@@ -5,26 +5,42 @@ metadata:
   labels:
     {{- include "vibed.labels" . | nindent 4 }}
 rules:
-  # Core resources for deploying artifacts
+  # --- Read-only: pod inspection and log retrieval ---
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "configmaps"]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+  # --- Services: vibeD creates/manages K8s Services for deployed artifacts ---
+  - apiGroups: [""]
+    resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
+
+  # --- ConfigMaps: artifact store + static file deployments ---
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+
+  # --- Deployments: plain Kubernetes deployment target ---
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
-  # Build jobs (Buildah)
+
+  # --- Build Jobs: Buildah container image builds ---
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
-  # Knative Serving
+
+  # --- Knative Serving: serverless deployment target ---
   - apiGroups: ["serving.knative.dev"]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
-  # wasmCloud OAM Applications
+
+  # --- wasmCloud OAM: WebAssembly deployment target ---
   - apiGroups: ["core.oam.dev"]
     resources: ["applications"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
-  # CRD detection
+
+  # --- CRD detection: auto-detect available deployment targets ---
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
     verbs: ["get", "list"]
