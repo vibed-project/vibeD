@@ -1,7 +1,6 @@
 package deployer
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
@@ -55,36 +54,16 @@ func (d *KubernetesDeployer) Deploy(ctx context.Context, artifact *api.Artifact)
 		Image:           artifact.ImageRef,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Ports:           []corev1.ContainerPort{{ContainerPort: int32(port)}},
-		Env:             buildEnvVars(artifact),
+		Env:             BuildEnvVars(artifact),
 	}
 
 	var volumes []corev1.Volume
 
 	// Static files: mount ConfigMap as nginx html + config
 	if artifact.StaticFiles != "" {
-		container.VolumeMounts = []corev1.VolumeMount{
-			{Name: "static-files", MountPath: "/usr/share/nginx/html"},
-			{Name: "nginx-conf", MountPath: "/etc/nginx/conf.d/default.conf", SubPath: "nginx.conf"},
-		}
-		volumes = []corev1.Volume{
-			{
-				Name: "static-files",
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: artifact.StaticFiles},
-					},
-				},
-			},
-			{
-				Name: "nginx-conf",
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: artifact.StaticFiles},
-						Items:                []corev1.KeyToPath{{Key: "nginx.conf", Path: "nginx.conf"}},
-					},
-				},
-			},
-		}
+		mounts, vols := StaticFileVolumes(artifact.StaticFiles)
+		container.VolumeMounts = mounts
+		volumes = vols
 	}
 
 	// Create Deployment
@@ -157,7 +136,7 @@ func (d *KubernetesDeployer) Update(ctx context.Context, artifact *api.Artifact)
 	}
 
 	existing.Spec.Template.Spec.Containers[0].Image = artifact.ImageRef
-	existing.Spec.Template.Spec.Containers[0].Env = buildEnvVars(artifact)
+	existing.Spec.Template.Spec.Containers[0].Env = BuildEnvVars(artifact)
 
 	_, err = d.clientset.AppsV1().Deployments(d.namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
@@ -198,41 +177,15 @@ func (d *KubernetesDeployer) GetURL(ctx context.Context, artifact *api.Artifact)
 }
 
 func (d *KubernetesDeployer) GetLogs(ctx context.Context, artifact *api.Artifact, lines int) ([]string, error) {
-	tailLines := int64(lines)
-	pods, err := d.clientset.CoreV1().Pods(d.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", artifact.Name),
-	})
+	selector := fmt.Sprintf("app=%s", artifact.Name)
+	logLines, err := FetchPodLogs(ctx, d.clientset, d.namespace, selector, "", lines)
 	if err != nil {
-		return nil, fmt.Errorf("listing pods: %w", err)
+		return nil, err
 	}
-	if len(pods.Items) == 0 {
+	if logLines == nil {
 		return []string{"(no pods found)"}, nil
 	}
-
-	pod := pods.Items[0]
-	req := d.clientset.CoreV1().Pods(d.namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		TailLines: &tailLines,
-	})
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("streaming logs: %w", err)
-	}
-	defer stream.Close()
-
-	var logLines []string
-	scanner := bufio.NewScanner(stream)
-	for scanner.Scan() {
-		logLines = append(logLines, scanner.Text())
-	}
-	return logLines, scanner.Err()
-}
-
-func buildEnvVars(artifact *api.Artifact) []corev1.EnvVar {
-	var envVars []corev1.EnvVar
-	for k, v := range artifact.EnvVars {
-		envVars = append(envVars, corev1.EnvVar{Name: k, Value: v})
-	}
-	return envVars
+	return logLines, nil
 }
 
 func (d *KubernetesDeployer) resolveURL(svc *corev1.Service) string {

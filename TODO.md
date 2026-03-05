@@ -36,9 +36,9 @@
   MCP tools accept arbitrarily large file maps (memory exhaustion) and unlimited log line requests.
   _Fix: Added configurable `LimitsConfig` (maxTotalFileSize: 50MB, maxFileCount: 500, maxLogLines: 10000). Enforced in deploy/update/logs MCP tools. Configurable via YAML, Helm values, and env vars._
 
-- [ ] **#9 Duplicated code across deployers**
-  `buildEnvVars()`, static file volume mounting, and `resolveURL()` are copy-pasted between `knative.go` and `kubernetes.go`.
-  _Fix: Extract to shared helpers in `deployer/helpers.go`._
+- [x] **#9 Duplicated code across deployers**
+  `buildEnvVars()`, static file volume mounting, and `GetLogs()` were copy-pasted across deployers.
+  _Fix: Extracted `BuildEnvVars()`, `StaticFileVolumes()`, and `FetchPodLogs()` to `deployer/helpers.go`. All three deployers now use shared helpers._
 
 - [x] **#10 RBAC too permissive for pods**
   ClusterRole grants `create`, `update`, `delete` on pods. vibeD only needs `get`, `list`, `watch` (it creates Jobs, not bare pods).
@@ -48,9 +48,9 @@
   Backend supports `delete_artifact` but the dashboard has no way to delete artifacts. Also missing: search/filter, copy URL.
   _Fix: Added DELETE /api/artifacts/{id} handler, deleteArtifact() API client function, delete button with inline confirmation in ArtifactCard._
 
-- [ ] **#12 API client has no timeout**
-  `fetch()` calls in `api/client.ts` can hang indefinitely.
-  _Fix: Add `AbortController` with 30-second timeout._
+- [x] **#12 API client has no timeout**
+  `fetch()` calls in `api/client.ts` could hang indefinitely.
+  _Fix: Added `fetchWithTimeout()` wrapper using `AbortController` with 30-second timeout. All 5 API functions now use it._
 
 - [x] **#13 Helm defaults not production-safe**
   - `image.tag: "latest"` with `pullPolicy: IfNotPresent` = stale images

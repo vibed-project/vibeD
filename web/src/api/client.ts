@@ -30,34 +30,45 @@ export interface LogsResponse {
 }
 
 const BASE = '';
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+async function fetchWithTimeout(url: string, opts?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
 
 export async function fetchArtifacts(status?: string): Promise<ArtifactSummary[]> {
   const params = status ? `?status=${status}` : '';
-  const res = await fetch(`${BASE}/api/artifacts${params}`);
+  const res = await fetchWithTimeout(`${BASE}/api/artifacts${params}`);
   if (!res.ok) throw new Error(`Failed to fetch artifacts: ${res.statusText}`);
   const data = await res.json();
   return data ?? [];
 }
 
 export async function fetchArtifact(id: string): Promise<Artifact> {
-  const res = await fetch(`${BASE}/api/artifacts/${id}`);
+  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}`);
   if (!res.ok) throw new Error(`Failed to fetch artifact: ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchLogs(id: string): Promise<LogsResponse> {
-  const res = await fetch(`${BASE}/api/artifacts/${id}/logs`);
+  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}/logs`);
   if (!res.ok) throw new Error(`Failed to fetch logs: ${res.statusText}`);
   return res.json();
 }
 
 export async function deleteArtifact(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/api/artifacts/${id}`, { method: 'DELETE' });
+  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`Failed to delete artifact: ${res.statusText}`);
 }
 
 export async function fetchTargets(): Promise<TargetInfo[]> {
-  const res = await fetch(`${BASE}/api/targets`);
+  const res = await fetchWithTimeout(`${BASE}/api/targets`);
   if (!res.ok) throw new Error(`Failed to fetch targets: ${res.statusText}`);
   return res.json();
 }

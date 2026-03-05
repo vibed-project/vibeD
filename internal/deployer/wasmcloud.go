@@ -1,7 +1,6 @@
 package deployer
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,8 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-
-	corev1 "k8s.io/api/core/v1"
 )
 
 var applicationGVR = schema.GroupVersionResource{
@@ -96,33 +93,15 @@ func (d *WasmCloudDeployer) GetURL(_ context.Context, artifact *api.Artifact) (s
 }
 
 func (d *WasmCloudDeployer) GetLogs(ctx context.Context, artifact *api.Artifact, lines int) ([]string, error) {
-	tailLines := int64(lines)
-	pods, err := d.k8sClientset.CoreV1().Pods(d.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", artifact.Name),
-	})
+	selector := fmt.Sprintf("app=%s", artifact.Name)
+	logLines, err := FetchPodLogs(ctx, d.k8sClientset, d.namespace, selector, "", lines)
 	if err != nil {
-		return nil, fmt.Errorf("listing pods: %w", err)
+		return nil, err
 	}
-	if len(pods.Items) == 0 {
+	if logLines == nil {
 		return []string{"(no pods found for wasmCloud application)"}, nil
 	}
-
-	pod := pods.Items[0]
-	req := d.k8sClientset.CoreV1().Pods(d.namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		TailLines: &tailLines,
-	})
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("streaming logs: %w", err)
-	}
-	defer stream.Close()
-
-	var logLines []string
-	scanner := bufio.NewScanner(stream)
-	for scanner.Scan() {
-		logLines = append(logLines, scanner.Text())
-	}
-	return logLines, scanner.Err()
+	return logLines, nil
 }
 
 // buildApplication creates an OAM Application manifest for wasmCloud.

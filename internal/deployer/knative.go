@@ -1,7 +1,6 @@
 package deployer
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
@@ -80,7 +79,7 @@ func (d *KnativeDeployer) Update(ctx context.Context, artifact *api.Artifact) (*
 	}
 
 	existing.Spec.Template.Spec.Containers[0].Image = artifact.ImageRef
-	existing.Spec.Template.Spec.Containers[0].Env = d.buildEnvVars(artifact)
+	existing.Spec.Template.Spec.Containers[0].Env = BuildEnvVars(artifact)
 	if artifact.Port > 0 {
 		existing.Spec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: int32(artifact.Port)}}
 	}
@@ -116,34 +115,15 @@ func (d *KnativeDeployer) GetURL(ctx context.Context, artifact *api.Artifact) (s
 }
 
 func (d *KnativeDeployer) GetLogs(ctx context.Context, artifact *api.Artifact, lines int) ([]string, error) {
-	tailLines := int64(lines)
-	pods, err := d.k8sClientset.CoreV1().Pods(d.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("serving.knative.dev/service=%s", artifact.Name),
-	})
+	selector := fmt.Sprintf("serving.knative.dev/service=%s", artifact.Name)
+	logLines, err := FetchPodLogs(ctx, d.k8sClientset, d.namespace, selector, "user-container", lines)
 	if err != nil {
-		return nil, fmt.Errorf("listing pods: %w", err)
+		return nil, err
 	}
-	if len(pods.Items) == 0 {
+	if logLines == nil {
 		return []string{"(no pods found - service may be scaled to zero)"}, nil
 	}
-
-	pod := pods.Items[0]
-	req := d.k8sClientset.CoreV1().Pods(d.namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		TailLines: &tailLines,
-		Container: "user-container",
-	})
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("streaming logs: %w", err)
-	}
-	defer stream.Close()
-
-	var logLines []string
-	scanner := bufio.NewScanner(stream)
-	for scanner.Scan() {
-		logLines = append(logLines, scanner.Text())
-	}
-	return logLines, scanner.Err()
+	return logLines, nil
 }
 
 func (d *KnativeDeployer) buildService(artifact *api.Artifact) *knservingv1.Service {
@@ -151,7 +131,7 @@ func (d *KnativeDeployer) buildService(artifact *api.Artifact) *knservingv1.Serv
 		{
 			Image:           artifact.ImageRef,
 			ImagePullPolicy: corev1.PullIfNotPresent,
-			Env:             d.buildEnvVars(artifact),
+			Env:             BuildEnvVars(artifact),
 		},
 	}
 
@@ -165,29 +145,9 @@ func (d *KnativeDeployer) buildService(artifact *api.Artifact) *knservingv1.Serv
 
 	// Static files: mount ConfigMap as nginx html + config
 	if artifact.StaticFiles != "" {
-		containers[0].VolumeMounts = []corev1.VolumeMount{
-			{Name: "static-files", MountPath: "/usr/share/nginx/html"},
-			{Name: "nginx-conf", MountPath: "/etc/nginx/conf.d/default.conf", SubPath: "nginx.conf"},
-		}
-		volumes = []corev1.Volume{
-			{
-				Name: "static-files",
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: artifact.StaticFiles},
-					},
-				},
-			},
-			{
-				Name: "nginx-conf",
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{Name: artifact.StaticFiles},
-						Items:                []corev1.KeyToPath{{Key: "nginx.conf", Path: "nginx.conf"}},
-					},
-				},
-			},
-		}
+		mounts, vols := StaticFileVolumes(artifact.StaticFiles)
+		containers[0].VolumeMounts = mounts
+		volumes = vols
 	}
 
 	return &knservingv1.Service{
@@ -212,14 +172,6 @@ func (d *KnativeDeployer) buildService(artifact *api.Artifact) *knservingv1.Serv
 			},
 		},
 	}
-}
-
-func (d *KnativeDeployer) buildEnvVars(artifact *api.Artifact) []corev1.EnvVar {
-	var envVars []corev1.EnvVar
-	for k, v := range artifact.EnvVars {
-		envVars = append(envVars, corev1.EnvVar{Name: k, Value: v})
-	}
-	return envVars
 }
 
 func (d *KnativeDeployer) resolveURL(svc *knservingv1.Service) string {
