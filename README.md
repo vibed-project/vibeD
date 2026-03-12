@@ -31,7 +31,7 @@ vibeD bridges AI coding tools (Claude, Gemini, ChatGPT) with your own Kubernetes
 ### Build
 
 ```bash
-git clone https://github.com/maxkorbacher/vibed.git
+git clone https://github.com/vibed-project/vibeD.git
 cd vibed
 make build
 ```

@@ -54,7 +54,7 @@ AI Coding Tool (Claude, Gemini, etc.)
 
 ```bash
 # Clone and build
-git clone https://github.com/maxkorbacher/vibed.git
+git clone https://github.com/vibed-project/vibeD.git
 cd vibed
 make build
 
