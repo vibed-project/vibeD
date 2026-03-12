@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maxkorbacher/vibed/internal/config"
-	"github.com/maxkorbacher/vibed/internal/deployer"
-	"github.com/maxkorbacher/vibed/internal/k8s"
-	"github.com/maxkorbacher/vibed/pkg/api"
-	"github.com/maxkorbacher/vibed/tests/testutil"
+	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/deployer"
+	"github.com/vibed-project/vibeD/internal/k8s"
+	"github.com/vibed-project/vibeD/pkg/api"
+	"github.com/vibed-project/vibeD/tests/testutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

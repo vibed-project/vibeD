@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maxkorbacher/vibed/internal/config"
+	"github.com/vibed-project/vibeD/internal/config"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"

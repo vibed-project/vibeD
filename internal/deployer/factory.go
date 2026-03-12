@@ -3,7 +3,7 @@ package deployer
 import (
 	"fmt"
 
-	"github.com/maxkorbacher/vibed/pkg/api"
+	"github.com/vibed-project/vibeD/pkg/api"
 )
 
 // Factory provides the right Deployer based on the selected deployment target.

@@ -1,4 +1,4 @@
-module github.com/maxkorbacher/vibed
+module github.com/vibed-project/vibeD
 
 go 1.25.5
 

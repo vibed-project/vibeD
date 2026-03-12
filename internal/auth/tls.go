@@ -15,7 +15,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/maxkorbacher/vibed/internal/config"
+	"github.com/vibed-project/vibeD/internal/config"
 )
 
 // NewTLSConfig creates a *tls.Config based on the TLS configuration.

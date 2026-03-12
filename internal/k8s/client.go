@@ -3,7 +3,7 @@ package k8s
 import (
 	"fmt"
 
-	"github.com/maxkorbacher/vibed/internal/config"
+	"github.com/vibed-project/vibeD/internal/config"
 
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"

@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/maxkorbacher/vibed/internal/health"
+	"github.com/vibed-project/vibeD/internal/health"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

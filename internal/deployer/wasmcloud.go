@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/maxkorbacher/vibed/internal/config"
-	"github.com/maxkorbacher/vibed/pkg/api"
+	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/pkg/api"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"

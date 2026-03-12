@@ -3,7 +3,7 @@ package mcp
 import (
 	"fmt"
 
-	"github.com/maxkorbacher/vibed/internal/config"
+	"github.com/vibed-project/vibeD/internal/config"
 )
 
 // validateFileLimits checks that the file map is within configured limits.

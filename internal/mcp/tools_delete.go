@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/maxkorbacher/vibed/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/orchestrator"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

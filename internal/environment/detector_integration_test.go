@@ -7,10 +7,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/maxkorbacher/vibed/internal/environment"
-	"github.com/maxkorbacher/vibed/internal/k8s"
-	"github.com/maxkorbacher/vibed/pkg/api"
-	"github.com/maxkorbacher/vibed/tests/testutil"
+	"github.com/vibed-project/vibeD/internal/environment"
+	"github.com/vibed-project/vibeD/internal/k8s"
+	"github.com/vibed-project/vibeD/pkg/api"
+	"github.com/vibed-project/vibeD/tests/testutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

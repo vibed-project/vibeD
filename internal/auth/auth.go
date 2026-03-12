@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maxkorbacher/vibed/internal/config"
+	"github.com/vibed-project/vibeD/internal/config"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 )

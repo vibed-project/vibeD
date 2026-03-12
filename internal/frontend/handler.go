@@ -6,9 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	vibedauth "github.com/maxkorbacher/vibed/internal/auth"
-	"github.com/maxkorbacher/vibed/internal/config"
-	"github.com/maxkorbacher/vibed/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/orchestrator"
 )
 
 // NewHandler creates an HTTP handler that serves the frontend and REST API.

@@ -3,7 +3,7 @@ package deployer
 import (
 	"context"
 
-	"github.com/maxkorbacher/vibed/pkg/api"
+	"github.com/vibed-project/vibeD/pkg/api"
 )
 
 // DeployResult contains the outcome of a deployment.

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	vibedauth "github.com/maxkorbacher/vibed/internal/auth"
-	"github.com/maxkorbacher/vibed/internal/config"
+	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/config"
 )
 
 // UserStorageRouter implements the Storage interface and routes each storage

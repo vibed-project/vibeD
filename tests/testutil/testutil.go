@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maxkorbacher/vibed/internal/config"
-	"github.com/maxkorbacher/vibed/internal/k8s"
+	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/k8s"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

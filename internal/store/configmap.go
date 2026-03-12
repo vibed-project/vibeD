@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/maxkorbacher/vibed/pkg/api"
+	"github.com/vibed-project/vibeD/pkg/api"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"

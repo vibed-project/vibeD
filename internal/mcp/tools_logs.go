@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/maxkorbacher/vibed/internal/config"
-	"github.com/maxkorbacher/vibed/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/orchestrator"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

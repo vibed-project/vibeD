@@ -3,8 +3,8 @@ package environment
 import (
 	"log/slog"
 
-	"github.com/maxkorbacher/vibed/internal/k8s"
-	"github.com/maxkorbacher/vibed/pkg/api"
+	"github.com/vibed-project/vibeD/internal/k8s"
+	"github.com/vibed-project/vibeD/pkg/api"
 
 	"k8s.io/client-go/discovery"
 )

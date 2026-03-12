@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"github.com/maxkorbacher/vibed/pkg/api"
+	"github.com/vibed-project/vibeD/pkg/api"
 )
 
 // ArtifactStore persists artifact metadata and state.

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/maxkorbacher/vibed/internal/config"
+	"github.com/vibed-project/vibeD/internal/config"
 
 	pack "github.com/buildpacks/pack/pkg/client"
 	"github.com/buildpacks/pack/pkg/image"

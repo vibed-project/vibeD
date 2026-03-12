@@ -15,7 +15,7 @@ sidebar_position: 1
 ## Build from Source
 
 ```bash
-git clone https://github.com/maxkorbacher/vibed.git
+git clone https://github.com/vibed-project/vibeD.git
 cd vibed
 
 # Build frontend + backend

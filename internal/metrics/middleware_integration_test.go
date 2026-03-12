@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maxkorbacher/vibed/internal/metrics"
+	"github.com/vibed-project/vibeD/internal/metrics"
 
 	"github.com/prometheus/client_golang/prometheus"
 	io_prometheus_client "github.com/prometheus/client_model/go"

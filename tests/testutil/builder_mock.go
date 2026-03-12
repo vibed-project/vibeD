@@ -6,7 +6,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/maxkorbacher/vibed/internal/builder"
+	"github.com/vibed-project/vibeD/internal/builder"
 )
 
 // MockBuilder implements builder.Builder by returning a fixed image reference

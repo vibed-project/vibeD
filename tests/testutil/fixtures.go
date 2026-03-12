@@ -3,7 +3,7 @@
 package testutil
 
 import (
-	"github.com/maxkorbacher/vibed/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/orchestrator"
 )
 
 // TestImage is the container image used by MockBuilder.

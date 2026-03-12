@@ -17,7 +17,7 @@ const config = {
       ({
         docs: {
           sidebarPath: './sidebars.js',
-          editUrl: 'https://github.com/vibed-project/vibed/tree/main/docs/',
+          editUrl: 'https://github.com/vibed-project/vibeD/tree/main/docs/',
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -39,7 +39,7 @@ const config = {
             label: 'Docs',
           },
           {
-            href: 'https://github.com/vibed-project/vibed',
+            href: 'https://github.com/vibed-project/vibeD',
             label: 'GitHub',
             position: 'right',
           },

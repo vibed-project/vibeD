@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maxkorbacher/vibed/internal/store"
-	"github.com/maxkorbacher/vibed/pkg/api"
-	"github.com/maxkorbacher/vibed/tests/testutil"
+	"github.com/vibed-project/vibeD/internal/store"
+	"github.com/vibed-project/vibeD/pkg/api"
+	"github.com/vibed-project/vibeD/tests/testutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

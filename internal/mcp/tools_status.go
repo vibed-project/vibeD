@@ -3,8 +3,8 @@ package mcp
 import (
 	"context"
 
-	"github.com/maxkorbacher/vibed/internal/orchestrator"
-	"github.com/maxkorbacher/vibed/pkg/api"
+	"github.com/vibed-project/vibeD/internal/orchestrator"
+	"github.com/vibed-project/vibeD/pkg/api"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
