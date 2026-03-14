@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,6 +24,7 @@ type Config struct {
 	Knative      KnativeConfig      `yaml:"knative"`
 	WasmCloud    WasmCloudConfig    `yaml:"wasmcloud"`
 	Limits       LimitsConfig       `yaml:"limits"`
+	GC           GCConfig           `yaml:"gc"`
 }
 
 // OrganizationConfig holds the organization identity.
@@ -88,6 +90,8 @@ type TLSConf struct {
 type ServerConfig struct {
 	Transport string `yaml:"transport"` // "stdio", "http", or "both"
 	HTTPAddr  string `yaml:"httpAddr"`
+	LogFormat string `yaml:"logFormat"` // "text" (default) or "json"
+	LogLevel  string `yaml:"logLevel"`  // "debug", "info" (default), "warn", "error"
 }
 
 type DeploymentConfig struct {
@@ -145,8 +149,14 @@ type RegistryConfig struct {
 }
 
 type StoreConfig struct {
-	Backend   string          `yaml:"backend"` // "memory" or "configmap"
+	Backend   string          `yaml:"backend"` // "sqlite" (default), "memory", or "configmap"
 	ConfigMap ConfigMapConfig `yaml:"configmap"`
+	SQLite    SQLiteConfig    `yaml:"sqlite"`
+}
+
+// SQLiteConfig configures the SQLite artifact store.
+type SQLiteConfig struct {
+	Path string `yaml:"path"` // Database file path (e.g. "/data/vibed.db")
 }
 
 type ConfigMapConfig struct {
@@ -162,6 +172,15 @@ type KubernetesConfig struct {
 type KnativeConfig struct {
 	DomainSuffix string `yaml:"domainSuffix"`
 	IngressClass string `yaml:"ingressClass"`
+	GatewayPort  int    `yaml:"gatewayPort"` // External port for the ingress gateway (e.g. 31080 for NodePort); 0 or 80 = omitted from URLs
+}
+
+// GCConfig configures the resource garbage collector.
+type GCConfig struct {
+	Enabled  bool   `yaml:"enabled"`  // Enable garbage collection (default: true)
+	Interval string `yaml:"interval"` // GC cycle interval (default: "1h")
+	MaxAge   string `yaml:"maxAge"`   // Age threshold for orphaned resources (default: "24h")
+	DryRun   bool   `yaml:"dryRun"`   // Log without deleting (default: false)
 }
 
 // WasmCloudConfig holds wasmCloud-specific configuration.
@@ -183,6 +202,8 @@ func Default() *Config {
 		Server: ServerConfig{
 			Transport: "stdio",
 			HTTPAddr:  ":8080",
+			LogFormat: "text",
+			LogLevel:  "info",
 		},
 		Deployment: DeploymentConfig{
 			PreferredTarget: "auto",
@@ -215,10 +236,13 @@ func Default() *Config {
 			Enabled: false,
 		},
 		Store: StoreConfig{
-			Backend: "memory",
+			Backend: "sqlite",
 			ConfigMap: ConfigMapConfig{
 				Name:      "vibed-artifacts",
 				Namespace: "vibed-system",
+			},
+			SQLite: SQLiteConfig{
+				Path: "/data/vibed.db",
 			},
 		},
 		Knative: KnativeConfig{
@@ -236,6 +260,12 @@ func Default() *Config {
 			MaxTotalFileSize: 50 * 1024 * 1024, // 50 MB
 			MaxFileCount:     500,
 			MaxLogLines:      10000,
+		},
+		GC: GCConfig{
+			Enabled:  true,
+			Interval: "1h",
+			MaxAge:   "24h",
+			DryRun:   false,
 		},
 	}
 }
@@ -277,6 +307,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("VIBED_SERVER_HTTP_ADDR"); v != "" {
 		cfg.Server.HTTPAddr = v
+	}
+	if v := os.Getenv("VIBED_LOG_FORMAT"); v != "" {
+		cfg.Server.LogFormat = v
+	}
+	if v := os.Getenv("VIBED_LOG_LEVEL"); v != "" {
+		cfg.Server.LogLevel = v
 	}
 	if v := os.Getenv("VIBED_DEPLOYMENT_PREFERRED_TARGET"); v != "" {
 		cfg.Deployment.PreferredTarget = v
@@ -320,11 +356,19 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VIBED_STORE_BACKEND"); v != "" {
 		cfg.Store.Backend = v
 	}
+	if v := os.Getenv("VIBED_STORE_SQLITE_PATH"); v != "" {
+		cfg.Store.SQLite.Path = v
+	}
 	if v := os.Getenv("KUBECONFIG"); v != "" && cfg.Kubernetes.Kubeconfig == "" {
 		cfg.Kubernetes.Kubeconfig = v
 	}
 	if v := os.Getenv("VIBED_KNATIVE_DOMAIN_SUFFIX"); v != "" {
 		cfg.Knative.DomainSuffix = v
+	}
+	if v := os.Getenv("VIBED_KNATIVE_GATEWAY_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Knative.GatewayPort = n
+		}
 	}
 	if v := os.Getenv("VIBED_WASMCLOUD_LATTICE_ID"); v != "" {
 		cfg.WasmCloud.LatticeID = v
@@ -385,12 +429,35 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Limits.MaxLogLines = n
 		}
 	}
+
+	// GC overrides
+	if v := os.Getenv("VIBED_GC_ENABLED"); v != "" {
+		cfg.GC.Enabled, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("VIBED_GC_INTERVAL"); v != "" {
+		cfg.GC.Interval = v
+	}
+	if v := os.Getenv("VIBED_GC_MAX_AGE"); v != "" {
+		cfg.GC.MaxAge = v
+	}
+	if v := os.Getenv("VIBED_GC_DRY_RUN"); v != "" {
+		cfg.GC.DryRun, _ = strconv.ParseBool(v)
+	}
 }
 
 func validate(cfg *Config) error {
 	validTransports := map[string]bool{"stdio": true, "http": true, "both": true}
 	if !validTransports[cfg.Server.Transport] {
 		return fmt.Errorf("server.transport must be one of: stdio, http, both (got %q)", cfg.Server.Transport)
+	}
+
+	validLogFormats := map[string]bool{"text": true, "json": true}
+	if !validLogFormats[cfg.Server.LogFormat] {
+		return fmt.Errorf("server.logFormat must be 'text' or 'json' (got %q)", cfg.Server.LogFormat)
+	}
+	validLogLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+	if !validLogLevels[cfg.Server.LogLevel] {
+		return fmt.Errorf("server.logLevel must be one of: debug, info, warn, error (got %q)", cfg.Server.LogLevel)
 	}
 
 	validTargets := map[string]bool{"auto": true, "knative": true, "kubernetes": true, "wasmcloud": true}
@@ -415,9 +482,13 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	validStoreBackends := map[string]bool{"memory": true, "configmap": true}
+	validStoreBackends := map[string]bool{"memory": true, "configmap": true, "sqlite": true}
 	if !validStoreBackends[cfg.Store.Backend] {
-		return fmt.Errorf("store.backend must be one of: memory, configmap (got %q)", cfg.Store.Backend)
+		return fmt.Errorf("store.backend must be one of: memory, configmap, sqlite (got %q)", cfg.Store.Backend)
+	}
+
+	if cfg.Store.Backend == "sqlite" && cfg.Store.SQLite.Path == "" {
+		return fmt.Errorf("store.sqlite.path is required when store.backend is sqlite")
 	}
 
 	validEngines := map[string]bool{"pack": true, "buildah": true}
@@ -455,6 +526,16 @@ func validate(cfg *Config) error {
 		hasCerts := cfg.Auth.TLS.CertFile != "" && cfg.Auth.TLS.KeyFile != ""
 		if !hasCerts && !cfg.Auth.TLS.AutoTLS {
 			return fmt.Errorf("TLS enabled but no certificate configured: set certFile/keyFile or enable autoTLS")
+		}
+	}
+
+	// Validate GC config
+	if cfg.GC.Enabled {
+		if _, err := time.ParseDuration(cfg.GC.Interval); err != nil {
+			return fmt.Errorf("gc.interval must be a valid duration (got %q): %w", cfg.GC.Interval, err)
+		}
+		if _, err := time.ParseDuration(cfg.GC.MaxAge); err != nil {
+			return fmt.Errorf("gc.maxAge must be a valid duration (got %q): %w", cfg.GC.MaxAge, err)
 		}
 	}
 

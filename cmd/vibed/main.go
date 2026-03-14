@@ -17,7 +17,9 @@ import (
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deployer"
 	"github.com/vibed-project/vibeD/internal/environment"
+	"github.com/vibed-project/vibeD/internal/events"
 	"github.com/vibed-project/vibeD/internal/frontend"
+	"github.com/vibed-project/vibeD/internal/gc"
 	"github.com/vibed-project/vibeD/internal/health"
 	"github.com/vibed-project/vibeD/internal/k8s"
 	mcppkg "github.com/vibed-project/vibeD/internal/mcp"
@@ -41,6 +43,7 @@ func main() {
 	flag.StringVar(&transport, "transport", "", "Override transport: stdio, http, or both")
 	flag.Parse()
 
+	// Bootstrap logger for config loading (always text, info level).
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	cfg, err := config.Load(configPath)
@@ -52,6 +55,9 @@ func main() {
 	if transport != "" {
 		cfg.Server.Transport = transport
 	}
+
+	// Replace logger with configured format and level.
+	logger = newLogger(cfg.Server)
 
 	logger.Info("starting vibeD",
 		"transport", cfg.Server.Transport,
@@ -170,6 +176,14 @@ func main() {
 			cfg.Store.ConfigMap.Name,
 			cfg.Store.ConfigMap.Namespace,
 		)
+	case "sqlite":
+		sqliteStore, err := store.NewSQLiteStore(cfg.Store.SQLite.Path)
+		if err != nil {
+			logger.Error("failed to open SQLite store", "error", err, "path", cfg.Store.SQLite.Path)
+			os.Exit(1)
+		}
+		defer sqliteStore.Close()
+		st = sqliteStore
 	default:
 		logger.Error("unsupported store backend", "backend", cfg.Store.Backend)
 		os.Exit(1)
@@ -212,7 +226,27 @@ func main() {
 	)
 
 	// Create orchestrator
-	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, wasmBldr, factory, stg, st, m, k8sClients.Clientset, logger)
+	// Create event bus for SSE streaming
+	bus := events.NewEventBus()
+
+	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, wasmBldr, factory, stg, st, m, k8sClients.Clientset, bus, logger)
+
+	// Start garbage collector
+	if cfg.GC.Enabled {
+		collector, err := gc.NewGarbageCollector(
+			k8sClients.Clientset, st, cfg.Deployment.Namespace,
+			cfg.GC, m, logger,
+		)
+		if err != nil {
+			logger.Error("failed to create garbage collector", "error", err)
+			os.Exit(1)
+		}
+		// GC runs in background; ctx from signal.NotifyContext will stop it on shutdown.
+		// We create ctx early here so GC can start before the transport blocks.
+		gcCtx, gcCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer gcCancel()
+		go collector.Run(gcCtx)
+	}
 
 	// Create MCP server
 	mcpServer := mcppkg.NewServer(orch, cfg.Limits)
@@ -247,10 +281,10 @@ func main() {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, authMiddleware, tlsConfig, logger)
+		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, logger)
 
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, authMiddleware, tlsConfig, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -263,7 +297,7 @@ func main() {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, logger *slog.Logger) {
 	mux := http.NewServeMux()
 
 	// Health check endpoints (always unauthenticated)
@@ -281,7 +315,7 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	mux.Handle("/mcp/", mcpHandler)
 
 	// Frontend + API
-	frontendHandler := frontend.NewHandler(orch, cfg)
+	frontendHandler := frontend.NewHandler(orch, cfg, bus, m)
 	mux.Handle("/", frontendHandler)
 
 	// Build handler chain: role → auth (selective) → metrics → mux
@@ -324,4 +358,27 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 			os.Exit(1)
 		}
 	}
+}
+
+// newLogger creates a slog.Logger based on the server configuration.
+func newLogger(cfg config.ServerConfig) *slog.Logger {
+	level := slog.LevelInfo
+	switch cfg.LogLevel {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+
+	var handler slog.Handler
+	if cfg.LogFormat == "json" {
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, opts)
+	}
+	return slog.New(handler)
 }

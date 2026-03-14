@@ -1,0 +1,70 @@
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "vibed.fullname" . }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: vibed.rules
+      rules:
+        - alert: VibeDHighConcurrentBuilds
+          expr: vibed_builds_in_flight > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Too many concurrent builds ({{ "{{ $value }}" }})"
+
+        - alert: VibeDHighBuildFailureRate
+          expr: rate(vibed_builds_total{status="error"}[5m]) > 0.1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Build failure rate is elevated"
+
+        - alert: VibeDHighDeployFailureRate
+          expr: rate(vibed_deploys_total{status="error"}[5m]) > 0.1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Deploy failure rate is elevated"
+
+        - alert: VibeDHighArtifactCount
+          expr: sum(vibed_artifacts_active) > 100
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High number of active artifacts ({{ "{{ $value }}" }})"
+
+        - alert: VibeDSlowBuilds
+          expr: histogram_quantile(0.99, rate(vibed_build_duration_seconds_bucket[10m])) > 300
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "P99 build duration exceeds 5 minutes"
+
+        - alert: VibeDGCHighCleanupRate
+          expr: rate(vibed_gc_resources_cleaned_total[1h]) > 10
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GC is cleaning many orphaned resources ({{ "{{ $value }}" }}/hr)"
+
+        - alert: VibeDHighSSEConnections
+          expr: vibed_sse_connections_active > 100
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High number of SSE connections ({{ "{{ $value }}" }})"
+{{- end }}

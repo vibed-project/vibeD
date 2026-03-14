@@ -45,6 +45,17 @@ deploy_artifact called
 
 If any step fails, the artifact transitions to `failed` with an error message explaining what went wrong.
 
+## Real-Time Events
+
+Every state transition emits a Server-Sent Event through the EventBus. Connected dashboard clients (and any SSE subscriber at `GET /api/events`) receive these transitions instantly, without polling.
+
+| Event Type | Trigger |
+|------------|---------|
+| `artifact.status_changed` | Any status transition (pending → building → deploying → running, or → failed) |
+| `artifact.deleted` | Artifact removed from the cluster and store |
+
+Each event payload includes the `artifact_id`, new `status`, optional `error`, and a `timestamp`. The dashboard uses these events to update the artifact list in real time, fetching full artifact details on status changes and removing entries on deletion.
+
 ## Ownership
 
 When [authentication](../configuration/authentication.md) is enabled, each artifact is stamped with the deploying user's identity (`owner_id`). This ensures:

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: vibed-observability
+description: Observability stack for vibeD local development (Prometheus + Grafana)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: kube-prometheus-stack
+    version: "~68.0"
+    repository: https://prometheus-community.github.io/helm-charts

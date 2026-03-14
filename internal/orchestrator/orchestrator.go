@@ -16,6 +16,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deployer"
 	"github.com/vibed-project/vibeD/internal/environment"
+	"github.com/vibed-project/vibeD/internal/events"
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
@@ -30,12 +31,13 @@ var dnsNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // DeployRequest is the input for deploying a new artifact.
 type DeployRequest struct {
-	Name     string
-	Files    map[string]string
-	Language string
-	Target   string
-	EnvVars  map[string]string
-	Port     int
+	Name       string
+	Files      map[string]string
+	Language   string
+	Target     string
+	EnvVars    map[string]string
+	SecretRefs map[string]string // env var name → "secret-name:key"
+	Port       int
 }
 
 // UpdateRequest is the input for updating an existing artifact.
@@ -43,6 +45,7 @@ type UpdateRequest struct {
 	ArtifactID string
 	Files      map[string]string
 	EnvVars    map[string]string
+	SecretRefs map[string]string
 }
 
 // DeployResult is the output of a successful deployment.
@@ -66,6 +69,7 @@ type Orchestrator struct {
 	store       store.ArtifactStore
 	metrics     *metrics.Metrics
 	clientset   kubernetes.Interface
+	events      *events.EventBus
 	imageBase   string
 	logger      *slog.Logger
 }
@@ -81,6 +85,7 @@ func NewOrchestrator(
 	st store.ArtifactStore,
 	m *metrics.Metrics,
 	clientset kubernetes.Interface,
+	bus *events.EventBus,
 	logger *slog.Logger,
 ) *Orchestrator {
 	imageBase := "vibed-artifacts"
@@ -98,6 +103,7 @@ func NewOrchestrator(
 		store:       st,
 		metrics:     m,
 		clientset:   clientset,
+		events:      bus,
 		imageBase:   imageBase,
 		logger:      logger,
 	}
@@ -117,6 +123,23 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	for path := range req.Files {
 		if err := validateFilePath(path); err != nil {
 			return nil, err
+		}
+	}
+
+	// 1d. Validate port range (0 means "auto-detect", so only check explicit values)
+	if req.Port != 0 && (req.Port < 1 || req.Port > 65535) {
+		return nil, fmt.Errorf("invalid port %d: must be between 1 and 65535", req.Port)
+	}
+
+	// 1e. Validate and verify secret references
+	for envName, ref := range req.SecretRefs {
+		parts := strings.SplitN(ref, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid secret_ref %q for %s: must be in format 'secret-name:key'", ref, envName)
+		}
+		_, err := o.clientset.CoreV1().Secrets(o.cfg.Deployment.Namespace).Get(ctx, parts[0], metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("secret %q referenced by %s not found: %w", parts[0], envName, err)
 		}
 	}
 
@@ -141,10 +164,11 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 		OwnerID:   vibedauth.UserIDFromContext(ctx),
 		Status:    api.StatusPending,
 		Language:  req.Language,
-		EnvVars:   req.EnvVars,
-		Port:      req.Port,
-		CreatedAt: now,
-		UpdatedAt: now,
+		EnvVars:    req.EnvVars,
+		SecretRefs: req.SecretRefs,
+		Port:       req.Port,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 
 	// 3. Create artifact record
@@ -277,6 +301,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 			"error", err,
 		)
 	}
+	o.publishStatusEvent(artifact)
 
 	// Create initial version snapshot
 	o.createVersionSnapshot(ctx, artifact)
@@ -317,6 +342,18 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 		}
 	}
 
+	// Validate secret references
+	for envName, ref := range req.SecretRefs {
+		parts := strings.SplitN(ref, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid secret_ref %q for %s: must be in format 'secret-name:key'", ref, envName)
+		}
+		_, err := o.clientset.CoreV1().Secrets(o.cfg.Deployment.Namespace).Get(ctx, parts[0], metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("secret %q referenced by %s not found: %w", parts[0], envName, err)
+		}
+	}
+
 	// Store new source
 	o.updateStatus(ctx, artifact, api.StatusBuilding)
 	storageRef, err := o.storage.StoreSource(ctx, artifact.ID, req.Files)
@@ -328,6 +365,9 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 
 	if req.EnvVars != nil {
 		artifact.EnvVars = req.EnvVars
+	}
+	if req.SecretRefs != nil {
+		artifact.SecretRefs = req.SecretRefs
 	}
 
 	// Detect language for static shortcut
@@ -413,6 +453,7 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 			"error", err,
 		)
 	}
+	o.publishStatusEvent(artifact)
 
 	// Create version snapshot
 	o.createVersionSnapshot(ctx, artifact)
@@ -461,6 +502,7 @@ func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 
 	o.metrics.DeletesTotal.WithLabelValues("success").Inc()
 	o.metrics.ArtifactsActive.WithLabelValues(string(artifact.Target)).Dec()
+	o.publishDeleteEvent(artifactID)
 	return nil
 }
 
@@ -563,6 +605,7 @@ func (o *Orchestrator) updateStatus(ctx context.Context, artifact *api.Artifact,
 			"error", err,
 		)
 	}
+	o.publishStatusEvent(artifact)
 }
 
 func (o *Orchestrator) failArtifact(_ context.Context, artifact *api.Artifact, reason string) {
@@ -579,6 +622,33 @@ func (o *Orchestrator) failArtifact(_ context.Context, artifact *api.Artifact, r
 			"error", err,
 		)
 	}
+	o.publishStatusEvent(artifact)
+}
+
+// publishStatusEvent publishes an artifact lifecycle event to the event bus.
+func (o *Orchestrator) publishStatusEvent(artifact *api.Artifact) {
+	if o.events == nil {
+		return
+	}
+	o.events.Publish(events.Event{
+		Type:       events.ArtifactStatusChanged,
+		ArtifactID: artifact.ID,
+		Status:     string(artifact.Status),
+		Error:      artifact.Error,
+		Timestamp:  artifact.UpdatedAt,
+	})
+}
+
+// publishDeleteEvent publishes an artifact deletion event to the event bus.
+func (o *Orchestrator) publishDeleteEvent(artifactID string) {
+	if o.events == nil {
+		return
+	}
+	o.events.Publish(events.Event{
+		Type:       events.ArtifactDeleted,
+		ArtifactID: artifactID,
+		Timestamp:  time.Now(),
+	})
 }
 
 func validateName(name string) error {
@@ -726,6 +796,7 @@ func (o *Orchestrator) deployStatic(ctx context.Context, artifact *api.Artifact,
 			"error", err,
 		)
 	}
+	o.publishStatusEvent(artifact)
 
 	o.createVersionSnapshot(ctx, artifact)
 
@@ -822,6 +893,7 @@ func (o *Orchestrator) updateStatic(ctx context.Context, artifact *api.Artifact,
 			"error", err,
 		)
 	}
+	o.publishStatusEvent(artifact)
 
 	o.createVersionSnapshot(ctx, artifact)
 
@@ -844,6 +916,7 @@ func (o *Orchestrator) createVersionSnapshot(ctx context.Context, artifact *api.
 		ImageRef:   artifact.ImageRef,
 		StorageRef: artifact.StorageRef,
 		EnvVars:    artifact.EnvVars,
+		SecretRefs: artifact.SecretRefs,
 		Status:     artifact.Status,
 		URL:        artifact.URL,
 		CreatedAt:  artifact.UpdatedAt,
@@ -894,6 +967,9 @@ func (o *Orchestrator) Rollback(ctx context.Context, artifactID string, targetVe
 	if snapshot.EnvVars != nil {
 		artifact.EnvVars = snapshot.EnvVars
 	}
+	if snapshot.SecretRefs != nil {
+		artifact.SecretRefs = snapshot.SecretRefs
+	}
 
 	// Redeploy with the old image
 	o.updateStatus(ctx, artifact, api.StatusDeploying)
@@ -933,6 +1009,7 @@ func (o *Orchestrator) Rollback(ctx context.Context, artifactID string, targetVe
 			"error", err,
 		)
 	}
+	o.publishStatusEvent(artifact)
 
 	o.createVersionSnapshot(ctx, artifact)
 

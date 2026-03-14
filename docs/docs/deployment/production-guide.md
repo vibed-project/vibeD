@@ -95,6 +95,8 @@ config:
   server:
     transport: "http"
     httpAddr: ":8080"
+    logFormat: "json"        # Structured JSON logs for log aggregation
+    logLevel: "info"
   deployment:
     preferredTarget: "auto"
     namespace: "vibed-artifacts"
@@ -112,9 +114,9 @@ config:
     enabled: true
     url: "ghcr.io/myorg/vibed-artifacts"
   store:
-    backend: "configmap"     # NOT "memory" — persists across restarts
-    configmap:
-      name: "vibed-artifacts"
+    backend: "sqlite"        # Default — persistent across restarts
+    sqlite:
+      path: "/data/vibed.db"
   knative:
     domainSuffix: "vibed.example.com"
     ingressClass: "kourier.ingress.networking.knative.dev"
@@ -320,5 +322,5 @@ Before going to production, verify:
 - [ ] **Network policies** restrict pod-to-pod traffic
 - [ ] **Registry credentials** use workload identity or image pull secrets
 - [ ] **Metrics endpoint** (`/metrics`) not publicly exposed (use NetworkPolicy or firewall)
-- [ ] **Store backend** set to `configmap` (not `memory`)
+- [ ] **Store backend** set to `sqlite` (default) or `configmap` (not `memory`)
 - [ ] **Knative domain** uses a real domain (not `sslip.io`)

@@ -1,0 +1,101 @@
+# Production values for vibeD
+#
+# Usage:
+#   helm install vibed deploy/helm/vibed/ \
+#     -f deploy/helm/vibed/values-production.yaml \
+#     -n vibed-system --create-namespace
+#
+# IMPORTANT: Review and customize these values before deploying.
+# At minimum, update: image.tag, config.knative.domainSuffix,
+# config.registry.url, and auth.existingSecret.
+
+image:
+  # -- Pin to a specific release tag. Never use "latest" in production.
+  tag: "v0.1.0"
+  pullPolicy: Always
+
+resources:
+  limits:
+    cpu: "1"
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+persistence:
+  enabled: true
+  size: 50Gi
+  # -- Set to your cluster's storage class. Leave empty for the default.
+  storageClass: ""
+
+# -- Enable authentication before exposing vibeD outside the cluster.
+auth:
+  enabled: true
+  mode: "apikey"
+  # -- Create this secret first:
+  #   kubectl create secret generic vibed-auth --from-literal=api-key=YOUR_KEY -n vibed-system
+  existingSecret: "vibed-auth"
+  tls:
+    enabled: false
+    # -- For TLS termination at the pod level (alternative to Ingress TLS):
+    #   kubectl create secret tls vibed-tls --cert=tls.crt --key=tls.key -n vibed-system
+    existingSecret: ""
+
+config:
+  server:
+    transport: "http"
+    httpAddr: ":8080"
+  deployment:
+    preferredTarget: "auto"
+    namespace: "default"
+  builder:
+    engine: "buildah"
+    buildah:
+      timeout: "10m"
+      insecure: false
+  storage:
+    backend: "local"
+    local:
+      basePath: "/data/vibed/artifacts"
+  registry:
+    enabled: true
+    # -- Your production OCI registry (e.g., ghcr.io/myorg/vibed-artifacts)
+    url: "ghcr.io/myorg/vibed-artifacts"
+  store:
+    backend: "configmap"
+    configmap:
+      name: "vibed-artifacts"
+      namespace: ""
+  knative:
+    # -- Your production domain (must have wildcard DNS configured)
+    domainSuffix: "vibed.example.com"
+    ingressClass: "kourier.ingress.networking.knative.dev"
+    # -- In production with proper ingress/LB, use 0 (standard port 80/443)
+    gatewayPort: 0
+
+# -- Ingress for external access. Configure with your domain and TLS.
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: vibed.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: vibed-ingress-tls
+      hosts:
+        - vibed.example.com
+
+# -- Enable Prometheus Operator integration for production monitoring.
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    labels: {}
+  prometheusRule:
+    enabled: true
+    labels: {}

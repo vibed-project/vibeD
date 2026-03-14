@@ -54,12 +54,27 @@ vibeD is a single Go binary that serves three concerns:
 - **Environment detection** - Auto-discovers available deployment targets by checking CRDs
 - **Fail-safe** - If Knative isn't available, falls back to plain Kubernetes
 
+## Real-Time Events
+
+vibeD includes an in-memory EventBus (`internal/events`) that publishes artifact lifecycle events. The orchestrator emits events on every status transition (pending → building → deploying → running, or failed/deleted), and connected clients receive them instantly via Server-Sent Events (SSE) at `GET /api/events`.
+
+```
+Orchestrator ──publish──► EventBus ──fan-out──► SSE Handler ──stream──► Dashboard
+                                   └──────────► SSE Handler ──stream──► Dashboard (tab 2)
+```
+
+Key characteristics:
+- **Non-blocking fan-out** — slow consumers are dropped, never block the orchestrator
+- **No persistence** — events are fire-and-forget; reconnecting clients do a full data fetch
+- **Auto-reconnect** — the browser's `EventSource` API reconnects automatically; the dashboard falls back to polling if SSE fails entirely
+
 ## Subsystems
 
 | Subsystem | Interface | Implementations |
 |-----------|-----------|-----------------|
-| **Store** | `ArtifactStore` | In-memory, ConfigMap (both support owner-scoped listing) |
+| **Store** | `ArtifactStore` | In-memory, ConfigMap, SQLite (all support owner-scoped listing) |
 | **Storage** | `Storage` | Local filesystem, GitHub, GitLab, UserStorageRouter (per-user routing) |
 | **Builder** | `Builder` | Buildah (K8s Jobs) — auto-generates Dockerfiles per language |
 | **Deployer** | `Deployer` | Knative, Kubernetes, wasmCloud |
 | **Registry** | `Registry` | Any OCI-compatible registry |
+| **EventBus** | — | In-memory pub/sub with SSE streaming |

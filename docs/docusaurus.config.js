@@ -8,6 +8,7 @@ const config = {
   baseUrl: '/vibeD/',
   organizationName: 'vibed-project',
   projectName: 'vibeD',
+  favicon: 'img/vibed.ico',
   onBrokenLinks: 'throw',
 
   presets: [
@@ -18,6 +19,14 @@ const config = {
         docs: {
           sidebarPath: './sidebars.js',
           editUrl: 'https://github.com/vibed-project/vibeD/tree/main/docs/',
+        },
+        blog: {
+          showReadingTime: true,
+          editUrl: 'https://github.com/vibed-project/vibeD/tree/main/docs/',
+          blogTitle: 'Blog & Release Notes',
+          blogDescription: 'vibeD project updates, release notes, and technical deep-dives.',
+          blogSidebarTitle: 'Recent posts',
+          blogSidebarCount: 'ALL',
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -31,12 +40,21 @@ const config = {
     ({
       navbar: {
         title: 'vibeD',
+        logo: {
+          alt: 'vibeD Logo',
+          src: 'img/vibed-logo.webp',
+        },
         items: [
           {
             type: 'docSidebar',
             sidebarId: 'docs',
             position: 'left',
             label: 'Docs',
+          },
+          {
+            to: '/blog',
+            label: 'Blog',
+            position: 'left',
           },
           {
             href: 'https://github.com/vibed-project/vibeD',

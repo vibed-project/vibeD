@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/vibed-project/vibeD/pkg/api"
 
@@ -12,11 +13,25 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// BuildEnvVars converts an artifact's env var map into Kubernetes EnvVar slice.
+// BuildEnvVars converts an artifact's env var map and secret references into
+// Kubernetes EnvVar slice. Plain env vars use literal values; secret refs use
+// SecretKeyRef to inject values from Kubernetes Secrets at runtime.
 func BuildEnvVars(artifact *api.Artifact) []corev1.EnvVar {
 	var envVars []corev1.EnvVar
 	for k, v := range artifact.EnvVars {
 		envVars = append(envVars, corev1.EnvVar{Name: k, Value: v})
+	}
+	for envName, ref := range artifact.SecretRefs {
+		parts := strings.SplitN(ref, ":", 2)
+		envVars = append(envVars, corev1.EnvVar{
+			Name: envName,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: parts[0]},
+					Key:                  parts[1],
+				},
+			},
+		})
 	}
 	return envVars
 }

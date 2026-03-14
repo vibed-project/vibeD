@@ -1,5 +1,9 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
 nodes:
   - role: control-plane
     extraPortMappings:
@@ -8,4 +12,16 @@ nodes:
         protocol: TCP
       - containerPort: 31443
         hostPort: 443
+        protocol: TCP
+      # Grafana (vibed-observability chart)
+      - containerPort: 31300
+        hostPort: 3000
+        protocol: TCP
+      # Prometheus (vibed-observability chart)
+      - containerPort: 31900
+        hostPort: 9090
+        protocol: TCP
+      # vibeD API + Dashboard
+      - containerPort: 31808
+        hostPort: 8080
         protocol: TCP

@@ -1,0 +1,783 @@
+openapi: 3.0.3
+info:
+  title: vibeD API
+  description: |
+    REST API for vibeD — a workload orchestrator for GenAI-generated artifacts.
+    vibeD deploys artifacts to Knative, Kubernetes, or wasmCloud targets.
+
+    ## Authentication
+    All `/api/*` endpoints require a Bearer token in the `Authorization` header.
+    Infrastructure endpoints (`/healthz`, `/readyz`, `/metrics`) are unauthenticated.
+  version: 1.0.0
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  contact:
+    name: vibeD Project
+    url: https://github.com/vibed-project/vibeD
+
+servers:
+  - url: /
+    description: Current server
+
+tags:
+  - name: Artifacts
+    description: Manage deployed artifacts
+  - name: Identity
+    description: User identity and organization
+  - name: Targets
+    description: Deployment target information
+  - name: Infrastructure
+    description: Health checks and metrics (no auth required)
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key passed as a Bearer token
+
+  schemas:
+    ArtifactStatus:
+      type: string
+      enum:
+        - pending
+        - building
+        - deploying
+        - running
+        - failed
+        - deleted
+      description: Lifecycle state of a deployed artifact
+
+    DeploymentTarget:
+      type: string
+      enum:
+        - auto
+        - knative
+        - kubernetes
+        - wasmcloud
+      description: Supported deployment backend
+
+    Artifact:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique artifact identifier
+          example: "abc123"
+        name:
+          type: string
+          description: Human-readable artifact name
+          example: "my-portfolio"
+        owner_id:
+          type: string
+          description: ID of the user who deployed this artifact
+          example: "alice"
+        status:
+          $ref: "#/components/schemas/ArtifactStatus"
+        target:
+          $ref: "#/components/schemas/DeploymentTarget"
+        image_ref:
+          type: string
+          description: Container image reference
+          example: "ghcr.io/myorg/vibed-artifacts/my-portfolio:v1"
+        url:
+          type: string
+          description: Public URL where the artifact is accessible
+          example: "https://my-portfolio.vibed.example.com"
+        port:
+          type: integer
+          description: Port the application listens on
+          example: 3000
+        env_vars:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables set on the artifact
+        secret_refs:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Map of environment variable name to Kubernetes Secret reference
+            in format "secret-name:key". vibeD stores only the reference,
+            never the secret value.
+          example:
+            DB_PASSWORD: "my-db-credentials:password"
+        language:
+          type: string
+          description: Detected or specified language/framework
+          example: "nodejs"
+        static_files:
+          type: string
+          description: ConfigMap name for static content (skip build)
+        error:
+          type: string
+          description: Error message if status is failed
+        created_at:
+          type: string
+          format: date-time
+          description: When the artifact was first created
+        updated_at:
+          type: string
+          format: date-time
+          description: When the artifact was last updated
+        storage_ref:
+          type: string
+          description: Reference to the storage location of source files
+        version:
+          type: integer
+          description: Current version number (1-based, 0 = pre-versioning)
+          example: 3
+        version_id:
+          type: string
+          description: Unique ID for this version snapshot
+        shared_with:
+          type: array
+          items:
+            type: string
+          description: User IDs with read-only access
+      required:
+        - id
+        - name
+        - status
+        - target
+        - created_at
+        - updated_at
+
+    ArtifactSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "abc123"
+        name:
+          type: string
+          example: "my-portfolio"
+        owner_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/ArtifactStatus"
+        target:
+          $ref: "#/components/schemas/DeploymentTarget"
+        url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+        shared_with:
+          type: array
+          items:
+            type: string
+      required:
+        - id
+        - name
+        - status
+        - target
+        - created_at
+        - updated_at
+
+    ArtifactVersion:
+      type: object
+      properties:
+        version_id:
+          type: string
+          description: Unique ID for this version
+        artifact_id:
+          type: string
+        version:
+          type: integer
+          description: Version number (1-based)
+        image_ref:
+          type: string
+        storage_ref:
+          type: string
+        env_vars:
+          type: object
+          additionalProperties:
+            type: string
+        secret_refs:
+          type: object
+          additionalProperties:
+            type: string
+          description: Secret references in format "secret-name:key"
+        status:
+          $ref: "#/components/schemas/ArtifactStatus"
+        url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+      required:
+        - version_id
+        - artifact_id
+        - version
+        - image_ref
+        - created_at
+        - created_by
+
+    TargetInfo:
+      type: object
+      properties:
+        name:
+          $ref: "#/components/schemas/DeploymentTarget"
+        available:
+          type: boolean
+          description: Whether this target is available in the cluster
+        preferred:
+          type: boolean
+          description: Whether this is the preferred deployment target
+        description:
+          type: string
+      required:
+        - name
+        - available
+        - preferred
+        - description
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        uptime:
+          type: string
+          example: "2h30m15s"
+      required:
+        - status
+
+    ReadinessResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ready"
+        components:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            store: "ok"
+            kubernetes: "ok"
+      required:
+        - status
+        - components
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+      required:
+        - error
+
+    RollbackRequest:
+      type: object
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: Version number to roll back to
+      required:
+        - version
+
+    ShareRequest:
+      type: object
+      properties:
+        user_ids:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: User IDs to share or unshare with
+      required:
+        - user_ids
+
+security:
+  - BearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      tags:
+        - Infrastructure
+      summary: Liveness probe
+      description: Returns OK if the server is alive. Used by Kubernetes liveness probes.
+      security: []
+      responses:
+        "200":
+          description: Server is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /readyz:
+    get:
+      tags:
+        - Infrastructure
+      summary: Readiness probe
+      description: Returns ready status with component health. Used by Kubernetes readiness probes.
+      security: []
+      responses:
+        "200":
+          description: Server is ready to accept requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: Server is not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+
+  /metrics:
+    get:
+      tags:
+        - Infrastructure
+      summary: Prometheus metrics
+      description: Exposes Prometheus metrics for scraping. Returns text in Prometheus exposition format.
+      security: []
+      responses:
+        "200":
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/artifacts:
+    get:
+      tags:
+        - Artifacts
+      summary: List artifacts
+      description: |
+        Returns all artifacts owned by the authenticated user.
+        When auth is disabled, returns all artifacts.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ArtifactStatus"
+          description: Filter by artifact status
+      responses:
+        "200":
+          description: List of artifact summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ArtifactSummary"
+        "500":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/artifacts/{id}:
+    get:
+      tags:
+        - Artifacts
+      summary: Get artifact details
+      description: Returns full details for a specific artifact.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Artifact ID
+      responses:
+        "200":
+          description: Artifact details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Artifact"
+        "404":
+          description: Artifact not found
+          content:
+            text/plain:
+              schema:
+                type: string
+    delete:
+      tags:
+        - Artifacts
+      summary: Delete artifact
+      description: Deletes an artifact and its deployed resources.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Artifact ID
+      responses:
+        "200":
+          description: Artifact deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "deleted"
+                  id:
+                    type: string
+        "404":
+          description: Artifact not found
+          content:
+            text/plain:
+              schema:
+                type: string
+        "500":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/artifacts/{id}/logs:
+    get:
+      tags:
+        - Artifacts
+      summary: Get artifact logs
+      description: Returns recent log lines from the artifact's running pods (up to 50 lines).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Artifact ID
+      responses:
+        "200":
+          description: Artifact logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifact_id:
+                    type: string
+                  logs:
+                    type: array
+                    items:
+                      type: string
+        "500":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/artifacts/{id}/versions:
+    get:
+      tags:
+        - Artifacts
+      summary: List artifact versions
+      description: Returns all version snapshots for an artifact.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Artifact ID
+      responses:
+        "200":
+          description: Artifact versions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifact_id:
+                    type: string
+                  versions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ArtifactVersion"
+        "404":
+          description: Artifact not found
+          content:
+            text/plain:
+              schema:
+                type: string
+        "500":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/artifacts/{id}/rollback:
+    post:
+      tags:
+        - Artifacts
+      summary: Rollback artifact to a previous version
+      description: Rolls back an artifact to a specific previous version, redeploying with that version's configuration.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Artifact ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RollbackRequest"
+      responses:
+        "200":
+          description: Artifact rolled back successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Artifact"
+        "400":
+          description: Invalid request (missing or invalid version)
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: Artifact or version not found
+          content:
+            text/plain:
+              schema:
+                type: string
+        "500":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/artifacts/{id}/share:
+    post:
+      tags:
+        - Artifacts
+      summary: Share artifact with users
+      description: Grants read-only access to the artifact for the specified users.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Artifact ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShareRequest"
+      responses:
+        "200":
+          description: Artifact shared successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifact_id:
+                    type: string
+                  shared_with:
+                    type: array
+                    items:
+                      type: string
+                  status:
+                    type: string
+                    example: "shared"
+        "400":
+          description: Invalid request (missing user_ids)
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: Artifact not found
+          content:
+            text/plain:
+              schema:
+                type: string
+        "500":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/artifacts/{id}/unshare:
+    post:
+      tags:
+        - Artifacts
+      summary: Revoke artifact sharing
+      description: Removes read-only access for the specified users.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Artifact ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShareRequest"
+      responses:
+        "200":
+          description: Sharing revoked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifact_id:
+                    type: string
+                  removed:
+                    type: array
+                    items:
+                      type: string
+                  status:
+                    type: string
+                    example: "unshared"
+        "400":
+          description: Invalid request (missing user_ids)
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: Artifact not found
+          content:
+            text/plain:
+              schema:
+                type: string
+        "500":
+          description: Internal server error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/events:
+    get:
+      tags:
+        - Artifacts
+      summary: Stream artifact lifecycle events (SSE)
+      description: |
+        Server-Sent Events endpoint that streams real-time artifact lifecycle events.
+        Uses the `text/event-stream` content type. Each event is a named SSE event
+        (`artifact.status_changed` or `artifact.deleted`) with a JSON data payload.
+
+        The connection sends a heartbeat comment every 30 seconds to keep the
+        connection alive through proxies and load balancers. The browser's
+        `EventSource` API handles automatic reconnection on disconnect.
+
+        **Event types:**
+        - `artifact.status_changed` — An artifact's status transitioned (e.g., pending → building → running)
+        - `artifact.deleted` — An artifact was removed
+
+        **Example SSE stream:**
+        ```
+        id: 42
+        event: artifact.status_changed
+        data: {"id":"42","type":"artifact.status_changed","artifact_id":"abc123","status":"running","timestamp":"2026-03-13T10:00:00Z"}
+
+        : heartbeat
+
+        id: 43
+        event: artifact.deleted
+        data: {"id":"43","type":"artifact.deleted","artifact_id":"abc123","timestamp":"2026-03-13T10:05:00Z"}
+        ```
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Stream of SSE events. Each event contains a JSON payload:
+                  - `id` (string): Monotonic event ID
+                  - `type` (string): Event type (`artifact.status_changed` or `artifact.deleted`)
+                  - `artifact_id` (string): ID of the affected artifact
+                  - `status` (string, optional): New artifact status
+                  - `error` (string, optional): Error message if status is `failed`
+                  - `timestamp` (string, date-time): When the event occurred
+
+  /api/whoami:
+    get:
+      tags:
+        - Identity
+      summary: Get current user identity
+      description: Returns the authenticated user's ID and role.
+      responses:
+        "200":
+          description: Current user identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: string
+                    example: "alice"
+                  role:
+                    type: string
+                    example: "admin"
+
+  /api/organization:
+    get:
+      tags:
+        - Identity
+      summary: Get organization info
+      description: Returns the configured organization name.
+      responses:
+        "200":
+          description: Organization information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    example: "My Organization"
+
+  /api/targets:
+    get:
+      tags:
+        - Targets
+      summary: List deployment targets
+      description: Returns all available deployment targets and their status.
+      responses:
+        "200":
+          description: List of deployment targets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TargetInfo"

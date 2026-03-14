@@ -15,6 +15,7 @@ The primary tool for deploying web artifacts to the cluster.
 | `language` | string | No | Language hint (nodejs, python, go, static) |
 | `target` | string | No | Deployment target (auto, knative, kubernetes, wasmcloud) |
 | `env_vars` | object | No | Environment variables for the artifact |
+| `secret_refs` | object | No | Map of env var name to K8s Secret reference (`secret-name:key`) |
 | `port` | number | No | Port the app listens on (auto-detected) |
 
 ## Example

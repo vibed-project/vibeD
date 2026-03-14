@@ -2,6 +2,7 @@ import React from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import useBaseUrl from '@docusaurus/useBaseUrl';
 
 function HomepageHeader() {
   const {siteConfig} = useDocusaurusContext();
@@ -13,6 +14,11 @@ function HomepageHeader() {
       overflow: 'hidden',
     }}>
       <div className="container">
+        <img
+          src={useBaseUrl('/img/vibed-logo.webp')}
+          alt="vibeD Logo"
+          style={{width: 160, height: 160, marginBottom: '1rem'}}
+        />
         <h1 style={{fontSize: '3rem'}}>{siteConfig.title}</h1>
         <p style={{fontSize: '1.5rem', opacity: 0.8}}>{siteConfig.tagline}</p>
         <div style={{display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '2rem'}}>
@@ -61,7 +67,7 @@ export default function Home() {
               />
               <Feature
                 title="Zero Config Builds"
-                description="Cloud Native Buildpacks automatically detect your language and build optimized container images. No Dockerfiles needed."
+                description="Buildah auto-generates Dockerfiles per language and builds optimized container images in-cluster. No Dockerfiles needed."
               />
             </div>
           </div>

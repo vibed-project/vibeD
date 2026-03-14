@@ -14,6 +14,8 @@ Default search paths: `./vibed.yaml`, `/etc/vibed/vibed.yaml`
 server:
   transport: "http"           # stdio | http | both
   httpAddr: ":8080"           # HTTP listen address
+  logFormat: "text"           # text | json (structured JSON for log aggregation)
+  logLevel: "info"            # debug | info | warn | error
 
 auth:
   enabled: false              # Enable authentication for /mcp/ and /api/ endpoints
@@ -68,10 +70,18 @@ registry:
   url: ""                     # e.g. "ghcr.io/myorg/vibed"
 
 store:
-  backend: "memory"           # memory | configmap
+  backend: "sqlite"           # sqlite (default) | memory | configmap
+  sqlite:
+    path: "/data/vibed.db"    # SQLite database file path
   configmap:
     name: "vibed-artifacts"
     namespace: "vibed-system"
+
+gc:
+  enabled: true               # Enable resource garbage collector
+  interval: "1h"              # How often GC runs
+  maxAge: "24h"               # Age threshold for orphaned resources
+  dryRun: false               # Log without deleting (for testing)
 
 kubernetes:
   kubeconfig: ""              # Empty = in-cluster config
@@ -90,6 +100,8 @@ Every config field has an environment variable override:
 |----------|-------------|---------|
 | `VIBED_SERVER_TRANSPORT` | `server.transport` | `http` |
 | `VIBED_SERVER_HTTP_ADDR` | `server.httpAddr` | `:9090` |
+| `VIBED_LOG_FORMAT` | `server.logFormat` | `json` |
+| `VIBED_LOG_LEVEL` | `server.logLevel` | `debug` |
 | `VIBED_DEPLOYMENT_PREFERRED_TARGET` | `deployment.preferredTarget` | `knative` |
 | `VIBED_DEPLOYMENT_NAMESPACE` | `deployment.namespace` | `apps` |
 | `VIBED_BUILDER_ENGINE` | `builder.engine` | `buildah` |
@@ -101,7 +113,12 @@ Every config field has an environment variable override:
 | `VIBED_STORAGE_GITHUB_REPO` | `storage.github.repo` | `vibed-artifacts` |
 | `VIBED_REGISTRY_ENABLED` | `registry.enabled` | `true` |
 | `VIBED_REGISTRY_URL` | `registry.url` | `ghcr.io/...` |
-| `VIBED_STORE_BACKEND` | `store.backend` | `configmap` |
+| `VIBED_STORE_BACKEND` | `store.backend` | `sqlite` |
+| `VIBED_STORE_SQLITE_PATH` | `store.sqlite.path` | `/data/vibed.db` |
+| `VIBED_GC_ENABLED` | `gc.enabled` | `true` |
+| `VIBED_GC_INTERVAL` | `gc.interval` | `1h` |
+| `VIBED_GC_MAX_AGE` | `gc.maxAge` | `24h` |
+| `VIBED_GC_DRY_RUN` | `gc.dryRun` | `true` |
 | `VIBED_AUTH_ENABLED` | `auth.enabled` | `true` |
 | `VIBED_AUTH_MODE` | `auth.mode` | `apikey` |
 | `VIBED_AUTH_API_KEY` | (appends API key) | `vibed_sk_...` |

@@ -13,15 +13,23 @@ image:
 service:
   type: ClusterIP
   port: 8080
+  # -- NodePort number when service.type is NodePort (used by dev setup).
+  nodePort: ""
 
 ingress:
   enabled: false
   className: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
   hosts:
     - host: vibed.local
       paths:
         - path: /
           pathType: Prefix
+  tls: []
+    # - secretName: vibed-tls
+    #   hosts:
+    #     - vibed.example.com
 
 resources:
   limits:
@@ -83,6 +91,8 @@ config:
   knative:
     domainSuffix: "127.0.0.1.sslip.io"
     ingressClass: "kourier.ingress.networking.knative.dev"
+    # -- External gateway port for Knative URLs (e.g. 31080 for NodePort). Set to 0 or 80 to omit from URLs.
+    gatewayPort: 31080
   # -- Resource limits for MCP tool inputs.
   limits:
     # -- Max total file content size in bytes (default: 50 MB).
@@ -101,6 +111,18 @@ persistence:
 
 metrics:
   enabled: true
+  # -- ServiceMonitor for Prometheus Operator. Requires the Prometheus Operator
+  # CRDs to be installed in the cluster. Alternative to annotation-based scraping.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    # -- Extra labels for ServiceMonitor selector matching
+    labels: {}
+  # -- PrometheusRule for alerting. Requires the Prometheus Operator CRDs.
+  prometheusRule:
+    enabled: false
+    # -- Extra labels for PrometheusRule selector matching
+    labels: {}
 
 # -- Authentication for MCP and API endpoints.
 # IMPORTANT: Enable auth before exposing vibeD outside the cluster.

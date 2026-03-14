@@ -3,10 +3,12 @@ import {
   ArtifactSummary,
   TargetInfo,
   fetchArtifacts,
+  fetchArtifact,
   fetchTargets,
   deleteArtifact,
   fetchWhoami,
   fetchOrganization,
+  subscribeToEvents,
 } from './api/client'
 import ArtifactList from './components/ArtifactList'
 import DeploymentTargets from './components/DeploymentTargets'
@@ -66,8 +68,53 @@ function App() {
 
   useEffect(() => {
     loadData()
-    const interval = setInterval(loadData, 5000) // Poll every 5s
-    return () => clearInterval(interval)
+
+    // Subscribe to real-time SSE events; fall back to polling on failure
+    let fallbackInterval: ReturnType<typeof setInterval> | null = null
+
+    const es = subscribeToEvents(
+      (event) => {
+        if (event.type === 'artifact.deleted') {
+          setArtifacts((prev) => prev.filter((a) => a.id !== event.artifact_id))
+        } else {
+          // Refetch the single changed artifact for full data
+          fetchArtifact(event.artifact_id)
+            .then((updated) => {
+              setArtifacts((prev) => {
+                const idx = prev.findIndex((a) => a.id === event.artifact_id)
+                if (idx >= 0) {
+                  const next = [...prev]
+                  next[idx] = updated
+                  return next
+                }
+                // New artifact — add to list
+                return [...prev, updated]
+              })
+            })
+            .catch(() => loadData()) // Full reload on fetch failure
+        }
+      },
+      () => {
+        // SSE connection error — EventSource auto-reconnects, but
+        // start polling as a fallback in case reconnect fails
+        if (!fallbackInterval) {
+          fallbackInterval = setInterval(loadData, 5000)
+        }
+      },
+    )
+
+    // If SSE reconnects successfully, stop the polling fallback
+    es.onopen = () => {
+      if (fallbackInterval) {
+        clearInterval(fallbackInterval)
+        fallbackInterval = null
+      }
+    }
+
+    return () => {
+      es.close()
+      if (fallbackInterval) clearInterval(fallbackInterval)
+    }
   }, [loadData])
 
   return (

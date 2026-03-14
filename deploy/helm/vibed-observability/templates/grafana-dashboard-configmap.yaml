@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-vibed-dashboard
+  labels:
+    grafana_dashboard: "1"
+data:
+  vibed-overview.json: |-
+{{ .Files.Get "dashboards/vibed-overview.json" | indent 4 }}

@@ -30,7 +30,20 @@ const sidebars = {
     {
       type: 'category',
       label: 'MCP Tools',
-      items: ['mcp-tools/overview', 'mcp-tools/deploy-artifact'],
+      items: [
+        'mcp-tools/overview',
+        'mcp-tools/deploy-artifact',
+        'mcp-tools/list-artifacts',
+        'mcp-tools/get-artifact-status',
+        'mcp-tools/update-artifact',
+        'mcp-tools/delete-artifact',
+        'mcp-tools/get-artifact-logs',
+        'mcp-tools/list-deployment-targets',
+        'mcp-tools/list-versions',
+        'mcp-tools/rollback-artifact',
+        'mcp-tools/share-artifact',
+        'mcp-tools/unshare-artifact',
+      ],
     },
   ],
 };

@@ -22,6 +22,7 @@ type KnativeDeployer struct {
 	k8sClientset kubernetes.Interface
 	namespace    string
 	domainSuffix string
+	gatewayPort  int
 	logger       *slog.Logger
 }
 
@@ -38,6 +39,7 @@ func NewKnativeDeployer(
 		k8sClientset: k8sClientset,
 		namespace:    cfg.Namespace,
 		domainSuffix: knCfg.DomainSuffix,
+		gatewayPort:  knCfg.GatewayPort,
 		logger:       logger,
 	}
 }
@@ -175,9 +177,14 @@ func (d *KnativeDeployer) buildService(artifact *api.Artifact) *knservingv1.Serv
 }
 
 func (d *KnativeDeployer) resolveURL(svc *knservingv1.Service) string {
+	var host string
 	if svc.Status.URL != nil {
-		return svc.Status.URL.String()
+		host = svc.Status.URL.Host
+	} else {
+		host = fmt.Sprintf("%s.%s.%s", svc.Name, svc.Namespace, d.domainSuffix)
 	}
-	// Construct URL from domain suffix if status URL not yet populated.
-	return fmt.Sprintf("http://%s.%s.%s", svc.Name, svc.Namespace, d.domainSuffix)
+	if d.gatewayPort > 0 && d.gatewayPort != 80 {
+		return fmt.Sprintf("http://%s:%d", host, d.gatewayPort)
+	}
+	return fmt.Sprintf("http://%s", host)
 }

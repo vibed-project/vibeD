@@ -144,3 +144,39 @@ export async function unshareArtifact(id: string, userIds: string[]): Promise<vo
   });
   if (!res.ok) throw new Error(`Failed to unshare artifact: ${res.statusText}`);
 }
+
+// SSE event types
+
+export interface ArtifactEvent {
+  id: string;
+  type: 'artifact.status_changed' | 'artifact.deleted';
+  artifact_id: string;
+  status?: string;
+  error?: string;
+  timestamp: string;
+}
+
+/**
+ * Subscribe to real-time artifact lifecycle events via SSE.
+ * Returns the EventSource instance for cleanup (call .close()).
+ */
+export function subscribeToEvents(
+  onEvent: (event: ArtifactEvent) => void,
+  onError?: (err: Event) => void,
+): EventSource {
+  const es = new EventSource(`${BASE}/api/events`);
+
+  es.addEventListener('artifact.status_changed', (e) => {
+    onEvent(JSON.parse((e as MessageEvent).data));
+  });
+
+  es.addEventListener('artifact.deleted', (e) => {
+    onEvent(JSON.parse((e as MessageEvent).data));
+  });
+
+  if (onError) {
+    es.onerror = onError;
+  }
+
+  return es;
+}

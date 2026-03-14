@@ -1,0 +1,69 @@
+# Lightweight observability stack for vibeD local development.
+# Installs Prometheus + Grafana via kube-prometheus-stack, configured
+# for a Kind cluster with minimal resource usage.
+
+kube-prometheus-stack:
+  # Disable components not needed for local dev
+  alertmanager:
+    enabled: false
+  nodeExporter:
+    enabled: false
+  kubeStateMetrics:
+    enabled: true
+
+  # Prometheus configuration
+  prometheus:
+    prometheusSpec:
+      retention: 24h
+      # Scrape ALL ServiceMonitors/PodMonitors regardless of labels
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      ruleSelectorNilUsesHelmValues: false
+      resources:
+        limits:
+          cpu: 500m
+          memory: 512Mi
+        requests:
+          cpu: 100m
+          memory: 256Mi
+      # Annotation-based scraping — picks up vibeD's pod annotations
+      # (prometheus.io/scrape, prometheus.io/port, prometheus.io/path)
+      additionalScrapeConfigs:
+        - job_name: "kubernetes-pods"
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+              action: keep
+              regex: true
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+              action: replace
+              target_label: __metrics_path__
+              regex: (.+)
+            - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+              action: replace
+              regex: ([^:]+)(?::\d+)?;(\d+)
+              replacement: $1:$2
+              target_label: __address__
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+            - source_labels: [__meta_kubernetes_namespace]
+              action: replace
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              action: replace
+              target_label: pod
+    service:
+      type: NodePort
+      nodePort: 31900
+
+  # Grafana configuration
+  grafana:
+    adminPassword: "vibed-dev"
+    service:
+      type: NodePort
+      nodePort: 31300
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard

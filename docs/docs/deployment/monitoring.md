@@ -51,6 +51,16 @@ Most Prometheus installations with annotation-based discovery will scrape vibeD 
 | `vibed_mcp_tool_calls_total` | Counter | `tool`, `status` | MCP tool invocations |
 | `vibed_mcp_tool_call_duration_seconds` | Histogram | `tool` | MCP tool call duration (default Prometheus buckets) |
 
+### Garbage Collector Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `vibed_gc_resources_cleaned_total` | Counter | `type` | Total resources cleaned by garbage collector |
+
+The `type` label values are: `job`, `configmap`, `deployment`, `service`.
+
+The GC runs periodically (default: every 1 hour) and removes orphaned Kubernetes resources whose artifact no longer exists in the store. See [Configuration Reference](../configuration/config-reference.md) for GC settings.
+
 ### HTTP API Metrics
 
 | Metric | Type | Labels | Description |
@@ -59,6 +69,14 @@ Most Prometheus installations with annotation-based discovery will scrape vibeD 
 | `vibed_http_request_duration_seconds` | Histogram | `method`, `path` | HTTP request duration (default Prometheus buckets) |
 
 HTTP paths are normalized to prevent high cardinality (e.g., `/api/artifacts/:id` instead of individual artifact IDs).
+
+### SSE Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `vibed_sse_connections_active` | Gauge | - | Number of active Server-Sent Events connections |
+
+The SSE endpoint (`GET /api/events`) streams real-time artifact lifecycle events to connected dashboard clients. This gauge tracks how many clients are currently connected.
 
 ### Label Values
 
@@ -166,6 +184,14 @@ spec:
             severity: warning
           annotations:
             summary: "P99 build duration exceeds 5 minutes"
+
+        - alert: VibeDGCHighCleanupRate
+          expr: rate(vibed_gc_resources_cleaned_total[1h]) > 10
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GC is cleaning many orphaned resources ({{ $value }}/hr)"
 ```
 
 ## Health Endpoints
@@ -215,3 +241,5 @@ vibeD does not ship a bundled Grafana dashboard, but you can build one from the 
 - **MCP Tool Usage** - `rate(vibed_mcp_tool_calls_total[5m])` by tool
 - **HTTP Request Rate** - `rate(vibed_http_requests_total[5m])` by status_code
 - **HTTP Latency P99** - `histogram_quantile(0.99, rate(vibed_http_request_duration_seconds_bucket[5m]))`
+- **GC Cleanup Rate** - `rate(vibed_gc_resources_cleaned_total[1h])` by type
+- **SSE Connections** - `vibed_sse_connections_active`

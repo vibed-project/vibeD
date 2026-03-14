@@ -67,8 +67,9 @@ func SkipAuthPaths(authMiddleware func(http.Handler) http.Handler) func(http.Han
 		authed := authMiddleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
-			// Skip auth for health, metrics, and frontend static assets
-			if path == "/healthz" || path == "/readyz" || path == "/metrics" {
+			// Skip auth for health, metrics, API docs, and frontend static assets
+			if path == "/healthz" || path == "/readyz" || path == "/metrics" ||
+				strings.HasPrefix(path, "/api/docs") {
 				next.ServeHTTP(w, r)
 				return
 			}

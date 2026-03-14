@@ -4,7 +4,8 @@ KIND_CLUSTER := vibed-dev
 KNATIVE_VERSION := v1.17.0
 
 .PHONY: build run test clean setup-cluster install-knative setup-registry install-deps dev teardown lint \
-       test-integration test-integration-short test-integration-setup test-cleanup image load-image
+       test-integration test-integration-short test-integration-setup test-cleanup image load-image \
+       install-observability install-vibed dev-status
 
 ## Build
 
@@ -65,10 +66,12 @@ lint:
 ## Container
 
 image:
-	podman build -t vibed:dev .
+	podman build -t localhost/vibed:dev .
 
 load-image: image
-	kind load docker-image vibed:dev --name $(KIND_CLUSTER)
+	podman save localhost/vibed:dev -o /tmp/vibed-dev.tar
+	KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/vibed-dev.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/vibed-dev.tar
 
 ## Local Dev Environment
 
@@ -95,19 +98,48 @@ install-knative:
 setup-registry:
 	kubectl apply -f deploy/kind/registry.yaml
 	kubectl wait --for=condition=Available deployment/kind-registry -n default --timeout=60s
-	$(eval REGISTRY_IP := $(shell kubectl get svc kind-registry -n default -o jsonpath='{.spec.clusterIP}'))
-	docker exec $(KIND_CLUSTER)-control-plane mkdir -p /etc/containerd/certs.d/kind-registry:5000
-	docker exec $(KIND_CLUSTER)-control-plane sh -c 'echo "server = \"http://$(REGISTRY_IP):5000\"\n[host.\"http://$(REGISTRY_IP):5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n  skip_verify = true" > /etc/containerd/certs.d/kind-registry:5000/hosts.toml'
-	docker exec $(KIND_CLUSTER)-control-plane sh -c 'grep -q "config_path" /etc/containerd/config.toml || echo "\n[plugins.\"io.containerd.grpc.v1.cri\".registry]\n  config_path = \"/etc/containerd/certs.d\"" >> /etc/containerd/config.toml'
-	docker exec $(KIND_CLUSTER)-control-plane systemctl restart containerd
+	@echo "Configuring containerd registry mirror for kind-registry:5000..."
+	@REGISTRY_IP=$$(kubectl get svc kind-registry -n default -o jsonpath='{.spec.clusterIP}') && \
+		docker exec $(KIND_CLUSTER)-control-plane mkdir -p /etc/containerd/certs.d/kind-registry:5000 && \
+		docker exec $(KIND_CLUSTER)-control-plane sh -c "printf '[host.\"http://'$$REGISTRY_IP':5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n  skip_verify = true\n' > /etc/containerd/certs.d/kind-registry:5000/hosts.toml"
 	kubectl create namespace vibed-system --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -f deploy/kind/registry-external.yaml
 
 install-deps: install-knative setup-registry
 
-dev: setup-cluster install-deps build
-	@echo "Development environment ready."
-	@echo "Run 'make run-http' to start vibeD"
+install-observability:
+	helm dependency build deploy/helm/vibed-observability/
+	helm install vibed-observability deploy/helm/vibed-observability/ \
+		--namespace monitoring --create-namespace --wait --timeout 10m
+
+install-vibed: load-image
+	helm install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		--set image.repository=localhost/vibed --set image.tag=dev --set image.pullPolicy=Never \
+		--set service.type=NodePort --set service.nodePort=31808 \
+		--set metrics.serviceMonitor.enabled=true --wait
+
+dev: setup-cluster install-deps install-observability install-vibed
+	@echo ""
+	@echo "============================================"
+	@echo "  vibeD development environment is ready!"
+	@echo "============================================"
+	@$(MAKE) dev-status
+
+dev-status:
+	@echo ""
+	@echo "=== Pods ==="
+	@kubectl get pods -n vibed-system
+	@kubectl get pods -n monitoring -l 'app.kubernetes.io/name in (prometheus,grafana)'
+	@echo ""
+	@echo "=== URLs ==="
+	@echo "  vibeD Dashboard:  http://localhost:8080"
+	@echo "  vibeD API:        http://localhost:8080/api/artifacts"
+	@echo "  Swagger UI:       http://localhost:8080/api/docs/"
+	@echo "  Knative Apps:     http://<app>.127.0.0.1.sslip.io (port 80)"
+	@echo "  Grafana:          http://localhost:3000  (admin / vibed-dev)"
+	@echo "  Prometheus:       http://localhost:9090"
+	@echo ""
 
 teardown:
 	kind delete cluster --name $(KIND_CLUSTER)

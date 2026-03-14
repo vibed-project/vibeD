@@ -8,12 +8,21 @@ import (
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/events"
+	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 )
 
 // NewHandler creates an HTTP handler that serves the frontend and REST API.
-func NewHandler(orch *orchestrator.Orchestrator, cfg *config.Config) http.Handler {
+func NewHandler(orch *orchestrator.Orchestrator, cfg *config.Config, bus *events.EventBus, m *metrics.Metrics) http.Handler {
 	mux := http.NewServeMux()
+
+	// API documentation (Swagger UI)
+	mux.Handle("/api/docs", http.RedirectHandler("/api/docs/", http.StatusMovedPermanently))
+	mux.Handle("/api/docs/", http.StripPrefix("/api/docs", swaggerUIHandler()))
+
+	// SSE event stream
+	mux.HandleFunc("/api/events", handleSSE(bus, m))
 
 	// API routes
 	mux.HandleFunc("/api/artifacts", handleArtifacts(orch))

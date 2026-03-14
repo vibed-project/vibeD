@@ -28,6 +28,12 @@ type Metrics struct {
 	// HTTP API metrics
 	HTTPRequestsTotal    *prometheus.CounterVec
 	HTTPRequestDuration  *prometheus.HistogramVec
+
+	// GC metrics
+	GCResourcesCleaned *prometheus.CounterVec
+
+	// SSE metrics
+	SSEConnectionsActive prometheus.Gauge
 }
 
 // New creates and registers all vibeD metrics.
@@ -102,5 +108,17 @@ func New() *Metrics {
 			Help:      "Duration of HTTP API requests in seconds.",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"method", "path"}),
+
+		GCResourcesCleaned: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "vibed",
+			Name:      "gc_resources_cleaned_total",
+			Help:      "Total resources cleaned by garbage collector.",
+		}, []string{"type"}),
+
+		SSEConnectionsActive: promauto.NewGauge(prometheus.GaugeOpts{
+			Namespace: "vibed",
+			Name:      "sse_connections_active",
+			Help:      "Number of active SSE connections.",
+		}),
 	}
 }

@@ -40,6 +40,10 @@ docs/.docusaurus/
 vibed-dev.yaml
 /data/
 
+# Helm vendored dependencies
+deploy/helm/vibed-observability/charts/
+deploy/helm/vibed-observability/Chart.lock
+
 # Environment
 .env
 .env.local

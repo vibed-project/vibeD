@@ -50,7 +50,7 @@ func (d *Detector) Detect() *DetectResult {
 	}
 	result.WasmCloud = wasmcloud
 
-	d.logger.Info("detected deployment targets",
+	d.logger.Debug("detected deployment targets",
 		"knative", result.Knative,
 		"wasmcloud", result.WasmCloud,
 		"kubernetes", result.Kubernetes,

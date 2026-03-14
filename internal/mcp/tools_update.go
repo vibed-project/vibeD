@@ -13,6 +13,7 @@ type updateArtifactInput struct {
 	ArtifactID string            `json:"artifact_id" jsonschema:"ID of the artifact to update"`
 	Files      map[string]string `json:"files" jsonschema:"Updated file map (full replacement of source files)"`
 	EnvVars    map[string]string `json:"env_vars,omitempty" jsonschema:"Updated environment variables"`
+	SecretRefs map[string]string `json:"secret_refs,omitempty" jsonschema:"Updated secret references in format 'secret-name:key'"`
 }
 
 func registerUpdateTool(server *mcp.Server, orch *orchestrator.Orchestrator, limits config.LimitsConfig) {
@@ -28,6 +29,7 @@ func registerUpdateTool(server *mcp.Server, orch *orchestrator.Orchestrator, lim
 			ArtifactID: input.ArtifactID,
 			Files:      input.Files,
 			EnvVars:    input.EnvVars,
+			SecretRefs: input.SecretRefs,
 		})
 		if err != nil {
 			return nil, nil, err
