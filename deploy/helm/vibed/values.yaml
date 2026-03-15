@@ -75,7 +75,7 @@ config:
     buildah:
       image: "quay.io/buildah/stable:latest"
       timeout: "10m"
-      insecure: false
+      insecure: true  # kind-registry is HTTP-only
   storage:
     backend: "local"
     local:
@@ -83,6 +83,7 @@ config:
   registry:
     enabled: true
     url: "kind-registry:5000"
+    insecure: true  # kind-registry is HTTP-only
   store:
     backend: "configmap"
     configmap:
@@ -91,8 +92,9 @@ config:
   knative:
     domainSuffix: "127.0.0.1.sslip.io"
     ingressClass: "kourier.ingress.networking.knative.dev"
-    # -- External gateway port for Knative URLs (e.g. 31080 for NodePort). Set to 0 or 80 to omit from URLs.
-    gatewayPort: 31080
+    # -- External gateway port for Knative URLs. Set to 0 or 80 to omit from URLs.
+    # In Kind dev setup, NodePort 31080 maps to host port 80, so use 80 (default HTTP).
+    gatewayPort: 80
   # -- Resource limits for MCP tool inputs.
   limits:
     # -- Max total file content size in bytes (default: 50 MB).

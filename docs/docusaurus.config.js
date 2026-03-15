@@ -4,8 +4,8 @@
 const config = {
   title: 'vibeD',
   tagline: 'Workload Orchestrator for GenAI-generated Artifacts',
-  url: 'https://vibed-project.github.io',
-  baseUrl: '/vibeD/',
+  url: 'https://vibed.run',
+  baseUrl: '/',
   organizationName: 'vibed-project',
   projectName: 'vibeD',
   favicon: 'img/vibed.ico',

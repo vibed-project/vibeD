@@ -50,6 +50,7 @@ function App() {
 
   const loadData = useCallback(async () => {
     try {
+      setLoading(true)
       setError(null)
       const [arts, tgts] = await Promise.all([fetchArtifacts(), fetchTargets()])
       setArtifacts(arts)

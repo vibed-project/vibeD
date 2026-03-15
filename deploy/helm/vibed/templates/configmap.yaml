@@ -50,6 +50,7 @@ data:
       {{- if .Values.config.registry.url }}
       url: {{ .Values.config.registry.url | quote }}
       {{- end }}
+      insecure: {{ .Values.config.registry.insecure | default false }}
     store:
       backend: {{ .Values.config.store.backend | quote }}
       configmap:

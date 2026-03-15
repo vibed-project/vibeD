@@ -144,8 +144,9 @@ type GitLabConfig struct {
 }
 
 type RegistryConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	URL     string `yaml:"url"`
+	Enabled  bool   `yaml:"enabled"`
+	URL      string `yaml:"url"`
+	Insecure bool   `yaml:"insecure"` // Use HTTP instead of HTTPS for the registry
 }
 
 type StoreConfig struct {

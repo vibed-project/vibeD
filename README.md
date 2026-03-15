@@ -6,9 +6,11 @@
 
 vibeD bridges AI coding tools (Claude, Gemini, ChatGPT) with your own Kubernetes infrastructure. It exposes an [MCP server](https://modelcontextprotocol.io/) that AI tools call to deploy websites and web apps directly to your cluster — keeping code on your infrastructure, not in third-party sandboxes.
 
+![](./media/gif/hello-world.gif)
+
 ## Features
 
-- **MCP Server** — 7 tools for deploying, updating, listing, and deleting artifacts
+- **MCP Server** — 11 tools for deploying, updating, listing, and deleting artifacts
 - **Instant static deploys** — HTML/CSS/JS files deploy in milliseconds via ConfigMap + nginx (no build step)
 - **Buildah builder** — Auto-generates Dockerfiles for Node.js, Python, and Go apps; builds container images in-cluster via Kubernetes Jobs
 - **Multi-target deployment** — Knative Serving (serverless), plain Kubernetes (Deployment + Service), or wasmCloud

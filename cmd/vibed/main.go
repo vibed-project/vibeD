@@ -313,6 +313,7 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 		nil,
 	)
 	mux.Handle("/mcp/", mcpHandler)
+	mux.Handle("/mcp", mcpHandler)
 
 	// Frontend + API
 	frontendHandler := frontend.NewHandler(orch, cfg, bus, m)

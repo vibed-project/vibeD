@@ -14,15 +14,17 @@ import (
 
 // Registry handles container image push/pull operations.
 type Registry struct {
-	baseURL string
-	logger  *slog.Logger
+	baseURL  string
+	insecure bool
+	logger   *slog.Logger
 }
 
 // NewRegistry creates a new Registry client.
-func NewRegistry(baseURL string, logger *slog.Logger) *Registry {
+func NewRegistry(baseURL string, insecure bool, logger *slog.Logger) *Registry {
 	return &Registry{
-		baseURL: baseURL,
-		logger:  logger,
+		baseURL:  baseURL,
+		insecure: insecure,
+		logger:   logger,
 	}
 }
 
@@ -49,7 +51,11 @@ func (r *Registry) Push(ctx context.Context, localImage string) (string, error) 
 	}
 
 	// Push to registry
-	if err := crane.Push(img, remoteTag.String(), crane.WithAuthFromKeychain(authn.DefaultKeychain), crane.WithContext(ctx)); err != nil {
+	opts := []crane.Option{crane.WithAuthFromKeychain(authn.DefaultKeychain), crane.WithContext(ctx)}
+	if r.insecure {
+		opts = append(opts, crane.Insecure)
+	}
+	if err := crane.Push(img, remoteTag.String(), opts...); err != nil {
 		return "", fmt.Errorf("pushing to registry: %w", err)
 	}
 
@@ -69,7 +75,11 @@ func (r *Registry) Push(ctx context.Context, localImage string) (string, error) 
 func (r *Registry) Pull(ctx context.Context, imageRef string) (v1.Image, error) {
 	r.logger.Info("pulling image from registry", "ref", imageRef)
 
-	img, err := crane.Pull(imageRef, crane.WithAuthFromKeychain(authn.DefaultKeychain), crane.WithContext(ctx))
+	opts := []crane.Option{crane.WithAuthFromKeychain(authn.DefaultKeychain), crane.WithContext(ctx)}
+	if r.insecure {
+		opts = append(opts, crane.Insecure)
+	}
+	img, err := crane.Pull(imageRef, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("pulling image %q: %w", imageRef, err)
 	}
@@ -79,7 +89,11 @@ func (r *Registry) Pull(ctx context.Context, imageRef string) (v1.Image, error) 
 
 // ImageExists checks if an image exists in the registry.
 func (r *Registry) ImageExists(ctx context.Context, imageRef string) (bool, error) {
-	_, err := crane.Digest(imageRef, crane.WithAuthFromKeychain(authn.DefaultKeychain), crane.WithContext(ctx))
+	opts := []crane.Option{crane.WithAuthFromKeychain(authn.DefaultKeychain), crane.WithContext(ctx)}
+	if r.insecure {
+		opts = append(opts, crane.Insecure)
+	}
+	_, err := crane.Digest(imageRef, opts...)
 	if err != nil {
 		return false, nil
 	}

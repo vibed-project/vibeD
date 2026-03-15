@@ -2,10 +2,11 @@ GO := GOTOOLCHAIN=auto GO111MODULE=on go
 BINARY := bin/vibed
 KIND_CLUSTER := vibed-dev
 KNATIVE_VERSION := v1.17.0
+GHCR_IMAGE := ghcr.io/vibed-project/vibed
 
 .PHONY: build run test clean setup-cluster install-knative setup-registry install-deps dev teardown lint \
        test-integration test-integration-short test-integration-setup test-cleanup image load-image \
-       install-observability install-vibed dev-status
+       install-observability install-vibed dev-status run-latest
 
 ## Build
 
@@ -140,6 +141,18 @@ dev-status:
 	@echo "  Grafana:          http://localhost:3000  (admin / vibed-dev)"
 	@echo "  Prometheus:       http://localhost:9090"
 	@echo ""
+
+run-latest:
+	podman pull $(GHCR_IMAGE):latest
+	podman save $(GHCR_IMAGE):latest -o /tmp/vibed-latest.tar
+	KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/vibed-latest.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/vibed-latest.tar
+	helm upgrade --install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		--set image.repository=$(GHCR_IMAGE) --set image.tag=latest --set image.pullPolicy=Never \
+		--set service.type=NodePort --set service.nodePort=31808 \
+		--set metrics.serviceMonitor.enabled=true --wait
+	@$(MAKE) dev-status
 
 teardown:
 	kind delete cluster --name $(KIND_CLUSTER)
