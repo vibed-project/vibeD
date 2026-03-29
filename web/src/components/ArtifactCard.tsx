@@ -24,7 +24,6 @@ const statusConfig: Record<string, { color: string; label: string }> = {
 const targetLabels: Record<string, string> = {
   knative: 'Knative',
   kubernetes: 'Kubernetes',
-  wasmcloud: 'wasmCloud',
 }
 
 function timeAgo(dateStr: string): string {

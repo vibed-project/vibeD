@@ -175,27 +175,28 @@ func TestSQLiteStore_List(t *testing.T) {
 	require.NoError(t, s.Create(ctx, a3))
 
 	// List all (admin view).
-	all, err := s.List(ctx, "", "", true)
+	all, err := s.List(ctx, ListOptions{AdminView: true})
 	require.NoError(t, err)
-	assert.Len(t, all, 3)
+	assert.Len(t, all.Artifacts, 3)
+	assert.Equal(t, 3, all.Total)
 
 	// Filter by status.
-	running, err := s.List(ctx, "running", "", true)
+	running, err := s.List(ctx, ListOptions{StatusFilter: "running", AdminView: true})
 	require.NoError(t, err)
-	assert.Len(t, running, 2)
+	assert.Len(t, running.Artifacts, 2)
 
 	// Filter by owner (non-admin).
-	aliceOnly, err := s.List(ctx, "", "alice", false)
+	aliceOnly, err := s.List(ctx, ListOptions{OwnerID: "alice"})
 	require.NoError(t, err)
-	assert.Len(t, aliceOnly, 2)
-	for _, s := range aliceOnly {
+	assert.Len(t, aliceOnly.Artifacts, 2)
+	for _, s := range aliceOnly.Artifacts {
 		assert.Equal(t, "alice", s.OwnerID)
 	}
 
 	// Filter by owner + status.
-	aliceRunning, err := s.List(ctx, "running", "alice", false)
+	aliceRunning, err := s.List(ctx, ListOptions{StatusFilter: "running", OwnerID: "alice"})
 	require.NoError(t, err)
-	assert.Len(t, aliceRunning, 2)
+	assert.Len(t, aliceRunning.Artifacts, 2)
 }
 
 func TestSQLiteStore_SharedWith(t *testing.T) {
@@ -208,15 +209,15 @@ func TestSQLiteStore_SharedWith(t *testing.T) {
 	require.NoError(t, s.Create(ctx, a))
 
 	// Bob can see alice's shared artifact.
-	bobList, err := s.List(ctx, "", "bob", false)
+	bobList, err := s.List(ctx, ListOptions{OwnerID: "bob"})
 	require.NoError(t, err)
-	assert.Len(t, bobList, 1)
-	assert.Equal(t, "shared-app", bobList[0].Name)
+	assert.Len(t, bobList.Artifacts, 1)
+	assert.Equal(t, "shared-app", bobList.Artifacts[0].Name)
 
 	// Dave cannot see it.
-	daveList, err := s.List(ctx, "", "dave", false)
+	daveList, err := s.List(ctx, ListOptions{OwnerID: "dave"})
 	require.NoError(t, err)
-	assert.Empty(t, daveList)
+	assert.Empty(t, daveList.Artifacts)
 
 	// Verify SharedWith round-trips through Get.
 	got, err := s.Get(ctx, "a1")

@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"time"
 
+	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/events"
 	"github.com/vibed-project/vibeD/internal/metrics"
 )
+
+const maxSSEConnections = 100
 
 // handleSSE returns an HTTP handler that streams artifact lifecycle events
 // using Server-Sent Events (SSE). Each connected client receives all events
@@ -17,7 +21,16 @@ import (
 // The handler sends a heartbeat comment every 30 seconds to keep the
 // connection alive through proxies and load balancers.
 func handleSSE(bus *events.EventBus, m *metrics.Metrics) http.HandlerFunc {
+	var activeConns atomic.Int64
+
 	return func(w http.ResponseWriter, r *http.Request) {
+		if activeConns.Load() >= maxSSEConnections {
+			http.Error(w, "too many SSE connections", http.StatusServiceUnavailable)
+			return
+		}
+		activeConns.Add(1)
+		defer activeConns.Add(-1)
+
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -32,6 +45,11 @@ func handleSSE(bus *events.EventBus, m *metrics.Metrics) http.HandlerFunc {
 		m.SSEConnectionsActive.Inc()
 		defer m.SSEConnectionsActive.Dec()
 
+		// Determine the authenticated user for event filtering.
+		// When auth is disabled (empty userID), all events are sent.
+		userID := vibedauth.UserIDFromContext(r.Context())
+		isAdmin := vibedauth.IsAdmin(r.Context())
+
 		ch, unsub := bus.Subscribe(r.Context())
 		defer unsub()
 
@@ -44,6 +62,10 @@ func handleSSE(bus *events.EventBus, m *metrics.Metrics) http.HandlerFunc {
 			case event, ok := <-ch:
 				if !ok {
 					return
+				}
+				// Filter events by ownership: admins and unauthenticated (auth disabled) see all.
+				if userID != "" && !isAdmin && event.OwnerID != "" && event.OwnerID != userID {
+					continue
 				}
 				data, _ := json.Marshal(event)
 				fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, data)

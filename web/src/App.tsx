@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   ArtifactSummary,
   TargetInfo,
+  WhoAmI,
   fetchArtifacts,
   fetchArtifact,
   fetchTargets,
@@ -9,16 +10,33 @@ import {
   fetchWhoami,
   fetchOrganization,
   subscribeToEvents,
+  getAuthToken,
+  setAuthToken,
+  clearAuthToken,
 } from './api/client'
 import ArtifactList from './components/ArtifactList'
 import DeploymentTargets from './components/DeploymentTargets'
 import LogViewer from './components/LogViewer'
 import VersionHistory from './components/VersionHistory'
 import ShareDialog from './components/ShareDialog'
+import AdminPanel from './components/AdminPanel'
 import SetupGuide from './components/SetupGuide'
+import ShareLinkPage from './components/ShareLinkPage'
 import './App.css'
 
+// Detect public share link route: /share/<token> or /api/share/<token>
+function getShareToken(): string | null {
+  const m = window.location.pathname.match(/^\/(?:api\/)?share\/([a-f0-9]{64})$/)
+  return m ? m[1] : null
+}
+
 function App() {
+  // Public share link route — render standalone page, no auth/nav needed
+  const shareToken = getShareToken()
+  if (shareToken) {
+    return <ShareLinkPage token={shareToken} />
+  }
+
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([])
   const [targets, setTargets] = useState<TargetInfo[]>([])
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null)
@@ -28,18 +46,59 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState<string>('')
   const [isAdmin, setIsAdmin] = useState(false)
+  const [profile, setProfile] = useState<WhoAmI | null>(null)
+  const [showProfile, setShowProfile] = useState(false)
   const [orgName, setOrgName] = useState<string>('')
+  const [totalArtifacts, setTotalArtifacts] = useState(0)
+  const [needsAuth, setNeedsAuth] = useState(false)
+  const [authInput, setAuthInput] = useState('')
+  const [authError, setAuthError] = useState('')
+
+  const initIdentity = useCallback(() => {
+    fetchWhoami()
+      .then((info) => {
+        setCurrentUser(info.id || info.user_id)
+        setIsAdmin(info.role === 'admin')
+        setProfile(info)
+        setNeedsAuth(false)
+      })
+      .catch((err) => {
+        if (err?.message?.includes('401') || err?.message?.includes('Unauthorized')) {
+          setNeedsAuth(true)
+        }
+        // Auth may be disabled — that's fine
+      })
+  }, [])
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!authInput.trim()) return
+    setAuthToken(authInput.trim())
+    setAuthError('')
+    fetchWhoami()
+      .then((info) => {
+        setCurrentUser(info.id || info.user_id)
+        setIsAdmin(info.role === 'admin')
+        setProfile(info)
+        setNeedsAuth(false)
+      })
+      .catch(() => {
+        clearAuthToken()
+        setAuthError('Invalid API key')
+      })
+  }
+
+  const handleLogout = () => {
+    clearAuthToken()
+    setCurrentUser('')
+    setIsAdmin(false)
+    setProfile(null)
+    setNeedsAuth(true)
+  }
 
   // Fetch user identity and org info on mount
   useEffect(() => {
-    fetchWhoami()
-      .then((info) => {
-        setCurrentUser(info.user_id)
-        setIsAdmin(info.role === 'admin')
-      })
-      .catch(() => {
-        // Auth may be disabled — that's fine
-      })
+    initIdentity()
 
     fetchOrganization()
       .then((org) => setOrgName(org.name))
@@ -52,8 +111,9 @@ function App() {
     try {
       setLoading(true)
       setError(null)
-      const [arts, tgts] = await Promise.all([fetchArtifacts(), fetchTargets()])
-      setArtifacts(arts)
+      const [result, tgts] = await Promise.all([fetchArtifacts(), fetchTargets()])
+      setArtifacts(result.artifacts)
+      setTotalArtifacts(result.total)
       setTargets(tgts)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data')
@@ -61,6 +121,16 @@ function App() {
       setLoading(false)
     }
   }, [])
+
+  const loadMore = useCallback(async () => {
+    try {
+      const result = await fetchArtifacts(undefined, artifacts.length)
+      setArtifacts((prev) => [...prev, ...result.artifacts])
+      setTotalArtifacts(result.total)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load more')
+    }
+  }, [artifacts.length])
 
   const handleDelete = useCallback(async (id: string) => {
     await deleteArtifact(id)
@@ -131,10 +201,68 @@ function App() {
         </div>
         <div className="header-right">
           {currentUser && (
-            <span className="user-info">
-              {isAdmin && <span className="admin-badge">admin</span>}
-              {currentUser}
-            </span>
+            <div className="profile-wrapper">
+              <button className="profile-trigger" onClick={() => setShowProfile(!showProfile)}>
+                <span className="profile-avatar">
+                  {(profile?.name || currentUser).charAt(0).toUpperCase()}
+                </span>
+                <span className="profile-name">{profile?.name || currentUser}</span>
+                {isAdmin && <span className="admin-badge">admin</span>}
+              </button>
+              {showProfile && (
+                <div className="profile-card">
+                  <div className="profile-card-header">
+                    <span className="profile-card-avatar">
+                      {(profile?.name || currentUser).charAt(0).toUpperCase()}
+                    </span>
+                    <div className="profile-card-identity">
+                      <span className="profile-card-name">{profile?.name || currentUser}</span>
+                      {profile?.email && <span className="profile-card-email">{profile.email}</span>}
+                    </div>
+                  </div>
+                  <div className="profile-card-details">
+                    <div className="profile-card-row">
+                      <span className="profile-card-label">Role</span>
+                      <span className={`profile-card-role ${isAdmin ? 'profile-card-role-admin' : ''}`}>
+                        {profile?.role || 'user'}
+                      </span>
+                    </div>
+                    <div className="profile-card-row">
+                      <span className="profile-card-label">Status</span>
+                      <span className="profile-card-status">{profile?.status || 'active'}</span>
+                    </div>
+                    {profile?.provider && (
+                      <div className="profile-card-row">
+                        <span className="profile-card-label">Provider</span>
+                        <span className="profile-card-value">{profile.provider}</span>
+                      </div>
+                    )}
+                    <div className="profile-card-row">
+                      <span className="profile-card-label">ID</span>
+                      <span className="profile-card-value profile-card-id">{profile?.id || profile?.user_id}</span>
+                    </div>
+                  </div>
+                  {getAuthToken() && (
+                    <div className="profile-card-footer">
+                      <button className="profile-logout-btn" onClick={handleLogout}>Sign out</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {needsAuth && !currentUser && (
+            <form className="auth-inline" onSubmit={handleLogin}>
+              <input
+                className="auth-input"
+                type="password"
+                placeholder="API Key"
+                value={authInput}
+                onChange={(e) => setAuthInput(e.target.value)}
+              />
+              <button className="auth-submit" type="submit">Sign in</button>
+              {authError && <span className="auth-error">{authError}</span>}
+            </form>
           )}
           <button className="refresh-btn" onClick={loadData} disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}
@@ -158,6 +286,12 @@ function App() {
           <DeploymentTargets targets={targets} />
         </section>
 
+        {isAdmin && (
+          <section className="section">
+            <AdminPanel currentUser={currentUser} />
+          </section>
+        )}
+
         <section className="section">
           <h2 className="section-title">
             Deployed Artifacts
@@ -172,6 +306,11 @@ function App() {
             onShare={(id) => setShareArtifactId(id)}
             onDelete={handleDelete}
           />
+          {artifacts.length < totalArtifacts && (
+            <button className="load-more-btn" onClick={loadMore}>
+              Load more ({artifacts.length} of {totalArtifacts})
+            </button>
+          )}
         </section>
       </main>
 

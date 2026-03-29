@@ -18,7 +18,7 @@ type listTargetsOutput struct {
 func registerTargetsTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_deployment_targets",
-		Description: "Show which deployment backends (Knative, Kubernetes, wasmCloud) are available in the current cluster.",
+		Description: "Show which deployment backends (Knative, Kubernetes) are available in the current cluster.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ listTargetsInput) (*mcp.CallToolResult, *listTargetsOutput, error) {
 		targets := orch.ListTargets()
 		return nil, &listTargetsOutput{Targets: targets}, nil

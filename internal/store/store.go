@@ -6,6 +6,46 @@ import (
 	"github.com/vibed-project/vibeD/pkg/api"
 )
 
+// UserStore persists user identities and departments.
+type UserStore interface {
+	CreateUser(ctx context.Context, user *api.User) error
+	GetUser(ctx context.Context, id string) (*api.User, error)
+	GetUserByName(ctx context.Context, name string) (*api.User, error)
+	ListUsers(ctx context.Context, departmentID string) ([]api.User, error)
+	GetUserByAPIKeyHash(ctx context.Context, hash string) (*api.User, error)
+	UpdateUser(ctx context.Context, user *api.User) error
+
+	CreateDepartment(ctx context.Context, dept *api.Department) error
+	GetDepartment(ctx context.Context, id string) (*api.Department, error)
+	GetDepartmentByName(ctx context.Context, name string) (*api.Department, error)
+	ListDepartments(ctx context.Context) ([]api.Department, error)
+	UpdateDepartment(ctx context.Context, dept *api.Department) error
+	DeleteDepartment(ctx context.Context, id string) error
+}
+
+// ShareLinkStore persists public share links.
+type ShareLinkStore interface {
+	CreateShareLink(ctx context.Context, link *api.ShareLink, passwordHash string) error
+	GetShareLink(ctx context.Context, token string) (*api.ShareLink, string, error) // returns link + password hash
+	ListShareLinks(ctx context.Context, artifactID string) ([]api.ShareLink, error)
+	RevokeShareLink(ctx context.Context, token string) error
+}
+
+// ListOptions configures artifact list queries.
+type ListOptions struct {
+	StatusFilter string
+	OwnerID      string
+	AdminView    bool
+	Offset       int
+	Limit        int // 0 means no limit (return all)
+}
+
+// ListResult contains paginated artifact results.
+type ListResult struct {
+	Artifacts []api.ArtifactSummary `json:"artifacts"`
+	Total     int                   `json:"total"`
+}
+
 // ArtifactStore persists artifact metadata and state.
 type ArtifactStore interface {
 	// Create stores a new artifact. Returns ErrAlreadyExists if name is taken.
@@ -17,10 +57,8 @@ type ArtifactStore interface {
 	// GetByName retrieves an artifact by name. Returns ErrNotFound if not found.
 	GetByName(ctx context.Context, name string) (*api.Artifact, error)
 
-	// List returns all artifacts, optionally filtered by status and owner.
-	// When ownerID is non-empty, only artifacts owned by or shared with that user are returned.
-	// When ownerID is empty or adminView is true, all artifacts are returned.
-	List(ctx context.Context, statusFilter string, ownerID string, adminView bool) ([]api.ArtifactSummary, error)
+	// List returns artifacts matching the options with pagination.
+	List(ctx context.Context, opts ListOptions) (*ListResult, error)
 
 	// Update replaces the artifact record. Returns ErrNotFound if not found.
 	Update(ctx context.Context, artifact *api.Artifact) error

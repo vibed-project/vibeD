@@ -28,10 +28,6 @@ No parameters required.
     {
       "name": "kubernetes",
       "available": true
-    },
-    {
-      "name": "wasmcloud",
-      "available": false
     }
   ]
 }

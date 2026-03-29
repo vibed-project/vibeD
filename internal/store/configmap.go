@@ -106,15 +106,14 @@ func (s *ConfigMapStore) GetByName(ctx context.Context, name string) (*api.Artif
 	return nil, &api.ErrNotFound{ArtifactID: name}
 }
 
-func (s *ConfigMapStore) List(ctx context.Context, statusFilter string, ownerID string, adminView bool) ([]api.ArtifactSummary, error) {
+func (s *ConfigMapStore) List(ctx context.Context, opts ListOptions) (*ListResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	cm, err := s.getConfigMap(ctx, s.name)
 	if err != nil {
-		// If ConfigMap doesn't exist yet, return empty list
 		if k8serrors.IsNotFound(err) {
-			return nil, nil
+			return &ListResult{}, nil
 		}
 		return nil, err
 	}
@@ -125,19 +124,32 @@ func (s *ConfigMapStore) List(ctx context.Context, statusFilter string, ownerID 
 		if err := json.Unmarshal([]byte(v), &artifact); err != nil {
 			continue
 		}
-		if statusFilter != "" && statusFilter != "all" && string(artifact.Status) != statusFilter {
+		if opts.StatusFilter != "" && opts.StatusFilter != "all" && string(artifact.Status) != opts.StatusFilter {
 			continue
 		}
-		if !adminView && ownerID != "" {
-			isOwner := artifact.OwnerID == ownerID
-			isShared := slices.Contains(artifact.SharedWith, ownerID)
+		if !opts.AdminView && opts.OwnerID != "" {
+			isOwner := artifact.OwnerID == opts.OwnerID
+			isShared := slices.Contains(artifact.SharedWith, opts.OwnerID)
 			if !isOwner && !isShared {
 				continue
 			}
 		}
 		summaries = append(summaries, artifact.ToSummary())
 	}
-	return summaries, nil
+
+	total := len(summaries)
+
+	if opts.Offset > 0 && opts.Offset < len(summaries) {
+		summaries = summaries[opts.Offset:]
+	} else if opts.Offset >= len(summaries) {
+		summaries = nil
+	}
+
+	if opts.Limit > 0 && opts.Limit < len(summaries) {
+		summaries = summaries[:opts.Limit]
+	}
+
+	return &ListResult{Artifacts: summaries, Total: total}, nil
 }
 
 func (s *ConfigMapStore) Update(ctx context.Context, artifact *api.Artifact) error {

@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/builder"
@@ -24,13 +25,16 @@ import (
 	"github.com/vibed-project/vibeD/internal/k8s"
 	mcppkg "github.com/vibed-project/vibeD/internal/mcp"
 	"github.com/vibed-project/vibeD/internal/metrics"
+	"github.com/vibed-project/vibeD/internal/middleware"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
+	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
 	"github.com/vibed-project/vibeD/pkg/api"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	knversioned "knative.dev/serving/pkg/client/clientset/versioned"
 )
 
@@ -58,6 +62,14 @@ func main() {
 
 	// Replace logger with configured format and level.
 	logger = newLogger(cfg.Server)
+
+	// Initialize tracing (before any other subsystem so spans propagate)
+	tracingShutdown, err := vibedtracing.Init(cfg.Tracing, logger)
+	if err != nil {
+		logger.Error("failed to initialize tracing", "error", err)
+		os.Exit(1)
+	}
+	defer tracingShutdown(context.Background())
 
 	logger.Info("starting vibeD",
 		"transport", cfg.Server.Transport,
@@ -167,6 +179,7 @@ func main() {
 	// Initialize artifact store
 	checker.SetNotReady("store", "initializing")
 	var st store.ArtifactStore
+	var userStore store.UserStore // non-nil only for SQLite backend
 	switch cfg.Store.Backend {
 	case "memory":
 		st = store.NewMemoryStore()
@@ -184,11 +197,17 @@ func main() {
 		}
 		defer sqliteStore.Close()
 		st = sqliteStore
+		userStore = sqliteStore // SQLiteStore implements both interfaces
 	default:
 		logger.Error("unsupported store backend", "backend", cfg.Store.Backend)
 		os.Exit(1)
 	}
 	checker.SetReady("store")
+
+	// Bootstrap API key users into user store
+	if userStore != nil && cfg.Auth.Enabled && (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "") {
+		bootstrapAPIKeyUsers(cfg.Auth.APIKeys, userStore, logger)
+	}
 
 	// Initialize deployers
 	factory := deployer.NewFactory()
@@ -206,30 +225,17 @@ func main() {
 	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, cfg.Deployment, logger)
 	factory.Register(api.TargetKubernetes, k8sDeployer)
 
-	// Register wasmCloud deployer
-	wasmDeployer := deployer.NewWasmCloudDeployer(k8sClients.DynamicClient, k8sClients.Clientset, cfg.Deployment, cfg.WasmCloud, logger)
-	factory.Register(api.TargetWasmCloud, wasmDeployer)
-
-	// Create wasm builder for wasmCloud target (shares PVC with Buildah builder)
-	wasmPVCName := cfg.Builder.Buildah.PVCName
-	if wasmPVCName == "" {
-		wasmPVCName = "vibed-data"
-	}
-	wasmNs := cfg.Builder.Buildah.Namespace
-	if wasmNs == "" {
-		wasmNs = cfg.Deployment.Namespace
-	}
-	wasmPVCMountPath := filepath.Dir(cfg.Storage.Local.BasePath)
-	wasmBldr := builder.NewWasmBuilder(
-		k8sClients.Clientset, cfg.WasmCloud.Builder, cfg.Registry,
-		wasmNs, wasmPVCName, wasmPVCMountPath, logger,
-	)
-
 	// Create orchestrator
 	// Create event bus for SSE streaming
 	bus := events.NewEventBus()
 
-	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, wasmBldr, factory, stg, st, m, k8sClients.Clientset, bus, logger)
+	// ShareLinkStore is only available with SQLite backend
+	var shareLinkStore store.ShareLinkStore
+	if sls, ok := st.(store.ShareLinkStore); ok {
+		shareLinkStore = sls
+	}
+
+	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, m, k8sClients.Clientset, bus, shareLinkStore, logger)
 
 	// Start garbage collector
 	if cfg.GC.Enabled {
@@ -249,10 +255,10 @@ func main() {
 	}
 
 	// Create MCP server
-	mcpServer := mcppkg.NewServer(orch, cfg.Limits)
+	mcpServer := mcppkg.NewServer(orch, cfg.Limits, userStore)
 
 	// Initialize authentication middleware
-	authMiddleware, err := vibedauth.Middleware(cfg.Auth, logger)
+	authMiddleware, err := vibedauth.Middleware(cfg.Auth, userStore, logger)
 	if err != nil {
 		logger.Error("failed to initialize authentication", "error", err)
 		os.Exit(1)
@@ -281,10 +287,10 @@ func main() {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, logger)
+		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, logger)
 
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -297,7 +303,7 @@ func main() {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, logger *slog.Logger) {
 	mux := http.NewServeMux()
 
 	// Health check endpoints (always unauthenticated)
@@ -315,8 +321,17 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	mux.Handle("/mcp/", mcpHandler)
 	mux.Handle("/mcp", mcpHandler)
 
+	// OAuth protected resource metadata (RFC 9728) — public, no auth required
+	if cfg.Auth.Mode == "oidc" && cfg.Auth.OIDC.Issuer != "" {
+		resourceURL := "http://localhost" + cfg.Server.HTTPAddr
+		if cfg.Auth.TLS.Enabled {
+			resourceURL = "https://localhost" + cfg.Server.HTTPAddr
+		}
+		mux.HandleFunc("/.well-known/oauth-protected-resource", vibedauth.OAuthMetadataHandler(cfg.Auth.OIDC, resourceURL))
+	}
+
 	// Frontend + API
-	frontendHandler := frontend.NewHandler(orch, cfg, bus, m)
+	frontendHandler := frontend.NewHandler(orch, cfg, bus, m, userStore)
 	mux.Handle("/", frontendHandler)
 
 	// Build handler chain: role → auth (selective) → metrics → mux
@@ -325,23 +340,48 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	// Apply auth middleware (skips health/metrics/static paths) and role middleware
 	if cfg.Auth.Enabled {
 		roleMap := vibedauth.BuildRoleMap(cfg.Auth.APIKeys)
-		handler = vibedauth.RoleMiddleware(roleMap)(handler)       // inner: inject role into context
-		handler = vibedauth.SkipAuthPaths(authMiddleware)(handler) // outer: authenticate first
+		handler = vibedauth.RoleMiddleware(roleMap, userStore)(handler) // inner: inject role into context
+		handler = vibedauth.SkipAuthPaths(authMiddleware)(handler)      // outer: authenticate first
+	} else {
+		// Auth disabled — inject admin role so all API endpoints are accessible.
+		// This makes the dashboard fully functional in no-auth (dev) mode.
+		handler = vibedauth.NoAuthAdminMiddleware()(handler)
 	}
+
+	// Apply rate limiting (after auth so we can key by user)
+	if cfg.Server.RateLimit.Enabled {
+		handler = middleware.RateLimiter(ctx, cfg.Server.RateLimit, m)(handler)
+	}
+
+	// Apply OTel HTTP tracing middleware (extracts/injects trace context)
+	if cfg.Tracing.Enabled {
+		handler = otelhttp.NewHandler(handler, "vibed-http")
+	}
+
+	// Apply security headers middleware
+	handler = securityHeadersMiddleware(handler)
 
 	// Apply metrics middleware (outermost — captures all requests)
 	handler = m.HTTPMiddleware(handler)
 
 	server := &http.Server{
-		Addr:      cfg.Server.HTTPAddr,
-		Handler:   handler,
-		TLSConfig: tlsConfig,
+		Addr:              cfg.Server.HTTPAddr,
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// WriteTimeout not set — SSE streams need long-lived writes
 	}
 
 	go func() {
 		<-ctx.Done()
 		logger.Info("shutting down HTTP server")
-		server.Close()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("HTTP server shutdown error", "error", err)
+		}
 	}()
 
 	if tlsConfig != nil {
@@ -357,6 +397,39 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "HTTP server error: %v\n", err)
 			os.Exit(1)
+		}
+	}
+}
+
+// bootstrapAPIKeyUsers seeds the user store with users from configured API keys.
+// Skips users that already exist (idempotent on restart).
+func bootstrapAPIKeyUsers(keys []config.APIKeyConf, userStore store.UserStore, logger *slog.Logger) {
+	for _, key := range keys {
+		if key.Name == "" {
+			continue
+		}
+		// Check if user already exists
+		if _, err := userStore.GetUserByName(context.Background(), key.Name); err == nil {
+			continue // already exists
+		}
+		role := key.Role
+		if role == "" {
+			role = "user"
+		}
+		now := time.Now()
+		user := &api.User{
+			ID:        fmt.Sprintf("apikey-%s", key.Name),
+			Name:      key.Name,
+			Role:      role,
+			Status:    "active",
+			Provider:  "local",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := userStore.CreateUser(context.Background(), user); err != nil {
+			logger.Debug("bootstrap user skipped", "name", key.Name, "error", err)
+		} else {
+			logger.Info("bootstrapped API key user", "name", key.Name, "role", role)
 		}
 	}
 }
@@ -382,4 +455,14 @@ func newLogger(cfg config.ServerConfig) *slog.Logger {
 		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 	return slog.New(handler)
+}
+
+// securityHeadersMiddleware adds standard security headers to all responses.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
 }

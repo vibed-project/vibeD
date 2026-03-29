@@ -6,8 +6,3 @@ knative:
     nodePort: 31080
   domain: "127.0.0.1.sslip.io"
 
-# wasmCloud configuration
-wasmcloud:
-  enabled: false
-  hostConfig:
-    enabled: true

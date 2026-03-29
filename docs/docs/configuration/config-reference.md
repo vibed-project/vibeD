@@ -16,6 +16,10 @@ server:
   httpAddr: ":8080"           # HTTP listen address
   logFormat: "text"           # text | json (structured JSON for log aggregation)
   logLevel: "info"            # debug | info | warn | error
+  rateLimit:
+    enabled: false            # Enable per-client HTTP rate limiting
+    requestsPerSecond: 10     # Steady-state rate per client
+    burst: 20                 # Max burst size per client
 
 auth:
   enabled: false              # Enable authentication for /mcp/ and /api/ endpoints
@@ -41,7 +45,7 @@ auth:
     autoTLS: false            # Auto-generate self-signed cert (dev only)
 
 deployment:
-  preferredTarget: "auto"     # auto | knative | kubernetes | wasmcloud
+  preferredTarget: "auto"     # auto | knative | kubernetes
   namespace: "default"        # K8s namespace for deployed artifacts
 
 builder:
@@ -68,6 +72,7 @@ storage:
 registry:
   enabled: false
   url: ""                     # e.g. "ghcr.io/myorg/vibed"
+  insecure: false             # Use HTTP instead of HTTPS (for in-cluster registries)
 
 store:
   backend: "sqlite"           # sqlite (default) | memory | configmap
@@ -90,6 +95,12 @@ kubernetes:
 knative:
   domainSuffix: "127.0.0.1.sslip.io"
   ingressClass: "kourier.ingress.networking.knative.dev"
+  gatewayPort: 80             # External gateway port for URLs (0 or 80 = omitted from URLs)
+
+tracing:
+  enabled: false              # Enable OpenTelemetry distributed tracing
+  endpoint: ""                # OTLP gRPC endpoint (e.g. "http://jaeger:4317"); empty = stdout
+  sampleRate: 1.0             # Sampling rate 0.0-1.0 (1.0 = sample all traces)
 ```
 
 ## Environment Variables
@@ -126,6 +137,18 @@ Every config field has an environment variable override:
 | `VIBED_TLS_CERT_FILE` | `auth.tls.certFile` | `/etc/tls/tls.crt` |
 | `VIBED_TLS_KEY_FILE` | `auth.tls.keyFile` | `/etc/tls/tls.key` |
 | `VIBED_TLS_AUTO` | `auth.tls.autoTLS` | `true` |
+| `VIBED_RATE_LIMIT_ENABLED` | `server.rateLimit.enabled` | `true` |
+| `VIBED_RATE_LIMIT_RPS` | `server.rateLimit.requestsPerSecond` | `10` |
+| `VIBED_RATE_LIMIT_BURST` | `server.rateLimit.burst` | `20` |
+| `VIBED_REGISTRY_INSECURE` | `registry.insecure` | `true` |
+| `VIBED_KNATIVE_GATEWAY_PORT` | `knative.gatewayPort` | `80` |
+| `VIBED_TRACING_ENABLED` | `tracing.enabled` | `true` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `tracing.endpoint` (also enables tracing) | `http://jaeger:4317` |
+| `VIBED_TRACING_ENDPOINT` | `tracing.endpoint` | `http://tempo:4317` |
+| `VIBED_TRACING_SAMPLE_RATE` | `tracing.sampleRate` | `0.1` |
+| `VIBED_AUTH_OIDC_ISSUER` | `auth.oidc.issuer` | `https://accounts.google.com` |
+| `VIBED_AUTH_OIDC_AUDIENCE` | `auth.oidc.audience` | `vibed` |
+| `VIBED_AUTH_OIDC_ADMIN_ROLE` | `auth.oidc.adminRole` | `vibed-admin` |
 | `KUBECONFIG` | `kubernetes.kubeconfig` | `~/.kube/config` |
 | `GITHUB_TOKEN` | (GitHub storage auth) | `ghp_...` |
 | `GITLAB_TOKEN` | (GitLab storage auth) | `glpat-...` |

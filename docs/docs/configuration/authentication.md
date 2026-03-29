@@ -56,9 +56,40 @@ auth:
 - Optional `storage` block overrides the storage backend for this user (see [Per-User Multi-Repo Storage](./storage.md#per-user-multi-repo-storage))
 - Constant-time comparison prevents timing attacks
 
-### OAuth Mode
+### OIDC Mode
 
-For production environments with an existing identity provider. In this mode, vibeD trusts an external OAuth gateway or reverse proxy to validate tokens.
+For production environments with an OpenID Connect identity provider (Keycloak, Auth0, Okta, Google). vibeD validates JWT tokens directly against the provider's JWKS endpoint.
+
+```yaml
+auth:
+  enabled: true
+  mode: "oidc"
+  oidc:
+    issuer: "https://auth.example.com/realms/vibed"   # OIDC issuer URL
+    audience: "vibed"                                    # Expected audience claim
+    usernameClaim: "preferred_username"                   # JWT claim for username
+    emailClaim: "email"                                  # JWT claim for email
+    roleClaim: "realm_access.roles"                      # JWT claim for roles
+    adminRole: "vibed-admin"                             # Role value that grants admin access
+    scopes:                                              # Scopes to request
+      - "openid"
+      - "profile"
+      - "email"
+```
+
+vibeD publishes an [OAuth Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728) endpoint at `/.well-known/oauth-protected-resource` so MCP clients can discover the authorization server automatically.
+
+**Environment variable overrides:**
+
+| Variable | Description |
+|----------|-------------|
+| `VIBED_AUTH_OIDC_ISSUER` | OIDC issuer URL |
+| `VIBED_AUTH_OIDC_AUDIENCE` | Expected audience claim |
+| `VIBED_AUTH_OIDC_ADMIN_ROLE` | Role that grants admin access |
+
+### OAuth Proxy Mode
+
+For environments where an external OAuth gateway or reverse proxy validates tokens. vibeD trusts the proxy to authenticate requests.
 
 ```yaml
 auth:
@@ -78,6 +109,7 @@ The external proxy (e.g., OAuth2 Proxy, Pomerium, or an API gateway) should:
 |----------|----------------|
 | `/mcp/*` | **Required** when auth is enabled |
 | `/api/*` | **Required** when auth is enabled |
+| `/api/share/*` | Always open (public share links) |
 | `/healthz` | Always open (Kubernetes liveness probe) |
 | `/readyz` | Always open (Kubernetes readiness probe) |
 | `/metrics` | Always open (Prometheus scraping) |
@@ -259,7 +291,10 @@ Add vibeD as a remote MCP server in Claude Desktop settings:
 |----------|-------------|---------|
 | `VIBED_AUTH_API_KEY` | Set a single API key (auto-enables auth) | `vibed_sk_...` |
 | `VIBED_AUTH_ENABLED` | Enable/disable authentication | `true` |
-| `VIBED_AUTH_MODE` | Authentication mode | `apikey` or `oauth` |
+| `VIBED_AUTH_MODE` | Authentication mode | `apikey`, `oidc`, or `oauth` |
+| `VIBED_AUTH_OIDC_ISSUER` | OIDC issuer URL | `https://auth.example.com` |
+| `VIBED_AUTH_OIDC_AUDIENCE` | OIDC expected audience | `vibed` |
+| `VIBED_AUTH_OIDC_ADMIN_ROLE` | OIDC role granting admin | `vibed-admin` |
 | `VIBED_TLS_ENABLED` | Enable HTTPS | `true` |
 | `VIBED_TLS_CERT_FILE` | Path to TLS certificate | `/etc/tls/tls.crt` |
 | `VIBED_TLS_KEY_FILE` | Path to TLS private key | `/etc/tls/tls.key` |

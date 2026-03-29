@@ -43,7 +43,15 @@ const sidebars = {
         'mcp-tools/rollback-artifact',
         'mcp-tools/share-artifact',
         'mcp-tools/unshare-artifact',
+        'mcp-tools/create-share-link',
+        'mcp-tools/list-share-links',
+        'mcp-tools/revoke-share-link',
       ],
+    },
+    {
+      type: 'category',
+      label: 'Development',
+      items: ['development/testing'],
     },
   ],
 };

@@ -18,14 +18,15 @@ type updateArtifactInput struct {
 
 func registerUpdateTool(server *mcp.Server, orch *orchestrator.Orchestrator, limits config.LimitsConfig) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "update_artifact",
-		Description: "Update an existing deployed artifact with new source files. Triggers a rebuild and redeployment.",
+		Name: "update_artifact",
+		Description: "Update an existing deployed artifact with new source files. Triggers a rebuild and redeployment. " +
+			"Returns immediately with status \"building\" and the artifact_id — use get_artifact_status to poll until status is \"running\".",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input updateArtifactInput) (*mcp.CallToolResult, *orchestrator.DeployResult, error) {
 		if err := validateFileLimits(input.Files, limits); err != nil {
 			return nil, nil, err
 		}
 
-		result, err := orch.Update(ctx, orchestrator.UpdateRequest{
+		result, err := orch.AsyncUpdate(ctx, orchestrator.UpdateRequest{
 			ArtifactID: input.ArtifactID,
 			Files:      input.Files,
 			EnvVars:    input.EnvVars,

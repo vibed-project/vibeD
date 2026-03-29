@@ -40,7 +40,7 @@ The final image exposes port 8080 and runs as a non-root user.
 
 ## Step 2: Install Dependencies
 
-vibeD can deploy artifacts to Knative, plain Kubernetes, or wasmCloud. If you want Knative (recommended for serverless scaling), install it first.
+vibeD can deploy artifacts to Knative or plain Kubernetes. If you want Knative (recommended for serverless scaling), install it first.
 
 ### Option A: vibed-deps Chart (Quick Start)
 

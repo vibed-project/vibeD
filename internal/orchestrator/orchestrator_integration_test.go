@@ -111,9 +111,9 @@ func TestOrchestrator_DeployAndList(t *testing.T) {
 	_, err = orch.Deploy(ctx, req2)
 	require.NoError(t, err)
 
-	list, err := orch.List(ctx, "")
+	list, err := orch.List(ctx, "", 0, 0)
 	require.NoError(t, err)
-	assert.Len(t, list, 2)
+	assert.Len(t, list.Artifacts, 2)
 }
 
 func TestOrchestrator_DeployListFilter(t *testing.T) {
@@ -125,13 +125,13 @@ func TestOrchestrator_DeployListFilter(t *testing.T) {
 	_, err := orch.Deploy(ctx, req)
 	require.NoError(t, err)
 
-	running, err := orch.List(ctx, "running")
+	running, err := orch.List(ctx, "running", 0, 0)
 	require.NoError(t, err)
-	assert.Len(t, running, 1)
+	assert.Len(t, running.Artifacts, 1)
 
-	failed, err := orch.List(ctx, "failed")
+	failed, err := orch.List(ctx, "failed", 0, 0)
 	require.NoError(t, err)
-	assert.Len(t, failed, 0)
+	assert.Len(t, failed.Artifacts, 0)
 }
 
 func TestOrchestrator_UpdateArtifact(t *testing.T) {
@@ -196,9 +196,9 @@ func TestOrchestrator_FullLifecycle(t *testing.T) {
 	artifactID := deployResult.ArtifactID
 
 	// 2. List — should contain the artifact
-	list, err := orch.List(ctx, "")
+	list, err := orch.List(ctx, "", 0, 0)
 	require.NoError(t, err)
-	assert.Len(t, list, 1)
+	assert.Len(t, list.Artifacts, 1)
 	assert.Equal(t, name, list[0].Name)
 
 	// 3. Status — should be running
@@ -219,9 +219,9 @@ func TestOrchestrator_FullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// 6. List — should be empty
-	list, err = orch.List(ctx, "")
+	list, err = orch.List(ctx, "", 0, 0)
 	require.NoError(t, err)
-	assert.Len(t, list, 0)
+	assert.Len(t, list.Artifacts, 0)
 }
 
 func TestOrchestrator_ListTargets(t *testing.T) {
@@ -318,9 +318,9 @@ func TestOrchestrator_BuildFailure(t *testing.T) {
 	assert.IsType(t, &api.ErrBuildFailed{}, err)
 
 	// Verify the artifact is marked as failed in the store
-	list, err := orch.List(ctx, "failed")
+	list, err := orch.List(ctx, "failed", 0, 0)
 	require.NoError(t, err)
-	assert.Len(t, list, 1)
+	assert.Len(t, list.Artifacts, 1)
 }
 
 func TestOrchestrator_Logs(t *testing.T) {

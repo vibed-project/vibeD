@@ -29,7 +29,7 @@ vibeD is built on the shoulders of the cloud native ecosystem. At its core, it l
 
 On top of Kubernetes, vibeD integrates with **Knative Serving** for serverless workloads. Knative brings scale-to-zero, automatic TLS, and revision-based traffic management. For artifacts that don't need to run 24/7 (and most AI-generated prototypes don't), this means zero cost when idle and instant startup when someone visits the URL.
 
-For teams that don't have Knative installed, vibeD falls back gracefully to plain **Kubernetes Deployments** — no special CRDs required. And for compiled languages like Go and Rust, vibeD can deploy to **wasmCloud** as lightweight WebAssembly components.
+For teams that don't have Knative installed, vibeD falls back gracefully to plain **Kubernetes Deployments** — no special CRDs required.
 
 This multi-target approach is intentional: vibeD meets your infrastructure where it is, rather than demanding a specific stack.
 
@@ -49,7 +49,7 @@ vibeD is a single Go binary. No microservices, no sidecars, no complex operator 
 2. **REST API** — a JSON API for programmatic access and the dashboard
 3. **Web Dashboard** — a React SPA for humans to monitor and manage artifacts
 
-Under the hood, vibeD follows an interface-driven architecture. Every subsystem like storage, building, deploying, state management, is behind a Go interface with multiple implementations. This means you can swap out the artifact store (in-memory, ConfigMap, or SQLite), the storage backend (local filesystem, GitHub, or GitLab), or the deployment target (Knative, Kubernetes, or wasmCloud) without changing any business logic.
+Under the hood, vibeD follows an interface-driven architecture. Every subsystem like storage, building, deploying, state management, is behind a Go interface with multiple implementations. This means you can swap out the artifact store (in-memory, ConfigMap, or SQLite), the storage backend (local filesystem, GitHub, or GitLab), or the deployment target (Knative or Kubernetes) without changing any business logic.
 
 The build process uses **Buildah**, running as Kubernetes Jobs inside the cluster. vibeD auto-generates the right Dockerfile based on the detected language (Node.js, Python, Go, Rust, or static HTML) so the user (and the AI) never needs to write one.
 

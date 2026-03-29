@@ -101,7 +101,12 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 	}
 	jobName := fmt.Sprintf("vibed-build-%s", shortID)
 
-	// 4. Build the Buildah command
+	// 4. Validate image name to prevent shell injection
+	if err := validateImageName(req.ImageName); err != nil {
+		return nil, fmt.Errorf("invalid image name: %w", err)
+	}
+
+	// 5. Build the Buildah command
 	tlsVerify := "true"
 	if b.insecure {
 		tlsVerify = "false"
@@ -262,3 +267,6 @@ func (b *BuildahBuilder) cleanup(_ context.Context, jobName string) {
 		b.logger.Warn("failed to cleanup build Job", "job", jobName, "error", err)
 	}
 }
+
+// PublishesInternally returns true: BuildahBuilder pushes to the registry inside the K8s Job.
+func (b *BuildahBuilder) PublishesInternally() bool { return true }

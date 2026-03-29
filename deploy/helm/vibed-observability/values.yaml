@@ -1,69 +1,221 @@
-# Lightweight observability stack for vibeD local development.
-# Installs Prometheus + Grafana via kube-prometheus-stack, configured
-# for a Kind cluster with minimal resource usage.
+# Full observability stack for vibeD local development.
+# Prometheus (metrics) + Grafana (dashboards) + Tempo (traces) + Loki (logs) + OTel Collector.
 
-kube-prometheus-stack:
-  # Disable components not needed for local dev
-  alertmanager:
-    enabled: false
-  nodeExporter:
-    enabled: false
-  kubeStateMetrics:
-    enabled: true
-
-  # Prometheus configuration
-  prometheus:
-    prometheusSpec:
-      retention: 24h
-      # Scrape ALL ServiceMonitors/PodMonitors regardless of labels
-      serviceMonitorSelectorNilUsesHelmValues: false
-      podMonitorSelectorNilUsesHelmValues: false
-      ruleSelectorNilUsesHelmValues: false
-      resources:
-        limits:
-          cpu: 500m
-          memory: 512Mi
-        requests:
-          cpu: 100m
-          memory: 256Mi
-      # Annotation-based scraping — picks up vibeD's pod annotations
-      # (prometheus.io/scrape, prometheus.io/port, prometheus.io/path)
-      additionalScrapeConfigs:
-        - job_name: "kubernetes-pods"
-          kubernetes_sd_configs:
-            - role: pod
-          relabel_configs:
-            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-              action: keep
-              regex: true
-            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-              action: replace
-              target_label: __metrics_path__
-              regex: (.+)
-            - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-              action: replace
-              regex: ([^:]+)(?::\d+)?;(\d+)
-              replacement: $1:$2
-              target_label: __address__
-            - action: labelmap
-              regex: __meta_kubernetes_pod_label_(.+)
-            - source_labels: [__meta_kubernetes_namespace]
-              action: replace
-              target_label: namespace
-            - source_labels: [__meta_kubernetes_pod_name]
-              action: replace
-              target_label: pod
+# --- Prometheus ---
+prometheus:
+  server:
+    retention: "24h"
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
     service:
       type: NodePort
       nodePort: 31900
+    extraScrapeConfigs:
+      - job_name: "kubernetes-pods"
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+  alertmanager:
+    enabled: false
+  kube-state-metrics:
+    enabled: true
+  prometheus-node-exporter:
+    enabled: false
+  prometheus-pushgateway:
+    enabled: false
 
-  # Grafana configuration
-  grafana:
-    adminPassword: "vibed-dev"
+# --- Grafana ---
+grafana:
+  adminPassword: "vibed-dev"
+  service:
+    type: NodePort
+    nodePort: 31300
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          uid: prometheus
+          url: http://vibed-observability-prometheus-server:80
+          isDefault: true
+          access: proxy
+        - name: Tempo
+          type: tempo
+          uid: tempo
+          url: http://vibed-observability-tempo:3100
+          access: proxy
+          jsonData:
+            tracesToMetrics:
+              datasourceUid: prometheus
+            serviceMap:
+              datasourceUid: prometheus
+            nodeGraph:
+              enabled: true
+            traceQuery:
+              timeShiftEnabled: true
+              spanStartTimeShift: "-30m"
+              spanEndTimeShift: "30m"
+        - name: Loki
+          type: loki
+          uid: loki
+          url: http://vibed-observability-loki:3100
+          access: proxy
+          jsonData:
+            derivedFields:
+              - name: TraceID
+                matcherRegex: '"trace_id":"([a-f0-9]+)"'
+                url: "$${__value.raw}"
+                datasourceUid: tempo
+                urlDisplayLabel: "View Trace"
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+
+# --- Tempo (traces) ---
+tempo:
+  tempo:
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# --- Loki (logs) ---
+loki:
+  deploymentMode: SingleBinary
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    storage:
+      type: filesystem
+    schemaConfig:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: loki_index_
+            period: 24h
+  singleBinary:
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+  backend:
+    replicas: 0
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+
+# --- Promtail (log shipper) ---
+promtail:
+  config:
+    clients:
+      - url: http://vibed-observability-loki:3100/loki/api/v1/push
+    snippets:
+      pipelineStages:
+        - cri: {}
+
+# --- OpenTelemetry Collector (trace pipeline) ---
+opentelemetry-collector:
+  mode: deployment
+  replicaCount: 1
+  image:
+    repository: otel/opentelemetry-collector-contrib
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+    exporters:
+      otlp/tempo:
+        endpoint: "vibed-observability-tempo:4317"
+        tls:
+          insecure: true
+      debug:
+        verbosity: basic
     service:
-      type: NodePort
-      nodePort: 31300
-    sidecar:
-      dashboards:
-        enabled: true
-        label: grafana_dashboard
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/tempo, debug]
+  service:
+    type: ClusterIP
+  ports:
+    otlp:
+      enabled: true
+      containerPort: 4317
+      servicePort: 4317
+      protocol: TCP
+    otlp-http:
+      enabled: true
+      containerPort: 4318
+      servicePort: 4318
+      protocol: TCP

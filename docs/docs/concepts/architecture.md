@@ -75,6 +75,6 @@ Key characteristics:
 | **Store** | `ArtifactStore` | In-memory, ConfigMap, SQLite (all support owner-scoped listing) |
 | **Storage** | `Storage` | Local filesystem, GitHub, GitLab, UserStorageRouter (per-user routing) |
 | **Builder** | `Builder` | Buildah (K8s Jobs) — auto-generates Dockerfiles per language |
-| **Deployer** | `Deployer` | Knative, Kubernetes, wasmCloud |
+| **Deployer** | `Deployer` | Knative, Kubernetes |
 | **Registry** | `Registry` | Any OCI-compatible registry |
 | **EventBus** | — | In-memory pub/sub with SSE streaming |

@@ -4,14 +4,14 @@ sidebar_position: 1
 
 # MCP Tools Overview
 
-vibeD exposes 11 MCP tools that AI coding tools can call to deploy and manage artifacts.
+vibeD exposes 14 MCP tools that AI coding tools can call to deploy and manage artifacts.
 
 ## Available Tools
 
 | Tool | Description |
 |------|-------------|
 | [`deploy_artifact`](./deploy-artifact) | Deploy source files as a web artifact |
-| [`list_artifacts`](./list-artifacts) | List all deployed artifacts |
+| [`list_artifacts`](./list-artifacts) | List deployed artifacts (paginated) |
 | [`get_artifact_status`](./get-artifact-status) | Get detailed status for one artifact |
 | [`update_artifact`](./update-artifact) | Update an existing artifact with new files |
 | [`delete_artifact`](./delete-artifact) | Stop and remove an artifact |
@@ -21,6 +21,9 @@ vibeD exposes 11 MCP tools that AI coding tools can call to deploy and manage ar
 | [`rollback_artifact`](./rollback-artifact) | Roll back to a previous version |
 | [`share_artifact`](./share-artifact) | Grant read-only access to other users |
 | [`unshare_artifact`](./unshare-artifact) | Revoke shared access |
+| [`create_share_link`](./create-share-link) | Create a public shareable link |
+| [`list_share_links`](./list-share-links) | List share links for an artifact |
+| [`revoke_share_link`](./revoke-share-link) | Revoke a public share link |
 
 ## Transport Modes
 

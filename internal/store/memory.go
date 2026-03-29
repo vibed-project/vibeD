@@ -64,25 +64,40 @@ func (s *MemoryStore) GetByName(_ context.Context, name string) (*api.Artifact, 
 	return &copy, nil
 }
 
-func (s *MemoryStore) List(_ context.Context, statusFilter string, ownerID string, adminView bool) ([]api.ArtifactSummary, error) {
+func (s *MemoryStore) List(_ context.Context, opts ListOptions) (*ListResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var summaries []api.ArtifactSummary
 	for _, a := range s.artifacts {
-		if statusFilter != "" && statusFilter != "all" && string(a.Status) != statusFilter {
+		if opts.StatusFilter != "" && opts.StatusFilter != "all" && string(a.Status) != opts.StatusFilter {
 			continue
 		}
-		if !adminView && ownerID != "" {
-			isOwner := a.OwnerID == ownerID
-			isShared := slices.Contains(a.SharedWith, ownerID)
+		if !opts.AdminView && opts.OwnerID != "" {
+			isOwner := a.OwnerID == opts.OwnerID
+			isShared := slices.Contains(a.SharedWith, opts.OwnerID)
 			if !isOwner && !isShared {
 				continue
 			}
 		}
 		summaries = append(summaries, a.ToSummary())
 	}
-	return summaries, nil
+
+	total := len(summaries)
+
+	// Apply offset
+	if opts.Offset > 0 && opts.Offset < len(summaries) {
+		summaries = summaries[opts.Offset:]
+	} else if opts.Offset >= len(summaries) {
+		summaries = nil
+	}
+
+	// Apply limit
+	if opts.Limit > 0 && opts.Limit < len(summaries) {
+		summaries = summaries[:opts.Limit]
+	}
+
+	return &ListResult{Artifacts: summaries, Total: total}, nil
 }
 
 func (s *MemoryStore) Update(_ context.Context, artifact *api.Artifact) error {

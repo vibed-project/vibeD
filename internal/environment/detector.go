@@ -26,8 +26,7 @@ func NewDetector(clients *k8s.Clients, logger *slog.Logger) *Detector {
 
 // DetectResult holds the availability of each deployment target.
 type DetectResult struct {
-	Knative   bool
-	WasmCloud bool
+	Knative bool
 	// Kubernetes is always available if we can talk to the cluster.
 	Kubernetes bool
 }
@@ -44,15 +43,8 @@ func (d *Detector) Detect() *DetectResult {
 	}
 	result.Knative = knative
 
-	wasmcloud, err := k8s.HasCRD(d.discovery, "core.oam.dev", "v1beta1", "applications")
-	if err != nil {
-		d.logger.Warn("failed to check for wasmCloud CRDs", "error", err)
-	}
-	result.WasmCloud = wasmcloud
-
 	d.logger.Debug("detected deployment targets",
 		"knative", result.Knative,
-		"wasmcloud", result.WasmCloud,
 		"kubernetes", result.Kubernetes,
 	)
 
@@ -71,21 +63,12 @@ func (d *Detector) SelectTarget(preferred api.DeploymentTarget) (api.DeploymentT
 		}
 		return api.TargetKnative, nil
 
-	case api.TargetWasmCloud:
-		if !result.WasmCloud {
-			return "", &api.ErrTargetUnavailable{Target: api.TargetWasmCloud}
-		}
-		return api.TargetWasmCloud, nil
-
 	case api.TargetKubernetes:
 		return api.TargetKubernetes, nil
 
 	default: // "auto"
 		if result.Knative {
 			return api.TargetKnative, nil
-		}
-		if result.WasmCloud {
-			return api.TargetWasmCloud, nil
 		}
 		return api.TargetKubernetes, nil
 	}
@@ -107,12 +90,6 @@ func (d *Detector) ListTargets() []api.TargetInfo {
 			Available:   result.Kubernetes,
 			Preferred:   false,
 			Description: "Plain Kubernetes - Deployment + Service (always available)",
-		},
-		{
-			Name:        api.TargetWasmCloud,
-			Available:   result.WasmCloud,
-			Preferred:   false,
-			Description: "wasmCloud - WebAssembly component deployment via OAM",
 		},
 	}
 }

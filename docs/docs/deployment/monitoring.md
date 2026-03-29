@@ -78,13 +78,21 @@ HTTP paths are normalized to prevent high cardinality (e.g., `/api/artifacts/:id
 
 The SSE endpoint (`GET /api/events`) streams real-time artifact lifecycle events to connected dashboard clients. This gauge tracks how many clients are currently connected.
 
+### Rate Limiting Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `vibed_http_rate_limited_total` | Counter | `client_type` | HTTP requests rejected by rate limiting |
+
+The `client_type` label is `apikey` when the client is authenticated or `ip` when identified by IP address. See [Configuration Reference](../configuration/config-reference.md) for rate limit settings.
+
 ### Label Values
 
 | Label | Possible Values |
 |-------|----------------|
 | `status` | `success`, `error` |
 | `language` | `nodejs`, `python`, `go`, `static` |
-| `target` | `knative`, `kubernetes`, `wasmcloud` |
+| `target` | `knative`, `kubernetes` |
 | `tool` | `deploy_artifact`, `update_artifact`, `list_artifacts`, `get_artifact_status`, `get_artifact_logs`, `delete_artifact`, `list_deployment_targets` |
 
 ## Scraping with Prometheus
@@ -243,3 +251,47 @@ vibeD does not ship a bundled Grafana dashboard, but you can build one from the 
 - **HTTP Latency P99** - `histogram_quantile(0.99, rate(vibed_http_request_duration_seconds_bucket[5m]))`
 - **GC Cleanup Rate** - `rate(vibed_gc_resources_cleaned_total[1h])` by type
 - **SSE Connections** - `vibed_sse_connections_active`
+
+## Distributed Tracing (OpenTelemetry)
+
+vibeD supports OpenTelemetry distributed tracing, providing end-to-end visibility into the deploy pipeline. Each deploy produces a trace with child spans for build, push, and deploy steps.
+
+### Enabling Tracing
+
+```yaml
+tracing:
+  enabled: true
+  endpoint: "http://jaeger:4317"   # OTLP gRPC endpoint
+  sampleRate: 1.0                  # 1.0 = sample all, 0.1 = 10%
+```
+
+Or via environment variables:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317   # Also enables tracing
+export VIBED_TRACING_SAMPLE_RATE=1.0
+```
+
+### Exporters
+
+| Configuration | Behavior |
+|---------------|----------|
+| `endpoint` set | Sends traces via OTLP gRPC to the specified collector (Jaeger, Tempo, etc.) |
+| `endpoint` empty | Prints traces to stdout in pretty-print format (development mode) |
+| `enabled: false` | No-op tracer, zero overhead |
+
+### Trace Structure
+
+A deploy operation produces spans like:
+
+```
+orchestrator.Deploy (root)
+  +-- builder.Build
+  +-- deployer.Deploy
+```
+
+Update and rollback operations are similarly instrumented. HTTP requests are traced via the `otelhttp` middleware, which extracts and injects `traceparent` headers.
+
+### Viewing Traces
+
+Any OpenTelemetry-compatible backend works: Jaeger, Grafana Tempo, Datadog, Honeycomb, or New Relic. For the dev setup with `vibed-observability` chart, add Tempo as a Helm dependency or use the stdout exporter for quick debugging.

@@ -30,7 +30,7 @@ Stop and remove a deployed artifact. This deletes the deployment, stored source 
 
 ## What Happens
 
-1. **Deletes** the Knative Service, Kubernetes Deployment, or wasmCloud component
+1. **Deletes** the Knative Service or Kubernetes Deployment
 2. **Removes** stored source files from the storage backend
 3. **Removes** the artifact record from the store
 4. **Emits** a `deleted` event via the EventBus

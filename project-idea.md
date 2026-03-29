@@ -3,10 +3,9 @@ vibeD is a tool that functions as a workload orchestrator for GenAI generated ar
 
 Towards the vibecoding tools, vibeD is exposed via an MCP server. 
 
-vibeD doesn't run the workload/artifacts by itself. It should support 3 options:
+vibeD doesn't run the workload/artifacts by itself. It should support 2 options:
 1. Kubernetes native workload as a Pod or Deployment
 2. via Knative as a serverless item (preferred)
-3. via wasmcloud as a wasm container (where available and possible)
 
 Therefore, vibeD should check which options are available and package the workload for the right environment. To create the containers and deplyoment artifacts use buildpacks.
 
@@ -29,7 +28,6 @@ We assume vibeD will always run on a Kubernetes cluster, coming with the predefi
 ## Dependencies
 vibeD will have dependencies or better to say prerequisits that need to be available and that vibeD communicates to. Out of my head I see for this primary:
 * knative as serverless engine
-* wasmcloud for wasm workload
 
 If further pre-installed tools are needed those also will go into the dependencies folder.
 Please create deployment templates with Helm for all dependencies.

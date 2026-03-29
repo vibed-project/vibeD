@@ -1,10 +1,25 @@
 apiVersion: v2
 name: vibed-observability
-description: Observability stack for vibeD local development (Prometheus + Grafana)
+description: Full observability stack for vibeD (Prometheus, Grafana, Tempo, Loki, OTel Collector)
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 dependencies:
-  - name: kube-prometheus-stack
-    version: "~68.0"
+  - name: prometheus
+    version: "~28.0"
     repository: https://prometheus-community.github.io/helm-charts
+  - name: grafana
+    version: "~10.0"
+    repository: https://grafana.github.io/helm-charts
+  - name: tempo
+    version: "~1.24"
+    repository: https://grafana.github.io/helm-charts
+  - name: loki
+    version: "~6.55"
+    repository: https://grafana.github.io/helm-charts
+  - name: promtail
+    version: "~6.17"
+    repository: https://grafana.github.io/helm-charts
+  - name: opentelemetry-collector
+    version: "~0.147"
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts

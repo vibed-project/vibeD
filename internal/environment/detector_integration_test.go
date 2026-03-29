@@ -68,33 +68,21 @@ func TestDetector_SelectTarget_Explicit(t *testing.T) {
 	assert.Equal(t, api.TargetKubernetes, target)
 }
 
-func TestDetector_SelectTarget_Unavailable(t *testing.T) {
-	testutil.SkipIfNoCluster(t)
-	d := newTestDetector(t)
-
-	// wasmCloud CRDs are not installed in the test cluster
-	_, err := d.SelectTarget(api.TargetWasmCloud)
-	require.Error(t, err)
-	assert.IsType(t, &api.ErrTargetUnavailable{}, err)
-}
-
 func TestDetector_ListTargets(t *testing.T) {
 	testutil.SkipIfNoCluster(t)
 	d := newTestDetector(t)
 
 	targets := d.ListTargets()
-	assert.Len(t, targets, 3, "should return 3 target types")
+	assert.Len(t, targets, 2, "should return 2 target types")
 
 	// Find each target
-	var k8sTarget, knativeTarget, wasmTarget *api.TargetInfo
+	var k8sTarget, knativeTarget *api.TargetInfo
 	for i := range targets {
 		switch targets[i].Name {
 		case api.TargetKubernetes:
 			k8sTarget = &targets[i]
 		case api.TargetKnative:
 			knativeTarget = &targets[i]
-		case api.TargetWasmCloud:
-			wasmTarget = &targets[i]
 		}
 	}
 
@@ -103,7 +91,4 @@ func TestDetector_ListTargets(t *testing.T) {
 
 	require.NotNil(t, knativeTarget, "Knative target should be present")
 	// Knative availability depends on cluster setup
-
-	require.NotNil(t, wasmTarget, "wasmCloud target should be present")
-	assert.False(t, wasmTarget.Available, "wasmCloud should not be available")
 }

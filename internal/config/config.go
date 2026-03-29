@@ -22,9 +22,16 @@ type Config struct {
 	Store        StoreConfig        `yaml:"store"`
 	Kubernetes   KubernetesConfig   `yaml:"kubernetes"`
 	Knative      KnativeConfig      `yaml:"knative"`
-	WasmCloud    WasmCloudConfig    `yaml:"wasmcloud"`
 	Limits       LimitsConfig       `yaml:"limits"`
 	GC           GCConfig           `yaml:"gc"`
+	Tracing      TracingConfig      `yaml:"tracing"`
+}
+
+// TracingConfig configures OpenTelemetry distributed tracing.
+type TracingConfig struct {
+	Enabled    bool    `yaml:"enabled"`    // Enable tracing (default: false)
+	Endpoint   string  `yaml:"endpoint"`   // OTLP gRPC endpoint (e.g. "http://jaeger:4317"); empty = stdout
+	SampleRate float64 `yaml:"sampleRate"` // Sampling rate 0.0–1.0 (default: 1.0)
 }
 
 // OrganizationConfig holds the organization identity.
@@ -42,18 +49,32 @@ type LimitsConfig struct {
 // AuthConfig holds authentication and TLS settings.
 type AuthConfig struct {
 	Enabled bool         `yaml:"enabled"`
-	Mode    string       `yaml:"mode"` // "apikey" or "oauth"
+	Mode    string       `yaml:"mode"` // "apikey", "oauth", or "oidc"
 	APIKeys []APIKeyConf `yaml:"apiKeys"`
+	OIDC    OIDCConfig   `yaml:"oidc"`
 	TLS     TLSConf      `yaml:"tls"`
+}
+
+// OIDCConfig configures OIDC (OpenID Connect) authentication.
+type OIDCConfig struct {
+	Issuer          string   `yaml:"issuer"`          // OIDC issuer URL (e.g. "https://keycloak.example.com/realms/vibed")
+	Audience        string   `yaml:"audience"`        // Expected audience claim (e.g. "vibed")
+	UsernameClaim   string   `yaml:"usernameClaim"`   // JWT claim for username (default: "preferred_username")
+	EmailClaim      string   `yaml:"emailClaim"`      // JWT claim for email (default: "email")
+	RoleClaim       string   `yaml:"roleClaim"`       // JWT claim path for roles (default: "realm_access.roles")
+	AdminRole       string   `yaml:"adminRole"`       // Role value that maps to vibeD admin (default: "vibed-admin")
+	DepartmentClaim string   `yaml:"departmentClaim"` // JWT claim for department name (e.g. "department")
+	Scopes          []string `yaml:"scopes"`          // Scopes to advertise (default: ["openid", "profile"])
 }
 
 // APIKeyConf represents a configured API key with optional per-user storage.
 type APIKeyConf struct {
-	Key     string           `yaml:"key"`               // Token value or "env:VAR_NAME"
-	Name    string           `yaml:"name"`              // Human-readable name (used as UserID)
-	Scopes  []string         `yaml:"scopes"`            // Allowed scopes (empty = all)
-	Role    string           `yaml:"role,omitempty"`    // "admin" or "user" (default: "user")
-	Storage *UserStorageConf `yaml:"storage,omitempty"` // Per-user storage override
+	Key        string           `yaml:"key"`                  // Token value or "env:VAR_NAME"
+	Name       string           `yaml:"name"`                 // Human-readable name (used as UserID)
+	Scopes     []string         `yaml:"scopes"`               // Allowed scopes (empty = all)
+	Role       string           `yaml:"role,omitempty"`       // "admin" or "user" (default: "user")
+	Department string           `yaml:"department,omitempty"` // Auto-assign to this department on provisioning
+	Storage    *UserStorageConf `yaml:"storage,omitempty"`    // Per-user storage override
 }
 
 // UserStorageConf configures per-user artifact storage.
@@ -88,14 +109,23 @@ type TLSConf struct {
 }
 
 type ServerConfig struct {
-	Transport string `yaml:"transport"` // "stdio", "http", or "both"
-	HTTPAddr  string `yaml:"httpAddr"`
-	LogFormat string `yaml:"logFormat"` // "text" (default) or "json"
-	LogLevel  string `yaml:"logLevel"`  // "debug", "info" (default), "warn", "error"
+	Transport string          `yaml:"transport"` // "stdio", "http", or "both"
+	HTTPAddr  string          `yaml:"httpAddr"`
+	BaseURL   string          `yaml:"baseURL"`   // public-facing base URL for link generation, e.g. "http://localhost:8080"
+	LogFormat string          `yaml:"logFormat"` // "text" (default) or "json"
+	LogLevel  string          `yaml:"logLevel"`  // "debug", "info" (default), "warn", "error"
+	RateLimit RateLimitConfig `yaml:"rateLimit"`
+}
+
+// RateLimitConfig configures HTTP rate limiting per client.
+type RateLimitConfig struct {
+	Enabled           bool    `yaml:"enabled"`           // Enable rate limiting (default: false)
+	RequestsPerSecond float64 `yaml:"requestsPerSecond"` // Steady-state rate per client (default: 10)
+	Burst             int     `yaml:"burst"`             // Max burst size per client (default: 20)
 }
 
 type DeploymentConfig struct {
-	PreferredTarget string `yaml:"preferredTarget"` // "auto", "knative", "kubernetes", "wasmcloud"
+	PreferredTarget string `yaml:"preferredTarget"` // "auto", "knative", "kubernetes"
 	Namespace       string `yaml:"namespace"`
 }
 
@@ -184,19 +214,6 @@ type GCConfig struct {
 	DryRun   bool   `yaml:"dryRun"`   // Log without deleting (default: false)
 }
 
-// WasmCloudConfig holds wasmCloud-specific configuration.
-type WasmCloudConfig struct {
-	LatticeID string            `yaml:"latticeId"` // wasmCloud lattice ID (default: "default")
-	Builder   WasmBuilderConfig `yaml:"builder"`
-}
-
-// WasmBuilderConfig configures the wasm component builder.
-type WasmBuilderConfig struct {
-	Image    string `yaml:"image"`    // Builder image with wash + toolchains (default: "ghcr.io/vibed/wasm-builder:latest")
-	Timeout  string `yaml:"timeout"`  // Build timeout (default: "10m")
-	Insecure bool   `yaml:"insecure"` // Allow insecure OCI registry push
-}
-
 // Default returns a Config with sensible defaults.
 func Default() *Config {
 	return &Config{
@@ -205,6 +222,10 @@ func Default() *Config {
 			HTTPAddr:  ":8080",
 			LogFormat: "text",
 			LogLevel:  "info",
+			RateLimit: RateLimitConfig{
+				RequestsPerSecond: 10,
+				Burst:             20,
+			},
 		},
 		Deployment: DeploymentConfig{
 			PreferredTarget: "auto",
@@ -250,13 +271,6 @@ func Default() *Config {
 			DomainSuffix: "127.0.0.1.sslip.io",
 			IngressClass: "kourier.ingress.networking.knative.dev",
 		},
-		WasmCloud: WasmCloudConfig{
-			LatticeID: "default",
-			Builder: WasmBuilderConfig{
-				Image:   "ghcr.io/vibed/wasm-builder:latest",
-				Timeout: "10m",
-			},
-		},
 		Limits: LimitsConfig{
 			MaxTotalFileSize: 50 * 1024 * 1024, // 50 MB
 			MaxFileCount:     500,
@@ -267,6 +281,9 @@ func Default() *Config {
 			Interval: "1h",
 			MaxAge:   "24h",
 			DryRun:   false,
+		},
+		Tracing: TracingConfig{
+			SampleRate: 1.0,
 		},
 	}
 }
@@ -308,6 +325,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("VIBED_SERVER_HTTP_ADDR"); v != "" {
 		cfg.Server.HTTPAddr = v
+	}
+	if v := os.Getenv("VIBED_SERVER_BASE_URL"); v != "" {
+		cfg.Server.BaseURL = v
 	}
 	if v := os.Getenv("VIBED_LOG_FORMAT"); v != "" {
 		cfg.Server.LogFormat = v
@@ -371,16 +391,6 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Knative.GatewayPort = n
 		}
 	}
-	if v := os.Getenv("VIBED_WASMCLOUD_LATTICE_ID"); v != "" {
-		cfg.WasmCloud.LatticeID = v
-	}
-	if v := os.Getenv("VIBED_WASMCLOUD_BUILDER_IMAGE"); v != "" {
-		cfg.WasmCloud.Builder.Image = v
-	}
-	if v := os.Getenv("VIBED_WASMCLOUD_BUILDER_INSECURE"); v != "" {
-		cfg.WasmCloud.Builder.Insecure, _ = strconv.ParseBool(v)
-	}
-
 	// Auth overrides
 	if v := os.Getenv("VIBED_AUTH_ENABLED"); v != "" {
 		cfg.Auth.Enabled, _ = strconv.ParseBool(v)
@@ -398,6 +408,17 @@ func applyEnvOverrides(cfg *Config) {
 			Key:  v,
 			Name: "env-key",
 		})
+	}
+
+	// OIDC overrides
+	if v := os.Getenv("VIBED_AUTH_OIDC_ISSUER"); v != "" {
+		cfg.Auth.OIDC.Issuer = v
+	}
+	if v := os.Getenv("VIBED_AUTH_OIDC_AUDIENCE"); v != "" {
+		cfg.Auth.OIDC.Audience = v
+	}
+	if v := os.Getenv("VIBED_AUTH_OIDC_ADMIN_ROLE"); v != "" {
+		cfg.Auth.OIDC.AdminRole = v
 	}
 
 	// TLS overrides
@@ -444,6 +465,38 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VIBED_GC_DRY_RUN"); v != "" {
 		cfg.GC.DryRun, _ = strconv.ParseBool(v)
 	}
+
+	// Tracing overrides (standard OTel env var takes precedence)
+	if v := os.Getenv("VIBED_TRACING_ENABLED"); v != "" {
+		cfg.Tracing.Enabled, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
+		cfg.Tracing.Endpoint = v
+		cfg.Tracing.Enabled = true
+	}
+	if v := os.Getenv("VIBED_TRACING_ENDPOINT"); v != "" {
+		cfg.Tracing.Endpoint = v
+	}
+	if v := os.Getenv("VIBED_TRACING_SAMPLE_RATE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Tracing.SampleRate = f
+		}
+	}
+
+	// Rate limit overrides
+	if v := os.Getenv("VIBED_RATE_LIMIT_ENABLED"); v != "" {
+		cfg.Server.RateLimit.Enabled, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("VIBED_RATE_LIMIT_RPS"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			cfg.Server.RateLimit.RequestsPerSecond = f
+		}
+	}
+	if v := os.Getenv("VIBED_RATE_LIMIT_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Server.RateLimit.Burst = n
+		}
+	}
 }
 
 func validate(cfg *Config) error {
@@ -461,9 +514,9 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("server.logLevel must be one of: debug, info, warn, error (got %q)", cfg.Server.LogLevel)
 	}
 
-	validTargets := map[string]bool{"auto": true, "knative": true, "kubernetes": true, "wasmcloud": true}
+	validTargets := map[string]bool{"auto": true, "knative": true, "kubernetes": true}
 	if !validTargets[cfg.Deployment.PreferredTarget] {
-		return fmt.Errorf("deployment.preferredTarget must be one of: auto, knative, kubernetes, wasmcloud (got %q)", cfg.Deployment.PreferredTarget)
+		return fmt.Errorf("deployment.preferredTarget must be one of: auto, knative, kubernetes (got %q)", cfg.Deployment.PreferredTarget)
 	}
 
 	validStorageBackends := map[string]bool{"local": true, "github": true, "gitlab": true}
@@ -507,12 +560,20 @@ func validate(cfg *Config) error {
 
 	// Validate auth config
 	if cfg.Auth.Enabled {
-		validModes := map[string]bool{"apikey": true, "oauth": true, "": true}
+		validModes := map[string]bool{"apikey": true, "oauth": true, "oidc": true, "": true}
 		if !validModes[cfg.Auth.Mode] {
-			return fmt.Errorf("auth.mode must be one of: apikey, oauth (got %q)", cfg.Auth.Mode)
+			return fmt.Errorf("auth.mode must be one of: apikey, oauth, oidc (got %q)", cfg.Auth.Mode)
 		}
 		if (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "") && len(cfg.Auth.APIKeys) == 0 {
 			return fmt.Errorf("at least one API key is required when auth.mode is 'apikey'")
+		}
+		if cfg.Auth.Mode == "oidc" {
+			if cfg.Auth.OIDC.Issuer == "" {
+				return fmt.Errorf("auth.oidc.issuer is required when auth.mode is 'oidc'")
+			}
+			if cfg.Auth.OIDC.Audience == "" {
+				return fmt.Errorf("auth.oidc.audience is required when auth.mode is 'oidc' (prevents cross-app token reuse)")
+			}
 		}
 		validRoles := map[string]bool{"admin": true, "user": true, "": true}
 		for _, key := range cfg.Auth.APIKeys {

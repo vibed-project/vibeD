@@ -34,6 +34,9 @@ type Metrics struct {
 
 	// SSE metrics
 	SSEConnectionsActive prometheus.Gauge
+
+	// Rate limiting metrics
+	RateLimitedTotal *prometheus.CounterVec
 }
 
 // New creates and registers all vibeD metrics.
@@ -120,5 +123,12 @@ func New() *Metrics {
 			Name:      "sse_connections_active",
 			Help:      "Number of active SSE connections.",
 		}),
+
+		RateLimitedTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "vibed",
+			Subsystem: "http",
+			Name:      "rate_limited_total",
+			Help:      "Total number of rate-limited HTTP requests.",
+		}, []string{"client_type"}),
 	}
 }

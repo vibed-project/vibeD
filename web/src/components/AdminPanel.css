@@ -1,0 +1,328 @@
+.ap-section {
+  width: 100%;
+}
+
+.ap-collapse-icon {
+  margin-left: auto;
+  font-size: 1rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.ap-error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--red);
+  color: var(--red);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+}
+
+.ap-error button {
+  background: none;
+  border: none;
+  color: var(--red);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-decoration: underline;
+}
+
+.ap-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.ap-create-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.ap-create-btn:hover {
+  background: var(--accent-hover);
+}
+
+.ap-refresh-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.ap-refresh-btn:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.ap-create-form {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ap-input,
+.ap-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-family: inherit;
+  outline: none;
+}
+
+.ap-input:focus,
+.ap-select:focus {
+  border-color: var(--accent);
+}
+
+.ap-input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.ap-submit-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.ap-submit-btn:hover {
+  background: var(--accent-hover);
+}
+
+.ap-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ap-table-wrap {
+  overflow-x: auto;
+}
+
+.ap-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.ap-table th {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.ap-table td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.ap-table tr:hover {
+  background: var(--bg-hover);
+}
+
+.ap-name {
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.ap-you-badge {
+  font-size: 0.65rem;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  margin-left: 0.4rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.ap-email {
+  color: var(--text-muted);
+}
+
+.ap-role-badge {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.ap-role-admin {
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
+
+.ap-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.ap-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.ap-status-active .ap-status-dot {
+  background: var(--green);
+}
+
+.ap-status-suspended .ap-status-dot {
+  background: var(--red);
+}
+
+.ap-status-active {
+  color: var(--green);
+}
+
+.ap-status-suspended {
+  color: var(--red);
+}
+
+.ap-provider {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.ap-created {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.ap-actions {
+  display: flex;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.ap-action-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.ap-action-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.ap-action-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.ap-action-danger:hover:not(:disabled) {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.ap-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 2rem;
+  font-size: 0.9rem;
+}
+
+/* Tabs */
+
+.ap-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.ap-tab {
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+}
+
+.ap-tab:hover {
+  color: var(--text);
+}
+
+.ap-tab-active {
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+
+/* Department select in user table */
+
+.ap-dept-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: inherit;
+  outline: none;
+  max-width: 120px;
+}
+
+.ap-dept-select:focus {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.ap-dept-count {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}

@@ -27,6 +27,7 @@ type Event struct {
 	ID         string    `json:"id"`
 	Type       EventType `json:"type"`
 	ArtifactID string    `json:"artifact_id"`
+	OwnerID    string    `json:"owner_id,omitempty"`
 	Status     string    `json:"status,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`

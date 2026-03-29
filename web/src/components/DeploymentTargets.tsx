@@ -34,7 +34,6 @@ function formatTarget(name: string): string {
   switch (name) {
     case 'knative': return 'Knative Serving'
     case 'kubernetes': return 'Kubernetes'
-    case 'wasmcloud': return 'wasmCloud'
     default: return name
   }
 }

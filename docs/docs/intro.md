@@ -36,7 +36,6 @@ AI Coding Tool (Claude, Gemini, etc.)
     │ Deploy to:        │
     │ • Knative Serving │  ← Preferred (serverless)
     │ • Kubernetes      │  ← Fallback (always available)
-    │ • wasmCloud       │  ← WebAssembly (opt-in)
     └───────────────────┘
 ```
 

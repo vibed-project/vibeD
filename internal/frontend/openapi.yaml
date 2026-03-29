@@ -3,7 +3,7 @@ info:
   title: vibeD API
   description: |
     REST API for vibeD — a workload orchestrator for GenAI-generated artifacts.
-    vibeD deploys artifacts to Knative, Kubernetes, or wasmCloud targets.
+    vibeD deploys artifacts to Knative or Kubernetes targets.
 
     ## Authentication
     All `/api/*` endpoints require a Bearer token in the `Authorization` header.
@@ -55,7 +55,6 @@ components:
         - auto
         - knative
         - kubernetes
-        - wasmcloud
       description: Supported deployment backend
 
     Artifact:

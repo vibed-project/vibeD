@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/builder"
@@ -21,6 +24,15 @@ import (
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/pkg/api"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/daemon"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,16 +74,17 @@ type DeployResult struct {
 type Orchestrator struct {
 	cfg         *config.Config
 	detector    *environment.Detector
-	builder     builder.Builder
-	wasmBuilder builder.Builder // optional: builds wasm components for wasmCloud target
-	factory     *deployer.Factory
+	builder builder.Builder
+	factory *deployer.Factory
 	storage     storage.Storage
 	store       store.ArtifactStore
 	metrics     *metrics.Metrics
 	clientset   kubernetes.Interface
-	events      *events.EventBus
-	imageBase   string
-	logger      *slog.Logger
+	events         *events.EventBus
+	shareLinkStore store.ShareLinkStore
+	imageBase      string
+	tracer         trace.Tracer
+	logger         *slog.Logger
 }
 
 // NewOrchestrator creates a new Orchestrator with all subsystems wired.
@@ -79,13 +92,13 @@ func NewOrchestrator(
 	cfg *config.Config,
 	detector *environment.Detector,
 	bldr builder.Builder,
-	wasmBldr builder.Builder,
 	factory *deployer.Factory,
 	stg storage.Storage,
 	st store.ArtifactStore,
 	m *metrics.Metrics,
 	clientset kubernetes.Interface,
 	bus *events.EventBus,
+	shareLinkStore store.ShareLinkStore,
 	logger *slog.Logger,
 ) *Orchestrator {
 	imageBase := "vibed-artifacts"
@@ -94,23 +107,122 @@ func NewOrchestrator(
 	}
 
 	return &Orchestrator{
-		cfg:         cfg,
-		detector:    detector,
-		builder:     bldr,
-		wasmBuilder: wasmBldr,
-		factory:     factory,
+		cfg:      cfg,
+		detector: detector,
+		builder:  bldr,
+		factory:  factory,
 		storage:     stg,
 		store:       st,
 		metrics:     m,
 		clientset:   clientset,
-		events:      bus,
-		imageBase:   imageBase,
+		events:         bus,
+		shareLinkStore: shareLinkStore,
+		imageBase:      imageBase,
+		tracer:         otel.Tracer("vibed/orchestrator"),
 		logger:      logger,
 	}
 }
 
 // Deploy handles the full deployment flow: validate → store → build → deploy.
 func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
+	ctx, span := o.tracer.Start(ctx, "orchestrator.Deploy",
+		trace.WithAttributes(
+			attribute.String("artifact.name", req.Name),
+			attribute.String("artifact.language", req.Language),
+			attribute.String("artifact.target", req.Target),
+		))
+	defer span.End()
+
+	traceID := span.SpanContext().TraceID().String()
+	o.logger.Info("deploy started", "artifact", req.Name, "trace_id", traceID)
+
+	result, err := o.doDeploy(ctx, req)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		o.logger.Error("deploy failed", "artifact", req.Name, "trace_id", traceID, "error", err)
+	} else {
+		o.logger.Info("deploy completed", "artifact", req.Name, "trace_id", traceID, "url", result.URL)
+	}
+	return result, err
+}
+
+// AsyncDeploy validates input and creates the artifact record synchronously, then runs
+// the slow build + push + deploy in a background goroutine. Returns immediately with
+// status "building" and the artifact_id so the caller can poll get_artifact_status.
+// This prevents MCP client timeouts on long-running builds.
+func (o *Orchestrator) AsyncDeploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
+	// Fast pre-flight checks so callers get immediate errors for bad input.
+	if err := validateName(req.Name); err != nil {
+		return nil, err
+	}
+	if len(req.Files) == 0 {
+		return nil, &api.ErrInvalidInput{Field: "files", Message: "at least one file is required"}
+	}
+
+	// Detect language so doDeploy doesn't re-detect (avoids double-scanning large file maps).
+	lang := req.Language
+	if lang == "" || lang == "auto" {
+		lang = builder.DetectLanguage(req.Files)
+	}
+	req.Language = lang
+
+	// Capture user identity before the request context is cancelled.
+	ownerID := vibedauth.UserIDFromContext(ctx)
+	bgCtx := vibedauth.WithUserID(context.Background(), ownerID)
+
+	bgCtx, span := o.tracer.Start(bgCtx, "orchestrator.Deploy",
+		trace.WithAttributes(
+			attribute.String("artifact.name", req.Name),
+			attribute.String("artifact.language", req.Language),
+			attribute.String("artifact.target", req.Target),
+		))
+	traceID := span.SpanContext().TraceID().String()
+	o.logger.Info("async deploy started", "artifact", req.Name, "trace_id", traceID)
+
+	// Pre-create the artifact record synchronously so we can return the ID immediately.
+	artifactID := generateID()
+	now := time.Now()
+	artifact := &api.Artifact{
+		ID:         artifactID,
+		Name:       req.Name,
+		OwnerID:    ownerID,
+		Status:     api.StatusBuilding,
+		Language:   lang,
+		EnvVars:    req.EnvVars,
+		SecretRefs: req.SecretRefs,
+		Port:       req.Port,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := o.store.Create(ctx, artifact); err != nil {
+		span.End()
+		return nil, err
+	}
+
+	// Run the full deploy (including the already-created artifact) in the background.
+	// doDeploy will detect the existing record via GetByName and overwrite it.
+	go func() {
+		defer span.End()
+		result, err := o.doDeploy(bgCtx, req)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			o.logger.Error("async deploy failed", "artifact", req.Name, "trace_id", traceID, "error", err)
+		} else {
+			span.SetStatus(codes.Ok, "")
+			o.logger.Info("async deploy completed", "artifact", req.Name, "trace_id", traceID, "url", result.URL)
+		}
+	}()
+
+	return &DeployResult{
+		ArtifactID: artifactID,
+		Name:       req.Name,
+		Status:     string(api.StatusBuilding),
+	}, nil
+}
+
+func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
 	// 1. Validate input
 	if err := validateName(req.Name); err != nil {
 		return nil, err
@@ -185,7 +297,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	}
 	artifact.StorageRef = storageRef.LocalPath
 
-	// 5. Detect language early (needed for target selection)
+	// 5. Detect language early (needed for target selection and go.mod generation)
 	lang := req.Language
 	if lang == "" || lang == "auto" {
 		lang = builder.DetectLanguage(req.Files)
@@ -198,16 +310,6 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 		preferred = api.DeploymentTarget(o.cfg.Deployment.PreferredTarget)
 	}
 
-	// For compiled wasm-capable languages (Go, Rust), prefer wasmCloud when available
-	if (preferred == "" || preferred == "auto") && isWasmCapable(lang) && o.wasmBuilder != nil {
-		result := o.detector.Detect()
-		if result.WasmCloud {
-			preferred = api.TargetWasmCloud
-			o.logger.Info("auto-selected wasmCloud for compiled language",
-				"name", req.Name, "language", lang)
-		}
-	}
-
 	target, err := o.detector.SelectTarget(preferred)
 	if err != nil {
 		o.failArtifact(ctx, artifact, fmt.Sprintf("selecting target: %v", err))
@@ -216,18 +318,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	artifact.Target = target
 
 	// Static shortcut: skip build, use ConfigMap + nginx directly.
-	// wasmCloud cannot serve static files, so fall back to another target.
 	if lang == "static" && isSmallStatic(req.Files) {
-		if target == api.TargetWasmCloud {
-			o.logger.Info("wasmCloud cannot serve static files, falling back",
-				"name", req.Name)
-			fallback, err := o.detector.SelectTarget("auto")
-			if err != nil || fallback == api.TargetWasmCloud {
-				fallback = api.TargetKubernetes
-			}
-			target = fallback
-			artifact.Target = target
-		}
 		o.logger.Info("using static ConfigMap deploy (skipping build)",
 			"name", req.Name, "files", len(req.Files))
 		return o.deployStatic(ctx, artifact, req.Files, target)
@@ -241,30 +332,59 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	buildStart := time.Now()
 
 	activeBuilder := o.builder
-	if target == api.TargetWasmCloud && o.wasmBuilder != nil {
-		activeBuilder = o.wasmBuilder
-	}
 
-	buildResult, err := activeBuilder.Build(ctx, builder.BuildRequest{
+	// Child span: builder.Build (local image, no push)
+	buildCtx, buildSpan := o.tracer.Start(ctx, "builder.Build",
+		trace.WithAttributes(
+			attribute.String("builder.image", imageName),
+			attribute.String("builder.language", lang),
+		))
+	// When the builder handles push internally (Buildah/Wasm K8s Job), set Publish: true
+	// so the Job pushes to the registry. For Pack (local daemon), set Publish: false and
+	// handle the push separately in the registry.Push span below.
+	builderPublishes := activeBuilder.PublishesInternally()
+	buildResult, err := activeBuilder.Build(buildCtx, builder.BuildRequest{
 		SourceDir: storageRef.LocalPath,
 		ImageName: imageName,
 		Language:  lang,
 		Env:       req.EnvVars,
-		Publish:   o.cfg.Registry.Enabled,
+		Publish:   builderPublishes && o.cfg.Registry.Enabled,
 	})
 
 	buildDur := time.Since(buildStart).Seconds()
 
 	if err != nil {
+		buildSpan.RecordError(err)
+		buildSpan.SetStatus(codes.Error, err.Error())
+		buildSpan.End()
 		o.metrics.BuildsTotal.WithLabelValues("failed", lang).Inc()
 		o.metrics.BuildDuration.WithLabelValues("failed", lang).Observe(buildDur)
 		o.failArtifact(ctx, artifact, fmt.Sprintf("build failed: %v", err))
 		return nil, &api.ErrBuildFailed{Reason: err.Error()}
 	}
+	buildSpan.End()
 
 	o.metrics.BuildsTotal.WithLabelValues("success", lang).Inc()
 	o.metrics.BuildDuration.WithLabelValues("success", lang).Observe(buildDur)
 	artifact.ImageRef = buildResult.ImageRef
+
+	// Child span: registry.Push — only needed when the builder doesn't push internally
+	// (i.e. PackBuilder produces a local daemon image that must be pushed via crane).
+	if o.cfg.Registry.Enabled && !builderPublishes {
+		pushCtx, pushSpan := o.tracer.Start(ctx, "registry.Push",
+			trace.WithAttributes(
+				attribute.String("registry.image", buildResult.ImageRef),
+				attribute.String("registry.url", o.cfg.Registry.URL),
+			))
+		if pushErr := pushImage(pushCtx, buildResult.ImageRef); pushErr != nil {
+			pushSpan.RecordError(pushErr)
+			pushSpan.SetStatus(codes.Error, pushErr.Error())
+			pushSpan.End()
+			o.failArtifact(ctx, artifact, fmt.Sprintf("push failed: %v", pushErr))
+			return nil, fmt.Errorf("registry push: %w", pushErr)
+		}
+		pushSpan.End()
+	}
 
 	// 8. Deploy
 	o.updateStatus(ctx, artifact, api.StatusDeploying)
@@ -274,16 +394,23 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 		return nil, err
 	}
 
+	// Child span: deployer.Deploy
+	deployCtx, deploySpan := o.tracer.Start(ctx, "deployer.Deploy",
+		trace.WithAttributes(attribute.String("deployer.target", string(target))))
 	deployStart := time.Now()
-	deployResult, err := dep.Deploy(ctx, artifact)
+	deployResult, err := dep.Deploy(deployCtx, artifact)
 	deployDur := time.Since(deployStart).Seconds()
 
 	if err != nil {
+		deploySpan.RecordError(err)
+		deploySpan.SetStatus(codes.Error, err.Error())
+		deploySpan.End()
 		o.metrics.DeploysTotal.WithLabelValues("failed", string(target)).Inc()
 		o.metrics.DeployDuration.WithLabelValues("failed", string(target)).Observe(deployDur)
 		o.failArtifact(ctx, artifact, fmt.Sprintf("deploy failed: %v", err))
 		return nil, &api.ErrDeployFailed{Reason: err.Error()}
 	}
+	deploySpan.End()
 
 	o.metrics.DeploysTotal.WithLabelValues("success", string(target)).Inc()
 	o.metrics.DeployDuration.WithLabelValues("success", string(target)).Observe(deployDur)
@@ -324,8 +451,72 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	}, nil
 }
 
+// AsyncUpdate validates ownership synchronously, then runs the rebuild + redeploy in
+// a background goroutine. Returns immediately with status "building" so MCP clients
+// don't time out on long-running compilations.
+func (o *Orchestrator) AsyncUpdate(ctx context.Context, req UpdateRequest) (*DeployResult, error) {
+	// Ownership check must happen now, while we still have the authenticated context.
+	artifact, err := o.store.Get(ctx, req.ArtifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+		return nil, err
+	}
+
+	// Capture identity before request context is cancelled.
+	ownerID := vibedauth.UserIDFromContext(ctx)
+	bgCtx := vibedauth.WithUserID(context.Background(), ownerID)
+
+	bgCtx, span := o.tracer.Start(bgCtx, "orchestrator.Update",
+		trace.WithAttributes(attribute.String("artifact.id", req.ArtifactID)))
+	traceID := span.SpanContext().TraceID().String()
+	o.logger.Info("async update started", "artifact_id", req.ArtifactID, "trace_id", traceID)
+
+	// Mark as building synchronously so the caller can see progress immediately.
+	o.updateStatus(ctx, artifact, api.StatusBuilding)
+
+	go func() {
+		defer span.End()
+		result, err := o.doUpdate(bgCtx, req)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			o.logger.Error("async update failed", "artifact_id", req.ArtifactID, "trace_id", traceID, "error", err)
+		} else {
+			span.SetStatus(codes.Ok, "")
+			o.logger.Info("async update completed", "artifact_id", req.ArtifactID, "trace_id", traceID, "url", result.URL)
+		}
+	}()
+
+	return &DeployResult{
+		ArtifactID: req.ArtifactID,
+		Name:       artifact.Name,
+		Status:     string(api.StatusBuilding),
+	}, nil
+}
+
 // Update rebuilds and redeploys an existing artifact.
 func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployResult, error) {
+	ctx, span := o.tracer.Start(ctx, "orchestrator.Update",
+		trace.WithAttributes(attribute.String("artifact.id", req.ArtifactID)))
+	defer span.End()
+
+	traceID := span.SpanContext().TraceID().String()
+	o.logger.Info("update started", "artifact_id", req.ArtifactID, "trace_id", traceID)
+
+	result, err := o.doUpdate(ctx, req)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		o.logger.Error("update failed", "artifact_id", req.ArtifactID, "trace_id", traceID, "error", err)
+	} else {
+		o.logger.Info("update completed", "artifact_id", req.ArtifactID, "trace_id", traceID)
+	}
+	return result, err
+}
+
+func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*DeployResult, error) {
 	artifact, err := o.store.Get(ctx, req.ArtifactID)
 	if err != nil {
 		return nil, err
@@ -391,30 +582,52 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 	buildStart := time.Now()
 
 	activeBuilder := o.builder
-	if artifact.Target == api.TargetWasmCloud && o.wasmBuilder != nil {
-		activeBuilder = o.wasmBuilder
-	}
 
-	buildResult, err := activeBuilder.Build(ctx, builder.BuildRequest{
+	// Child span: builder.Build (update path)
+	builderPublishes := activeBuilder.PublishesInternally()
+	buildCtx, buildSpan := o.tracer.Start(ctx, "builder.Build",
+		trace.WithAttributes(attribute.String("builder.image", imageName), attribute.String("builder.language", lang)))
+	buildResult, err := activeBuilder.Build(buildCtx, builder.BuildRequest{
 		SourceDir: storageRef.LocalPath,
 		ImageName: imageName,
 		Language:  lang,
 		Env:       artifact.EnvVars,
-		Publish:   o.cfg.Registry.Enabled,
+		Publish:   builderPublishes && o.cfg.Registry.Enabled,
 	})
 
 	buildDur := time.Since(buildStart).Seconds()
 
 	if err != nil {
+		buildSpan.RecordError(err)
+		buildSpan.SetStatus(codes.Error, err.Error())
+		buildSpan.End()
 		o.metrics.BuildsTotal.WithLabelValues("failed", lang).Inc()
 		o.metrics.BuildDuration.WithLabelValues("failed", lang).Observe(buildDur)
 		o.failArtifact(ctx, artifact, fmt.Sprintf("build failed: %v", err))
 		return nil, &api.ErrBuildFailed{Reason: err.Error()}
 	}
+	buildSpan.End()
 
 	o.metrics.BuildsTotal.WithLabelValues("success", lang).Inc()
 	o.metrics.BuildDuration.WithLabelValues("success", lang).Observe(buildDur)
 	artifact.ImageRef = buildResult.ImageRef
+
+	// Child span: registry.Push (only for Pack — Buildah/Wasm push inside the K8s Job)
+	if o.cfg.Registry.Enabled && !builderPublishes {
+		pushCtx, pushSpan := o.tracer.Start(ctx, "registry.Push",
+			trace.WithAttributes(
+				attribute.String("registry.image", buildResult.ImageRef),
+				attribute.String("registry.url", o.cfg.Registry.URL),
+			))
+		if pushErr := pushImage(pushCtx, buildResult.ImageRef); pushErr != nil {
+			pushSpan.RecordError(pushErr)
+			pushSpan.SetStatus(codes.Error, pushErr.Error())
+			pushSpan.End()
+			o.failArtifact(ctx, artifact, fmt.Sprintf("push failed: %v", pushErr))
+			return nil, fmt.Errorf("registry push: %w", pushErr)
+		}
+		pushSpan.End()
+	}
 
 	// Redeploy
 	o.updateStatus(ctx, artifact, api.StatusDeploying)
@@ -423,17 +636,24 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 		return nil, err
 	}
 
+	// Child span: deployer.Update
 	target := string(artifact.Target)
+	deployCtx, deploySpan := o.tracer.Start(ctx, "deployer.Update",
+		trace.WithAttributes(attribute.String("deployer.target", target)))
 	deployStart := time.Now()
-	deployResult, err := dep.Update(ctx, artifact)
+	deployResult, err := dep.Update(deployCtx, artifact)
 	deployDur := time.Since(deployStart).Seconds()
 
 	if err != nil {
+		deploySpan.RecordError(err)
+		deploySpan.SetStatus(codes.Error, err.Error())
+		deploySpan.End()
 		o.metrics.DeploysTotal.WithLabelValues("failed", target).Inc()
 		o.metrics.DeployDuration.WithLabelValues("failed", target).Observe(deployDur)
 		o.failArtifact(ctx, artifact, fmt.Sprintf("deploy failed: %v", err))
 		return nil, &api.ErrDeployFailed{Reason: err.Error()}
 	}
+	deploySpan.End()
 
 	o.metrics.DeploysTotal.WithLabelValues("success", target).Inc()
 	o.metrics.DeployDuration.WithLabelValues("success", target).Observe(deployDur)
@@ -470,6 +690,10 @@ func (o *Orchestrator) Update(ctx context.Context, req UpdateRequest) (*DeployRe
 
 // Delete stops and removes a deployed artifact.
 func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
+	ctx, span := o.tracer.Start(ctx, "orchestrator.Delete",
+		trace.WithAttributes(attribute.String("artifact.id", artifactID)))
+	defer span.End()
+
 	artifact, err := o.store.Get(ctx, artifactID)
 	if err != nil {
 		o.metrics.DeletesTotal.WithLabelValues("failed").Inc()
@@ -518,13 +742,24 @@ func (o *Orchestrator) Status(ctx context.Context, artifactID string) (*api.Arti
 	return artifact, nil
 }
 
-// List returns all artifacts matching the filter, scoped to the authenticated user.
-// Admins see all artifacts. Regular users see owned + shared artifacts.
-// When auth is disabled (no user in context), all artifacts are returned.
-func (o *Orchestrator) List(ctx context.Context, statusFilter string) ([]api.ArtifactSummary, error) {
-	ownerID := vibedauth.UserIDFromContext(ctx)
-	adminView := vibedauth.IsAdmin(ctx)
-	return o.store.List(ctx, statusFilter, ownerID, adminView)
+// List returns artifacts matching the filter with pagination, scoped to the authenticated user.
+func (o *Orchestrator) List(ctx context.Context, statusFilter string, offset, limit int) (*store.ListResult, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return o.store.List(ctx, store.ListOptions{
+		StatusFilter: statusFilter,
+		OwnerID:      vibedauth.UserIDFromContext(ctx),
+		AdminView:    vibedauth.IsAdmin(ctx),
+		Offset:       offset,
+		Limit:        limit,
+	})
 }
 
 // Logs returns recent log lines from a deployed artifact.
@@ -633,6 +868,7 @@ func (o *Orchestrator) publishStatusEvent(artifact *api.Artifact) {
 	o.events.Publish(events.Event{
 		Type:       events.ArtifactStatusChanged,
 		ArtifactID: artifact.ID,
+		OwnerID:    artifact.OwnerID,
 		Status:     string(artifact.Status),
 		Error:      artifact.Error,
 		Timestamp:  artifact.UpdatedAt,
@@ -686,23 +922,12 @@ func validateFilePath(path string) error {
 	return nil
 }
 
-// isWasmCapable returns true for compiled languages that can target WebAssembly.
-func isWasmCapable(lang string) bool {
-	switch lang {
-	case "go", "rust":
-		return true
-	default:
-		return false
-	}
-}
-
 func generateID() string {
-	b := make([]byte, 8)
+	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp-based ID if crypto/rand fails
-		return fmt.Sprintf("%x", time.Now().UnixNano())
+		panic("crypto/rand unavailable: " + err.Error())
 	}
-	return fmt.Sprintf("%x", b)
+	return hex.EncodeToString(b)
 }
 
 const staticNginxConf = `server {
@@ -947,8 +1172,16 @@ func (o *Orchestrator) ListVersions(ctx context.Context, artifactID string) ([]a
 // Rollback redeploys an artifact using a previous version's image and config.
 // It creates a new version entry for the rollback (does not rewind history).
 func (o *Orchestrator) Rollback(ctx context.Context, artifactID string, targetVersion int) (*DeployResult, error) {
+	ctx, span := o.tracer.Start(ctx, "orchestrator.Rollback",
+		trace.WithAttributes(
+			attribute.String("artifact.id", artifactID),
+			attribute.Int("target_version", targetVersion)))
+	defer span.End()
+
 	artifact, err := o.store.Get(ctx, artifactID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
 	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
@@ -1086,4 +1319,155 @@ func (o *Orchestrator) UnshareArtifact(ctx context.Context, artifactID string, u
 
 	artifact.UpdatedAt = time.Now()
 	return o.store.Update(ctx, artifact)
+}
+
+// --- Share Link methods ---
+
+// CreateShareLink generates a public share link for an artifact.
+func (o *Orchestrator) CreateShareLink(ctx context.Context, artifactID, password string, expiresIn time.Duration) (*api.ShareLink, error) {
+	if o.shareLinkStore == nil {
+		return nil, fmt.Errorf("share links require SQLite store backend")
+	}
+
+	artifact, err := o.store.Get(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+		return nil, err
+	}
+
+	// Generate 32-byte crypto-random token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("generating token: %w", err)
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	// Hash password if provided
+	var passwordHash string
+	if password != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, fmt.Errorf("hashing password: %w", err)
+		}
+		passwordHash = string(hash)
+	}
+
+	now := time.Now()
+	link := &api.ShareLink{
+		Token:       token,
+		ArtifactID:  artifactID,
+		CreatedBy:   vibedauth.UserIDFromContext(ctx),
+		HasPassword: password != "",
+		CreatedAt:   now,
+	}
+	if expiresIn > 0 {
+		exp := now.Add(expiresIn)
+		link.ExpiresAt = &exp
+	}
+	if o.cfg.Server.BaseURL != "" {
+		link.URL = o.cfg.Server.BaseURL + "/share/" + token
+	}
+
+	if err := o.shareLinkStore.CreateShareLink(ctx, link, passwordHash); err != nil {
+		return nil, err
+	}
+
+	return link, nil
+}
+
+// ListShareLinks returns all share links for an artifact.
+func (o *Orchestrator) ListShareLinks(ctx context.Context, artifactID string) ([]api.ShareLink, error) {
+	if o.shareLinkStore == nil {
+		return nil, fmt.Errorf("share links require SQLite store backend")
+	}
+
+	artifact, err := o.store.Get(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.checkOwnership(ctx, artifact); err != nil {
+		return nil, err
+	}
+	links, err := o.shareLinkStore.ListShareLinks(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if o.cfg.Server.BaseURL != "" {
+		for i := range links {
+			links[i].URL = o.cfg.Server.BaseURL + "/share/" + links[i].Token
+		}
+	}
+	return links, nil
+}
+
+// RevokeShareLink revokes a share link.
+func (o *Orchestrator) RevokeShareLink(ctx context.Context, token string) error {
+	if o.shareLinkStore == nil {
+		return fmt.Errorf("share links require SQLite store backend")
+	}
+
+	link, _, err := o.shareLinkStore.GetShareLink(ctx, token)
+	if err != nil {
+		return err
+	}
+	artifact, err := o.store.Get(ctx, link.ArtifactID)
+	if err != nil {
+		return err
+	}
+	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+		return err
+	}
+	return o.shareLinkStore.RevokeShareLink(ctx, token)
+}
+
+// ResolveShareLink validates a share link token and optional password, returns read-only artifact view.
+// pushImage pushes a locally built image (in the container daemon) to the registry
+// using go-containerregistry. It is called after builder.Build when registry is enabled
+// so that the push step can be traced as a dedicated child span.
+func pushImage(ctx context.Context, imageRef string) error {
+	ref, err := name.ParseReference(imageRef)
+	if err != nil {
+		return fmt.Errorf("parse image ref %q: %w", imageRef, err)
+	}
+	img, err := daemon.Image(ref, daemon.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("load image from daemon %q: %w", imageRef, err)
+	}
+	if err := crane.Push(img, imageRef, crane.WithContext(ctx)); err != nil {
+		return fmt.Errorf("push image %q: %w", imageRef, err)
+	}
+	return nil
+}
+
+func (o *Orchestrator) ResolveShareLink(ctx context.Context, token, password string) (*api.Artifact, error) {
+	if o.shareLinkStore == nil {
+		return nil, fmt.Errorf("share links require SQLite store backend")
+	}
+
+	link, passwordHash, err := o.shareLinkStore.GetShareLink(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	// Revoked or expired links return not-found (no information leakage)
+	if link.Revoked {
+		return nil, &api.ErrShareLinkNotFound{Token: token}
+	}
+	if link.ExpiresAt != nil && time.Now().After(*link.ExpiresAt) {
+		return nil, &api.ErrShareLinkNotFound{Token: token}
+	}
+
+	// Check password
+	if passwordHash != "" {
+		if password == "" {
+			return nil, &api.ErrPasswordRequired{}
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+			return nil, &api.ErrPasswordRequired{}
+		}
+	}
+
+	return o.store.Get(ctx, link.ArtifactID)
 }

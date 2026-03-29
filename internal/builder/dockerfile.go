@@ -5,23 +5,30 @@ import "strings"
 // DetectLanguage inspects the file map and returns the best-guess language.
 // Returns "static", "nodejs", "python", "go", or "rust".
 func DetectLanguage(files map[string]string) string {
+	hasGoFile := false
 	for name := range files {
 		lower := strings.ToLower(name)
 		switch {
 		case lower == "go.mod":
-			return "go"
+			return "go" // explicit module file wins immediately
 		case lower == "cargo.toml":
 			return "rust"
 		case lower == "package.json":
 			return "nodejs"
 		case lower == "requirements.txt" || lower == "main.py" || lower == "app.py":
 			return "python"
+		case strings.HasSuffix(lower, ".go"):
+			hasGoFile = true
 		}
+	}
+	// Any .go source file without a go.mod is still a Go app —
+	// the Dockerfile handles module init + tidy automatically.
+	if hasGoFile {
+		return "go"
 	}
 	// Check for HTML files (static site)
 	for name := range files {
-		lower := strings.ToLower(name)
-		if strings.HasSuffix(lower, ".html") {
+		if strings.HasSuffix(strings.ToLower(name), ".html") {
 			return "static"
 		}
 	}
@@ -42,6 +49,8 @@ func GenerateDockerfile(language string, files map[string]string) string {
 		return dockerfilePython(files)
 	case "go":
 		return dockerfileGo()
+	case "rust":
+		return dockerfileRust()
 	default:
 		return dockerfileStatic()
 	}
@@ -97,12 +106,39 @@ CMD ["python", "` + entrypoint + `"]
 `
 }
 
+func dockerfileRust() string {
+	return `FROM rust:1.77-alpine AS build
+RUN apk add --no-cache musl-dev
+WORKDIR /app
+COPY . .
+# If Cargo.toml is missing, init a minimal binary crate so any .rs source compiles.
+RUN if [ ! -f Cargo.toml ]; then \
+      cargo init --name server .; \
+    fi && \
+    cargo build --release
+# Find the compiled binary regardless of crate name.
+RUN cp $(find target/release -maxdepth 1 -type f -perm /111 | grep -v '\.d$' | head -1) /app/server-bin
+
+FROM alpine:3.20
+WORKDIR /app
+COPY --from=build /app/server-bin ./server
+EXPOSE 8080
+CMD ["./server"]
+`
+}
+
 func dockerfileGo() string {
 	return `FROM golang:1.23-alpine AS build
 WORKDIR /app
-COPY go.* ./
-RUN go mod download 2>/dev/null || true
 COPY . .
+# If go.mod is missing, init a module and tidy to resolve all imports.
+# This lets any Go app deploy without requiring go.mod / go.sum in the source.
+RUN if [ ! -f go.mod ]; then \
+      module=$(basename $(pwd)); \
+      go mod init app/${module}; \
+    fi && \
+    go mod tidy && \
+    go mod download
 RUN CGO_ENABLED=0 go build -o server .
 
 FROM alpine:3.20

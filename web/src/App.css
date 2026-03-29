@@ -75,6 +75,223 @@
   font-weight: 600;
 }
 
+/* Mini profile */
+
+.profile-wrapper {
+  position: relative;
+}
+
+.profile-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+
+.profile-trigger:hover {
+  border-color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.profile-avatar,
+.profile-card-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.profile-card-avatar {
+  width: 36px;
+  height: 36px;
+  font-size: 0.9rem;
+}
+
+.profile-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-card {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0;
+  min-width: 240px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.profile-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.profile-card-identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.profile-card-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-card-email {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-card-details {
+  padding: 0.5rem 0.75rem;
+}
+
+.profile-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.3rem 0;
+}
+
+.profile-card-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.profile-card-role {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.profile-card-role-admin {
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
+
+.profile-card-status {
+  font-size: 0.75rem;
+  color: var(--green);
+}
+
+.profile-card-value {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.profile-card-id {
+  font-family: monospace;
+  font-size: 0.65rem;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-card-footer {
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 0.75rem;
+}
+
+.profile-logout-btn {
+  width: 100%;
+  background: transparent;
+  color: var(--red);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.profile-logout-btn:hover {
+  border-color: var(--red);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Auth login form */
+
+.auth-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.auth-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  font-family: inherit;
+  width: 140px;
+  outline: none;
+}
+
+.auth-input:focus {
+  border-color: var(--accent);
+}
+
+.auth-submit {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 0.3rem 0.6rem;
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+}
+
+.auth-submit:hover {
+  background: var(--accent-hover);
+}
+
+.auth-error {
+  color: var(--red);
+  font-size: 0.75rem;
+}
+
 .refresh-btn {
   background: var(--bg-card);
   color: var(--text);

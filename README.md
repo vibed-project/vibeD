@@ -13,7 +13,7 @@ vibeD bridges AI coding tools (Claude, Gemini, ChatGPT) with your own Kubernetes
 - **MCP Server** — 11 tools for deploying, updating, listing, and deleting artifacts
 - **Instant static deploys** — HTML/CSS/JS files deploy in milliseconds via ConfigMap + nginx (no build step)
 - **Buildah builder** — Auto-generates Dockerfiles for Node.js, Python, and Go apps; builds container images in-cluster via Kubernetes Jobs
-- **Multi-target deployment** — Knative Serving (serverless), plain Kubernetes (Deployment + Service), or wasmCloud
+- **Multi-target deployment** — Knative Serving (serverless) or plain Kubernetes (Deployment + Service)
 - **Auto-detection** — Discovers available deployment targets by checking cluster CRDs
 - **Web dashboard** — React UI showing all deployed artifacts with status and URLs
 - **Multiple storage backends** — Local filesystem, GitHub, or GitLab
@@ -156,7 +156,7 @@ server:
   httpAddr: ":8080"
 
 deployment:
-  preferredTarget: "auto"  # auto | knative | kubernetes | wasmcloud
+  preferredTarget: "auto"  # auto | knative | kubernetes
   namespace: "default"
 
 builder:
@@ -184,7 +184,7 @@ cmd/vibed/          Main entry point
 internal/
   builder/          Buildah builder + Dockerfile generation
   config/           Configuration loading
-  deployer/         Knative, Kubernetes, wasmCloud deployers
+  deployer/         Knative, Kubernetes deployers
   orchestrator/     Deploy/update/delete lifecycle coordination
   store/            Artifact metadata (memory, ConfigMap)
   storage/          Source file storage (local, GitHub, GitLab)

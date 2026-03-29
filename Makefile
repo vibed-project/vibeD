@@ -118,7 +118,13 @@ install-vibed: load-image
 		--namespace vibed-system --create-namespace \
 		--set image.repository=localhost/vibed --set image.tag=dev --set image.pullPolicy=Never \
 		--set service.type=NodePort --set service.nodePort=31808 \
-		--set metrics.serviceMonitor.enabled=true --wait
+		--set metrics.serviceMonitor.enabled=true \
+		--set config.server.baseURL=http://localhost:31808 \
+		--set config.store.backend=sqlite \
+		--set config.store.sqlite.path=/data/vibed/vibed.db \
+		--set config.tracing.enabled=true \
+		--set config.tracing.endpoint=vibed-observability-opentelemetry-collector.monitoring:4317 \
+		--wait
 
 dev: setup-cluster install-deps install-observability install-vibed
 	@echo ""
@@ -131,7 +137,7 @@ dev-status:
 	@echo ""
 	@echo "=== Pods ==="
 	@kubectl get pods -n vibed-system
-	@kubectl get pods -n monitoring -l 'app.kubernetes.io/name in (prometheus,grafana)'
+	@kubectl get pods -n monitoring 2>/dev/null || true
 	@echo ""
 	@echo "=== URLs ==="
 	@echo "  vibeD Dashboard:  http://localhost:8080"
@@ -140,6 +146,8 @@ dev-status:
 	@echo "  Knative Apps:     http://<app>.127.0.0.1.sslip.io (port 80)"
 	@echo "  Grafana:          http://localhost:3000  (admin / vibed-dev)"
 	@echo "  Prometheus:       http://localhost:9090"
+	@echo "  Explore Traces:   Grafana -> Explore -> Tempo"
+	@echo "  Explore Logs:     Grafana -> Explore -> Loki"
 	@echo ""
 
 run-latest:
@@ -151,7 +159,9 @@ run-latest:
 		--namespace vibed-system --create-namespace \
 		--set image.repository=$(GHCR_IMAGE) --set image.tag=latest --set image.pullPolicy=Never \
 		--set service.type=NodePort --set service.nodePort=31808 \
-		--set metrics.serviceMonitor.enabled=true --wait
+		--set metrics.serviceMonitor.enabled=true \
+		--set config.server.baseURL=http://localhost:31808 \
+		--wait
 	@$(MAKE) dev-status
 
 teardown:
