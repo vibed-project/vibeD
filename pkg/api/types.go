@@ -36,8 +36,8 @@ type Artifact struct {
 	ImageRef   string            `json:"image_ref,omitempty"`
 	URL        string            `json:"url,omitempty"`
 	Port       int               `json:"port,omitempty"`
-	EnvVars    map[string]string `json:"env_vars,omitempty"`
-	SecretRefs map[string]string `json:"secret_refs,omitempty"` // env var name → "secret-name:key"
+	EnvVars    map[string]string `json:"-"`
+	SecretRefs map[string]string `json:"-"` // env var name → "secret-name:key"
 	Language   string            `json:"language,omitempty"`
 	StaticFiles string           `json:"static_files,omitempty"` // ConfigMap name for static content (skip build)
 	Error       string           `json:"error,omitempty"`
@@ -70,8 +70,8 @@ type ArtifactVersion struct {
 	Version    int               `json:"version"`
 	ImageRef   string            `json:"image_ref"`
 	StorageRef string            `json:"storage_ref,omitempty"`
-	EnvVars    map[string]string `json:"env_vars,omitempty"`
-	SecretRefs map[string]string `json:"secret_refs,omitempty"`
+	EnvVars    map[string]string `json:"-"`
+	SecretRefs map[string]string `json:"-"`
 	Status     ArtifactStatus    `json:"status"`
 	URL        string            `json:"url,omitempty"`
 	CreatedAt  time.Time         `json:"created_at"`

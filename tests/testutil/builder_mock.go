@@ -44,6 +44,11 @@ func (m *MockBuilder) Build(_ context.Context, req builder.BuildRequest) (*build
 	}, nil
 }
 
+// PublishesInternally returns true.
+func (m *MockBuilder) PublishesInternally() bool {
+	return true
+}
+
 // BuildCalls returns how many times Build was called.
 func (m *MockBuilder) BuildCalls() int {
 	m.mu.Lock()

@@ -111,11 +111,7 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 	if b.insecure {
 		tlsVerify = "false"
 	}
-	buildCmd := fmt.Sprintf(
-		"buildah bud --storage-driver=vfs --isolation=chroot -t %s /workspace && "+
-			"buildah push --storage-driver=vfs --tls-verify=%s %s docker://%s",
-		req.ImageName, tlsVerify, req.ImageName, req.ImageName,
-	)
+	buildScript := `buildah bud --storage-driver=vfs --isolation=chroot -t "$1" /workspace && buildah push --storage-driver=vfs --tls-verify="$2" "$1" "docker://$1"`
 
 	// 5. Create K8s Job
 	job := &batchv1.Job{
@@ -138,7 +134,7 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 							Name:    "buildah",
 							Image:   b.buildahImage,
 							Command: []string{"sh", "-c"},
-							Args:    []string{buildCmd},
+							Args:    []string{buildScript, "build-script", req.ImageName, tlsVerify},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      "source",
@@ -174,7 +170,20 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 	if k8serrors.IsAlreadyExists(err) {
 		b.logger.Warn("stale build Job exists, deleting and retrying", "job", jobName)
 		b.cleanup(ctx, jobName)
-		time.Sleep(2 * time.Second)
+		
+		// Wait for deletion with exponential backoff rather than a fixed 2s sleep
+		interval := 100 * time.Millisecond
+		for i := 0; i < 15; i++ {
+			_, checkErr := b.clientset.BatchV1().Jobs(b.namespace).Get(ctx, jobName, metav1.GetOptions{})
+			if k8serrors.IsNotFound(checkErr) {
+				break
+			}
+			time.Sleep(interval)
+			if interval < 2*time.Second {
+				interval *= 2
+			}
+		}
+		
 		_, err = b.clientset.BatchV1().Jobs(b.namespace).Create(ctx, job, metav1.CreateOptions{})
 	}
 	if err != nil {
@@ -203,24 +212,35 @@ func (b *BuildahBuilder) waitForJob(_ context.Context, jobName string) error {
 	waitCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	interval := 2 * time.Second
 
 	for {
+		// Check context before doing API call
 		select {
 		case <-waitCtx.Done():
 			return fmt.Errorf("build timed out after %v", b.timeout)
-		case <-ticker.C:
-			job, err := b.clientset.BatchV1().Jobs(b.namespace).Get(waitCtx, jobName, metav1.GetOptions{})
-			if err != nil {
-				return fmt.Errorf("checking Job status: %w", err)
-			}
+		default:
+		}
 
-			if job.Status.Succeeded > 0 {
-				return nil
-			}
-			if job.Status.Failed > 0 {
-				return fmt.Errorf("build Job failed")
+		job, err := b.clientset.BatchV1().Jobs(b.namespace).Get(waitCtx, jobName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("checking Job status: %w", err)
+		}
+
+		if job.Status.Succeeded > 0 {
+			return nil
+		}
+		if job.Status.Failed > 0 {
+			return fmt.Errorf("build Job failed")
+		}
+
+		// Wait with exponential backoff
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("build timed out after %v", b.timeout)
+		case <-time.After(interval):
+			if interval < 15*time.Second {
+				interval = time.Duration(float64(interval) * 1.5)
 			}
 		}
 	}

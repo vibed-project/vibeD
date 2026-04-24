@@ -416,22 +416,7 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*Deploy
 	o.metrics.DeployDuration.WithLabelValues("success", string(target)).Observe(deployDur)
 	o.metrics.ArtifactsActive.WithLabelValues(string(target)).Inc()
 
-	// 9. Update artifact with URL, running status, and version
-	artifact.URL = deployResult.URL
-	artifact.Status = api.StatusRunning
-	artifact.Version = 1
-	artifact.VersionID = generateID()
-	artifact.UpdatedAt = time.Now()
-	if err := o.store.Update(ctx, artifact); err != nil {
-		o.logger.Warn("failed to persist deploy result",
-			"artifact_id", artifactID,
-			"error", err,
-		)
-	}
-	o.publishStatusEvent(artifact)
-
-	// Create initial version snapshot
-	o.createVersionSnapshot(ctx, artifact)
+	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
 
 	o.logger.Info("artifact deployed successfully",
 		"id", artifactID,
@@ -658,25 +643,7 @@ func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*Deploy
 	o.metrics.DeploysTotal.WithLabelValues("success", target).Inc()
 	o.metrics.DeployDuration.WithLabelValues("success", target).Observe(deployDur)
 
-	newVersion := artifact.Version + 1
-	if newVersion <= 1 {
-		newVersion = 2 // pre-versioning artifacts jump from 0 to 2
-	}
-	artifact.URL = deployResult.URL
-	artifact.Status = api.StatusRunning
-	artifact.Version = newVersion
-	artifact.VersionID = generateID()
-	artifact.UpdatedAt = time.Now()
-	if err := o.store.Update(ctx, artifact); err != nil {
-		o.logger.Warn("failed to persist update result",
-			"artifact_id", artifact.ID,
-			"error", err,
-		)
-	}
-	o.publishStatusEvent(artifact)
-
-	// Create version snapshot
-	o.createVersionSnapshot(ctx, artifact)
+	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
 
 	return &DeployResult{
 		ArtifactID: artifact.ID,
@@ -843,6 +810,34 @@ func (o *Orchestrator) updateStatus(ctx context.Context, artifact *api.Artifact,
 	o.publishStatusEvent(artifact)
 }
 
+
+
+func (o *Orchestrator) finalizeDeployment(ctx context.Context, artifact *api.Artifact, deployResult *deployer.DeployResult, userID string) {
+	artifact.URL = deployResult.URL
+	artifact.Status = api.StatusRunning
+	artifact.Error = ""
+	artifact.UpdatedAt = time.Now()
+	
+	newVersion := artifact.Version + 1
+	if newVersion <= 1 {
+		newVersion = 2 // pre-versioning artifacts jump from 0 to 2
+	}
+	if artifact.Version == 0 {
+		newVersion = 1 // First time deploy
+	}
+	artifact.Version = newVersion
+	artifact.VersionID = generateID()
+
+	if err := o.store.Update(ctx, artifact); err != nil {
+		o.logger.Warn("failed to persist deploy result",
+			"artifact_id", artifact.ID,
+			"error", err,
+		)
+	}
+	o.publishStatusEvent(artifact)
+
+	o.createVersionSnapshot(ctx, artifact)
+}
 func (o *Orchestrator) failArtifact(_ context.Context, artifact *api.Artifact, reason string) {
 	failCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1010,20 +1005,7 @@ func (o *Orchestrator) deployStatic(ctx context.Context, artifact *api.Artifact,
 	o.metrics.DeployDuration.WithLabelValues("success", string(target)).Observe(deployDur)
 	o.metrics.ArtifactsActive.WithLabelValues(string(target)).Inc()
 
-	artifact.URL = deployResult.URL
-	artifact.Status = api.StatusRunning
-	artifact.Version = 1
-	artifact.VersionID = generateID()
-	artifact.UpdatedAt = time.Now()
-	if err := o.store.Update(ctx, artifact); err != nil {
-		o.logger.Warn("failed to persist static deploy result",
-			"artifact_id", artifact.ID,
-			"error", err,
-		)
-	}
-	o.publishStatusEvent(artifact)
-
-	o.createVersionSnapshot(ctx, artifact)
+	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
 
 	o.logger.Info("static artifact deployed (no build)",
 		"id", artifact.ID, "name", artifact.Name,
@@ -1055,9 +1037,15 @@ func (o *Orchestrator) updateStatic(ctx context.Context, artifact *api.Artifact,
 	}
 	data["nginx.conf"] = staticNginxConf
 
+	newVersion := artifact.Version + 1
+	if newVersion <= 1 {
+		newVersion = 2
+	}
+	newCmName := fmt.Sprintf("%s-v%d-static", artifact.ID, newVersion)
+
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cmName,
+			Name:      newCmName,
 			Namespace: ns,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "vibed",
@@ -1067,16 +1055,21 @@ func (o *Orchestrator) updateStatic(ctx context.Context, artifact *api.Artifact,
 		Data: data,
 	}
 
-	// Replace ConfigMap (delete + create for clean update)
-	_ = o.clientset.CoreV1().ConfigMaps(ns).Delete(ctx, cmName, metav1.DeleteOptions{})
+	// Create new ConfigMap first
 	_, err := o.clientset.CoreV1().ConfigMaps(ns).Create(ctx, cm, metav1.CreateOptions{})
 	if err != nil {
 		o.failArtifact(ctx, artifact, fmt.Sprintf("updating static ConfigMap: %v", err))
 		return nil, fmt.Errorf("updating static ConfigMap: %w", err)
 	}
 
+	// Delete old ConfigMap
+	oldCmName := artifact.StaticFiles
+	if oldCmName != "" {
+		_ = o.clientset.CoreV1().ConfigMaps(ns).Delete(ctx, oldCmName, metav1.DeleteOptions{})
+	}
+
 	artifact.ImageRef = "nginx:alpine"
-	artifact.StaticFiles = cmName
+	artifact.StaticFiles = newCmName
 	if artifact.Port == 0 {
 		artifact.Port = 8080
 	}
@@ -1103,24 +1096,7 @@ func (o *Orchestrator) updateStatic(ctx context.Context, artifact *api.Artifact,
 	o.metrics.DeploysTotal.WithLabelValues("success", target).Inc()
 	o.metrics.DeployDuration.WithLabelValues("success", target).Observe(deployDur)
 
-	newVersion := artifact.Version + 1
-	if newVersion <= 1 {
-		newVersion = 2
-	}
-	artifact.URL = deployResult.URL
-	artifact.Status = api.StatusRunning
-	artifact.Version = newVersion
-	artifact.VersionID = generateID()
-	artifact.UpdatedAt = time.Now()
-	if err := o.store.Update(ctx, artifact); err != nil {
-		o.logger.Warn("failed to persist static update result",
-			"artifact_id", artifact.ID,
-			"error", err,
-		)
-	}
-	o.publishStatusEvent(artifact)
-
-	o.createVersionSnapshot(ctx, artifact)
+	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
 
 	return &DeployResult{
 		ArtifactID: artifact.ID,
@@ -1227,30 +1203,13 @@ func (o *Orchestrator) Rollback(ctx context.Context, artifactID string, targetVe
 	o.metrics.DeployDuration.WithLabelValues("success", target).Observe(deployDur)
 
 	// Create a new version entry for the rollback
-	newVersion := artifact.Version + 1
-	if newVersion <= 1 {
-		newVersion = 2
-	}
-	artifact.URL = deployResult.URL
-	artifact.Status = api.StatusRunning
-	artifact.Version = newVersion
-	artifact.VersionID = generateID()
-	artifact.UpdatedAt = time.Now()
-	if err := o.store.Update(ctx, artifact); err != nil {
-		o.logger.Warn("failed to persist rollback result",
-			"artifact_id", artifact.ID,
-			"error", err,
-		)
-	}
-	o.publishStatusEvent(artifact)
-
-	o.createVersionSnapshot(ctx, artifact)
+	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
 
 	o.logger.Info("artifact rolled back",
 		"id", artifactID,
 		"from_version", artifact.Version-1,
 		"to_snapshot", targetVersion,
-		"new_version", newVersion,
+		"new_version", artifact.Version,
 	)
 
 	return &DeployResult{

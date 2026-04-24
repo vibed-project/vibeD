@@ -2,6 +2,8 @@
 package metrics
 
 import (
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -39,9 +41,15 @@ type Metrics struct {
 	RateLimitedTotal *prometheus.CounterVec
 }
 
-// New creates and registers all vibeD metrics.
+var (
+	instance *Metrics
+	once     sync.Once
+)
+
+// New creates and registers all vibeD metrics (singleton).
 func New() *Metrics {
-	return &Metrics{
+	once.Do(func() {
+		instance = &Metrics{
 		BuildsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "vibed",
 			Name:      "builds_total",
@@ -130,5 +138,7 @@ func New() *Metrics {
 			Name:      "rate_limited_total",
 			Help:      "Total number of rate-limited HTTP requests.",
 		}, []string{"client_type"}),
-	}
+		}
+	})
+	return instance
 }

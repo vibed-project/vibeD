@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -33,6 +34,42 @@ func NewKubernetesDeployer(
 		clientset: clientset,
 		namespace: cfg.Namespace,
 		logger:    logger,
+	}
+}
+
+func (d *KubernetesDeployer) waitForReady(ctx context.Context, name string) error {
+	d.logger.Info("waiting for Kubernetes Deployment to become ready", "name", name)
+	
+	// Ensure we don't wait forever if the context doesn't have a deadline
+	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("timeout waiting for Kubernetes Deployment %q to be ready: %w", name, waitCtx.Err())
+		case <-ticker.C:
+			dep, err := d.clientset.AppsV1().Deployments(d.namespace).Get(waitCtx, name, metav1.GetOptions{})
+			if err != nil {
+				d.logger.Debug("error getting Kubernetes Deployment status", "name", name, "error", err)
+				continue
+			}
+
+			// Deployment is ready if all required replicas are ready
+			if dep.Status.ReadyReplicas > 0 {
+				return nil
+			}
+
+			// Also check conditions for terminal failures (like ImagePullBackOff which causes ProgressDeadlineExceeded)
+			for _, cond := range dep.Status.Conditions {
+				if cond.Type == appsv1.DeploymentProgressing && cond.Status == corev1.ConditionFalse && cond.Reason == "ProgressDeadlineExceeded" {
+					return fmt.Errorf("Kubernetes Deployment %q failed to progress: %s", name, cond.Message)
+				}
+			}
+		}
 	}
 }
 
@@ -119,8 +156,12 @@ func (d *KubernetesDeployer) Deploy(ctx context.Context, artifact *api.Artifact)
 		return nil, fmt.Errorf("creating Service: %w", err)
 	}
 
+	if err := d.waitForReady(ctx, artifact.Name); err != nil {
+		return nil, err
+	}
+
 	url := d.resolveURL(createdSvc)
-	d.logger.Info("Kubernetes Deployment created", "name", artifact.Name, "url", url)
+	d.logger.Info("Kubernetes Deployment created and ready", "name", artifact.Name, "url", url)
 
 	return &DeployResult{URL: url}, nil
 }
@@ -141,6 +182,10 @@ func (d *KubernetesDeployer) Update(ctx context.Context, artifact *api.Artifact)
 	_, err = d.clientset.AppsV1().Deployments(d.namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("updating Deployment: %w", err)
+	}
+
+	if err := d.waitForReady(ctx, artifact.Name); err != nil {
+		return nil, err
 	}
 
 	svc, err := d.clientset.CoreV1().Services(d.namespace).Get(ctx, artifact.Name, metav1.GetOptions{})

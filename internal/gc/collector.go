@@ -97,15 +97,27 @@ func (gc *GarbageCollector) Run(ctx context.Context) {
 // collect runs a single GC cycle, cleaning up orphaned resources.
 func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.logger.Info("starting GC cycle")
-	gc.cleanOrphanedJobs(ctx)
-	gc.cleanOrphanedConfigMaps(ctx)
-	gc.cleanOrphanedDeployments(ctx)
+
+	res, err := gc.store.List(ctx, store.ListOptions{AdminView: true, Limit: 0})
+	if err != nil {
+		gc.logger.Error("failed to list artifacts for GC, skipping cycle", "error", err)
+		return
+	}
+
+	activeArtifacts := make(map[string]bool, len(res.Artifacts))
+	for _, a := range res.Artifacts {
+		activeArtifacts[a.ID] = true
+	}
+
+	gc.cleanOrphanedJobs(ctx, activeArtifacts)
+	gc.cleanOrphanedConfigMaps(ctx, activeArtifacts)
+	gc.cleanOrphanedDeployments(ctx, activeArtifacts)
 	gc.logger.Info("GC cycle complete")
 }
 
 // cleanOrphanedJobs deletes completed/failed build Jobs whose artifact
 // no longer exists in the store, or that are older than maxAge.
-func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context) {
+func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context, activeArtifacts map[string]bool) {
 	selector := labelManagedBy + "," + labelComponent + "=build"
 	jobs, err := gc.clientset.BatchV1().Jobs(gc.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: selector,
@@ -132,15 +144,11 @@ func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context) {
 		}
 
 		// Check if the artifact still exists.
-		_, err := gc.store.Get(ctx, artifactID)
-		orphaned := isNotFound(err)
-		stale := err == nil // artifact exists but job is old and finished
+		exists := activeArtifacts[artifactID]
+		orphaned := !exists
+		stale := exists // artifact exists but job is old and finished
 
 		if !orphaned && !stale {
-			// Unexpected error from store; skip.
-			if err != nil {
-				gc.logger.Warn("failed to check artifact for job GC", "job", job.Name, "error", err)
-			}
 			continue
 		}
 
@@ -162,7 +170,7 @@ func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context) {
 }
 
 // cleanOrphanedConfigMaps deletes ConfigMaps whose artifact no longer exists.
-func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context) {
+func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context, activeArtifacts map[string]bool) {
 	selector := labelManagedBy + "," + labelArtifactID
 	cms, err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: selector,
@@ -183,11 +191,7 @@ func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context) {
 			continue
 		}
 
-		_, err := gc.store.Get(ctx, artifactID)
-		if !isNotFound(err) {
-			if err != nil {
-				gc.logger.Warn("failed to check artifact for configmap GC", "configmap", cm.Name, "error", err)
-			}
+		if activeArtifacts[artifactID] {
 			continue
 		}
 
@@ -207,7 +211,7 @@ func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context) {
 
 // cleanOrphanedDeployments deletes Deployments (and their matching Services)
 // whose artifact no longer exists in the store.
-func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context) {
+func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context, activeArtifacts map[string]bool) {
 	deployments, err := gc.clientset.AppsV1().Deployments(gc.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelManagedBy,
 	})
@@ -222,11 +226,7 @@ func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context) {
 			continue
 		}
 
-		_, err := gc.store.Get(ctx, artifactID)
-		if !isNotFound(err) {
-			if err != nil {
-				gc.logger.Warn("failed to check artifact for deployment GC", "deployment", deploy.Name, "error", err)
-			}
+		if activeArtifacts[artifactID] {
 			continue
 		}
 

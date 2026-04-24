@@ -564,8 +564,8 @@ func validate(cfg *Config) error {
 		if !validModes[cfg.Auth.Mode] {
 			return fmt.Errorf("auth.mode must be one of: apikey, oauth, oidc (got %q)", cfg.Auth.Mode)
 		}
-		if (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "") && len(cfg.Auth.APIKeys) == 0 {
-			return fmt.Errorf("at least one API key is required when auth.mode is 'apikey'")
+		if (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "oauth" || cfg.Auth.Mode == "") && len(cfg.Auth.APIKeys) == 0 {
+			return fmt.Errorf("at least one API key (or proxy secret) is required when auth.mode is %q", cfg.Auth.Mode)
 		}
 		if cfg.Auth.Mode == "oidc" {
 			if cfg.Auth.OIDC.Issuer == "" {

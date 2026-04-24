@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -12,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
+	"knative.dev/pkg/apis"
 	knservingv1 "knative.dev/serving/pkg/apis/serving/v1"
 	knversioned "knative.dev/serving/pkg/client/clientset/versioned"
 )
@@ -44,6 +46,41 @@ func NewKnativeDeployer(
 	}
 }
 
+func (d *KnativeDeployer) waitForReady(ctx context.Context, name string) error {
+	d.logger.Info("waiting for Knative Service to become ready", "name", name)
+	
+	// Ensure we don't wait forever if the context doesn't have a deadline
+	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("timeout waiting for Knative Service %q to be ready: %w", name, waitCtx.Err())
+		case <-ticker.C:
+			svc, err := d.knClient.ServingV1().Services(d.namespace).Get(waitCtx, name, metav1.GetOptions{})
+			if err != nil {
+				d.logger.Debug("error getting Knative Service status", "name", name, "error", err)
+				continue
+			}
+
+			cond := svc.Status.GetCondition(apis.ConditionReady)
+			if cond != nil {
+				if cond.IsTrue() {
+					return nil // Ready!
+				}
+				if cond.IsFalse() && cond.Reason != "Deploying" && cond.Reason != "Resolving" && cond.Reason != "RevisionMissing" {
+					// It's in a failing state. Return early to avoid waiting for timeout.
+					return fmt.Errorf("Knative Service %q failed to become ready: %s - %s", name, cond.Reason, cond.Message)
+				}
+			}
+		}
+	}
+}
+
 func (d *KnativeDeployer) Deploy(ctx context.Context, artifact *api.Artifact) (*DeployResult, error) {
 	ksvc := d.buildService(artifact)
 
@@ -53,13 +90,23 @@ func (d *KnativeDeployer) Deploy(ctx context.Context, artifact *api.Artifact) (*
 		"image", artifact.ImageRef,
 	)
 
-	created, err := d.knClient.ServingV1().Services(d.namespace).Create(ctx, ksvc, metav1.CreateOptions{})
+	_, err := d.knClient.ServingV1().Services(d.namespace).Create(ctx, ksvc, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("creating Knative Service: %w", err)
 	}
 
-	url := d.resolveURL(created)
-	d.logger.Info("Knative Service created", "name", artifact.Name, "url", url)
+	if err := d.waitForReady(ctx, artifact.Name); err != nil {
+		return nil, err
+	}
+
+	// Refetch to get the latest status URL after readiness
+	readySvc, err := d.knClient.ServingV1().Services(d.namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting Knative Service after ready: %w", err)
+	}
+
+	url := d.resolveURL(readySvc)
+	d.logger.Info("Knative Service created and ready", "name", artifact.Name, "url", url)
 
 	return &DeployResult{URL: url}, nil
 }
@@ -86,12 +133,21 @@ func (d *KnativeDeployer) Update(ctx context.Context, artifact *api.Artifact) (*
 		existing.Spec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: int32(artifact.Port)}}
 	}
 
-	updated, err := d.knClient.ServingV1().Services(d.namespace).Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = d.knClient.ServingV1().Services(d.namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("updating Knative Service: %w", err)
 	}
 
-	url := d.resolveURL(updated)
+	if err := d.waitForReady(ctx, artifact.Name); err != nil {
+		return nil, err
+	}
+
+	readySvc, err := d.knClient.ServingV1().Services(d.namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting Knative Service after ready: %w", err)
+	}
+
+	url := d.resolveURL(readySvc)
 	return &DeployResult{URL: url}, nil
 }
 
