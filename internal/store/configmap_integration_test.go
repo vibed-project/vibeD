@@ -147,20 +147,20 @@ func TestConfigMapStore_List(t *testing.T) {
 	require.NoError(t, s.Create(ctx, a3))
 
 	// List all
-	all, err := s.List(ctx, "", "")
+	all, err := s.List(ctx, store.ListOptions{})
 	require.NoError(t, err)
-	assert.Len(t, all, 3)
+	assert.Len(t, all.Artifacts, 3)
 
 	// Filter by status
-	running, err := s.List(ctx, "running", "")
+	running, err := s.List(ctx, store.ListOptions{StatusFilter: "running"})
 	require.NoError(t, err)
-	assert.Len(t, running, 2)
+	assert.Len(t, running.Artifacts, 2)
 
-	failed, err := s.List(ctx, "failed", "")
+	failed, err := s.List(ctx, store.ListOptions{StatusFilter: "failed"})
 	require.NoError(t, err)
-	assert.Len(t, failed, 1)
-	assert.Equal(t, "list-app-2", failed[0].Name)
-}
+	assert.Len(t, failed.Artifacts, 1)
+	assert.Equal(t, "list-app-2", failed.Artifacts[0].Name)
+	}
 
 func TestConfigMapStore_GetNotFound(t *testing.T) {
 	testutil.SkipIfNoCluster(t)

@@ -15,7 +15,7 @@ type listVersionsInput struct {
 }
 
 type listVersionsOutput struct {
-	ArtifactID string               `json:"artifact_id"`
+	ArtifactID string                `json:"artifact_id"`
 	Versions   []api.ArtifactVersion `json:"versions"`
 }
 

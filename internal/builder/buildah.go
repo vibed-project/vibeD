@@ -114,12 +114,16 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 	buildScript := `buildah bud --storage-driver=vfs --isolation=chroot -t "$1" /workspace && buildah push --storage-driver=vfs --tls-verify="$2" "$1" "docker://$1"`
 
 	// 5. Create K8s Job
+	ns := req.Namespace
+	if ns == "" {
+	        ns = b.namespace // fallback to global
+	}
+
 	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: b.namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "vibed",
+	        ObjectMeta: metav1.ObjectMeta{
+	                Name:      jobName,
+	                Namespace: ns,
+	                Labels: map[string]string{				"app.kubernetes.io/managed-by": "vibed",
 				"vibed.dev/component":          "build",
 			},
 		},
@@ -164,51 +168,50 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 			},
 		},
 	}
+b.logger.Info("creating build Job", "job", jobName, "namespace", ns)
+_, err = b.clientset.BatchV1().Jobs(ns).Create(ctx, job, metav1.CreateOptions{})
+if k8serrors.IsAlreadyExists(err) {
+        b.logger.Warn("stale build Job exists, deleting and retrying", "job", jobName)
+        b.cleanup(ctx, ns, jobName)
 
-	b.logger.Info("creating build Job", "job", jobName, "namespace", b.namespace)
-	_, err = b.clientset.BatchV1().Jobs(b.namespace).Create(ctx, job, metav1.CreateOptions{})
-	if k8serrors.IsAlreadyExists(err) {
-		b.logger.Warn("stale build Job exists, deleting and retrying", "job", jobName)
-		b.cleanup(ctx, jobName)
-		
-		// Wait for deletion with exponential backoff rather than a fixed 2s sleep
-		interval := 100 * time.Millisecond
-		for i := 0; i < 15; i++ {
-			_, checkErr := b.clientset.BatchV1().Jobs(b.namespace).Get(ctx, jobName, metav1.GetOptions{})
-			if k8serrors.IsNotFound(checkErr) {
-				break
-			}
-			time.Sleep(interval)
-			if interval < 2*time.Second {
-				interval *= 2
-			}
-		}
-		
-		_, err = b.clientset.BatchV1().Jobs(b.namespace).Create(ctx, job, metav1.CreateOptions{})
-	}
+        // Wait for deletion with exponential backoff rather than a fixed 2s sleep
+        interval := 100 * time.Millisecond
+        for i := 0; i < 15; i++ {
+                _, checkErr := b.clientset.BatchV1().Jobs(ns).Get(ctx, jobName, metav1.GetOptions{})
+                if k8serrors.IsNotFound(checkErr) {
+                        break
+                }
+                time.Sleep(interval)
+                interval *= 2
+                if interval > 2*time.Second {
+                        interval = 2 * time.Second
+                }
+        }
+
+        _, err = b.clientset.BatchV1().Jobs(ns).Create(ctx, job, metav1.CreateOptions{})
+}
 	if err != nil {
 		return nil, fmt.Errorf("creating build Job: %w", err)
 	}
 
 	// 6. Wait for Job completion
-	err = b.waitForJob(ctx, jobName)
+	err = b.waitForJob(ctx, ns, jobName)
 	if err != nil {
 		// Fetch logs for debugging
-		logs := b.fetchJobLogs(ctx, jobName)
-		b.cleanup(ctx, jobName)
+		logs := b.fetchJobLogs(ctx, ns, jobName)
+		b.cleanup(ctx, ns, jobName)
 		return nil, fmt.Errorf("build failed: %w\nBuild logs:\n%s", err, logs)
-	}
+		}
 
-	b.logger.Info("build completed", "image", req.ImageName)
-	b.cleanup(ctx, jobName)
+		b.logger.Info("build completed", "image", req.ImageName)
+		b.cleanup(ctx, ns, jobName)
 
-	return &BuildResult{
+		return &BuildResult{
 		ImageRef: req.ImageName,
-	}, nil
-}
+		}, nil
+		}
 
-func (b *BuildahBuilder) waitForJob(_ context.Context, jobName string) error {
-	// Use a detached context so MCP client disconnects don't kill the build.
+		func (b *BuildahBuilder) waitForJob(_ context.Context, namespace, jobName string) error {	// Use a detached context so MCP client disconnects don't kill the build.
 	waitCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
 
@@ -222,7 +225,7 @@ func (b *BuildahBuilder) waitForJob(_ context.Context, jobName string) error {
 		default:
 		}
 
-		job, err := b.clientset.BatchV1().Jobs(b.namespace).Get(waitCtx, jobName, metav1.GetOptions{})
+		job, err := b.clientset.BatchV1().Jobs(namespace).Get(waitCtx, jobName, metav1.GetOptions{})
 		if err != nil {
 			return fmt.Errorf("checking Job status: %w", err)
 		}
@@ -246,20 +249,18 @@ func (b *BuildahBuilder) waitForJob(_ context.Context, jobName string) error {
 	}
 }
 
-func (b *BuildahBuilder) fetchJobLogs(_ context.Context, jobName string) string {
-	logCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+func (b *BuildahBuilder) fetchJobLogs(_ context.Context, namespace, jobName string) string {
+        logCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+        defer cancel()
 
-	pods, err := b.clientset.CoreV1().Pods(b.namespace).List(logCtx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+        pods, err := b.clientset.CoreV1().Pods(namespace).List(logCtx, metav1.ListOptions{		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
 	})
 	if err != nil || len(pods.Items) == 0 {
 		return "(no build logs available)"
 	}
 
 	tailLines := int64(50)
-	req := b.clientset.CoreV1().Pods(b.namespace).GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{
-		TailLines: &tailLines,
+	req := b.clientset.CoreV1().Pods(namespace).GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{		TailLines: &tailLines,
 	})
 	stream, err := req.Stream(logCtx)
 	if err != nil {
@@ -275,13 +276,12 @@ func (b *BuildahBuilder) fetchJobLogs(_ context.Context, jobName string) string 
 	return strings.Join(lines, "\n")
 }
 
-func (b *BuildahBuilder) cleanup(_ context.Context, jobName string) {
-	cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+func (b *BuildahBuilder) cleanup(_ context.Context, namespace, jobName string) {
+        cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
 
-	propagation := metav1.DeletePropagationBackground
-	err := b.clientset.BatchV1().Jobs(b.namespace).Delete(cleanCtx, jobName, metav1.DeleteOptions{
-		PropagationPolicy: &propagation,
+        propagation := metav1.DeletePropagationBackground
+        err := b.clientset.BatchV1().Jobs(namespace).Delete(cleanCtx, jobName, metav1.DeleteOptions{		PropagationPolicy: &propagation,
 	})
 	if err != nil && !k8serrors.IsNotFound(err) {
 		b.logger.Warn("failed to cleanup build Job", "job", jobName, "error", err)

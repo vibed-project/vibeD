@@ -49,7 +49,7 @@ func TestAuth_Disabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	cfg := config.AuthConfig{Enabled: false}
 
-	middleware, err := vibedauth.Middleware(cfg, logger)
+	middleware, err := vibedauth.Middleware(cfg, nil, logger)
 	require.NoError(t, err)
 
 	handler := middleware(testHandler())
@@ -58,12 +58,13 @@ func TestAuth_Disabled(t *testing.T) {
 
 	// All paths should be accessible without auth
 	for _, path := range []string{"/healthz", "/readyz", "/metrics", "/mcp/", "/api/artifacts", "/"} {
-		resp, err := http.Get(srv.URL + path)
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, resp.StatusCode, "path %s should be accessible", path)
-		resp.Body.Close()
-	}
-}
+	        func(path string) {
+	                resp, err := http.Get(srv.URL + path)
+	                require.NoError(t, err)
+	                defer resp.Body.Close()
+	                assert.Equal(t, http.StatusOK, resp.StatusCode, "path %s should be accessible", path)
+	        }(path)
+	}}
 
 func TestAuth_ValidAPIKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -75,7 +76,7 @@ func TestAuth_ValidAPIKey(t *testing.T) {
 		},
 	}
 
-	middleware, err := vibedauth.Middleware(cfg, logger)
+	middleware, err := vibedauth.Middleware(cfg, nil, logger)
 	require.NoError(t, err)
 
 	handler := vibedauth.SkipAuthPaths(middleware)(testHandler())
@@ -88,7 +89,7 @@ func TestAuth_ValidAPIKey(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
+	defer resp.Body.Close()
 }
 
 func TestAuth_InvalidAPIKey(t *testing.T) {
@@ -101,7 +102,7 @@ func TestAuth_InvalidAPIKey(t *testing.T) {
 		},
 	}
 
-	middleware, err := vibedauth.Middleware(cfg, logger)
+	middleware, err := vibedauth.Middleware(cfg, nil, logger)
 	require.NoError(t, err)
 
 	handler := vibedauth.SkipAuthPaths(middleware)(testHandler())
@@ -114,7 +115,7 @@ func TestAuth_InvalidAPIKey(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	resp.Body.Close()
+	defer resp.Body.Close()
 }
 
 func TestAuth_MissingToken(t *testing.T) {
@@ -127,7 +128,7 @@ func TestAuth_MissingToken(t *testing.T) {
 		},
 	}
 
-	middleware, err := vibedauth.Middleware(cfg, logger)
+	middleware, err := vibedauth.Middleware(cfg, nil, logger)
 	require.NoError(t, err)
 
 	handler := vibedauth.SkipAuthPaths(middleware)(testHandler())
@@ -138,7 +139,7 @@ func TestAuth_MissingToken(t *testing.T) {
 	resp, err := http.Get(srv.URL + "/api/artifacts")
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	resp.Body.Close()
+	defer resp.Body.Close()
 }
 
 func TestAuth_SkipHealthPaths(t *testing.T) {
@@ -151,7 +152,7 @@ func TestAuth_SkipHealthPaths(t *testing.T) {
 		},
 	}
 
-	middleware, err := vibedauth.Middleware(cfg, logger)
+	middleware, err := vibedauth.Middleware(cfg, nil, logger)
 	require.NoError(t, err)
 
 	handler := vibedauth.SkipAuthPaths(middleware)(testHandler())
@@ -160,12 +161,13 @@ func TestAuth_SkipHealthPaths(t *testing.T) {
 
 	// Health and metrics paths should be accessible without auth
 	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
-		resp, err := http.Get(srv.URL + path)
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, resp.StatusCode, "path %s should be accessible without auth", path)
-		resp.Body.Close()
-	}
-}
+	        func(path string) {
+	                resp, err := http.Get(srv.URL + path)
+	                require.NoError(t, err)
+	                defer resp.Body.Close()
+	                assert.Equal(t, http.StatusOK, resp.StatusCode, "path %s should be accessible without auth", path)
+	        }(path)
+	}}
 
 func TestAuth_ProtectedPaths(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -177,7 +179,7 @@ func TestAuth_ProtectedPaths(t *testing.T) {
 		},
 	}
 
-	middleware, err := vibedauth.Middleware(cfg, logger)
+	middleware, err := vibedauth.Middleware(cfg, nil, logger)
 	require.NoError(t, err)
 
 	handler := vibedauth.SkipAuthPaths(middleware)(testHandler())
@@ -186,12 +188,13 @@ func TestAuth_ProtectedPaths(t *testing.T) {
 
 	// MCP and API paths should require auth
 	for _, path := range []string{"/mcp/", "/api/artifacts"} {
-		resp, err := http.Get(srv.URL + path)
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "path %s should require auth", path)
-		resp.Body.Close()
-	}
-}
+	        func(path string) {
+	                resp, err := http.Get(srv.URL + path)
+	                require.NoError(t, err)
+	                defer resp.Body.Close()
+	                assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "path %s should require auth", path)
+	        }(path)
+	}}
 
 func TestAuth_EnvVarKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -207,7 +210,7 @@ func TestAuth_EnvVarKey(t *testing.T) {
 		},
 	}
 
-	middleware, err := vibedauth.Middleware(cfg, logger)
+	middleware, err := vibedauth.Middleware(cfg, nil, logger)
 	require.NoError(t, err)
 
 	handler := vibedauth.SkipAuthPaths(middleware)(testHandler())
@@ -221,5 +224,5 @@ func TestAuth_EnvVarKey(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
+	defer resp.Body.Close()
 }

@@ -217,13 +217,13 @@ func main() {
 	if err != nil {
 		logger.Warn("failed to create Knative client (Knative may not be installed)", "error", err)
 	} else {
-		knDeployer := deployer.NewKnativeDeployer(knClient, k8sClients.Clientset, cfg.Deployment, cfg.Knative, logger)
+		knDeployer := deployer.NewKnativeDeployer(knClient, k8sClients.Clientset, cfg.Knative, logger)
 		factory.Register(api.TargetKnative, knDeployer)
-	}
+		}
 
-	// Register Kubernetes deployer
-	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, cfg.Deployment, logger)
-	factory.Register(api.TargetKubernetes, k8sDeployer)
+		// Register Kubernetes deployer
+		k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, logger)
+		factory.Register(api.TargetKubernetes, k8sDeployer)
 
 	// Create orchestrator
 	// Create event bus for SSE streaming
@@ -235,8 +235,7 @@ func main() {
 		shareLinkStore = sls
 	}
 
-	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, m, k8sClients.Clientset, bus, shareLinkStore, logger)
-
+	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, userStore, m, k8sClients.Clientset, bus, shareLinkStore, logger)
 	// Start garbage collector
 	if cfg.GC.Enabled {
 		collector, err := gc.NewGarbageCollector(
@@ -287,10 +286,9 @@ func main() {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, logger)
-
+		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -303,7 +301,7 @@ func main() {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
 	mux := http.NewServeMux()
 
 	// Health check endpoints (always unauthenticated)
@@ -331,7 +329,7 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	}
 
 	// Frontend + API
-	frontendHandler := frontend.NewHandler(orch, cfg, bus, m, userStore)
+	frontendHandler := frontend.NewHandler(orch, cfg, bus, m, userStore, k8sClients)
 	mux.Handle("/", frontendHandler)
 
 	// Build handler chain: role → auth (selective) → metrics → mux

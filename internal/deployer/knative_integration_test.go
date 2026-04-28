@@ -38,14 +38,11 @@ func newKnativeDeployer(t *testing.T, ns string) *deployer.KnativeDeployer {
 	knClient, err := knversioned.NewForConfig(clients.RestConfig)
 	require.NoError(t, err)
 
-	depCfg := config.DeploymentConfig{Namespace: ns}
 	knCfg := config.KnativeConfig{
-		DomainSuffix: "127.0.0.1.sslip.io",
-		IngressClass: "kourier.ingress.networking.knative.dev",
+	        DomainSuffix: "127.0.0.1.sslip.io",
+	        IngressClass: "kourier.ingress.networking.knative.dev",
 	}
-
-	return deployer.NewKnativeDeployer(knClient, clients.Clientset, depCfg, knCfg, logger)
-}
+	return deployer.NewKnativeDeployer(knClient, clients.Clientset, knCfg, logger)}
 
 func TestKnativeDeployer_Deploy(t *testing.T) {
 	testutil.SkipIfNoCluster(t)
@@ -58,7 +55,7 @@ func TestKnativeDeployer_Deploy(t *testing.T) {
 
 	artifact := testArtifact(testutil.RandomName())
 	artifact.Target = api.TargetKnative
-
+	artifact.Namespace = ns
 	result, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.URL, "Knative Service should return a URL")
@@ -76,7 +73,7 @@ func TestKnativeDeployer_Update(t *testing.T) {
 
 	artifact := testArtifact(testutil.RandomName())
 	artifact.Target = api.TargetKnative
-
+	artifact.Namespace = ns
 	_, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
 
@@ -98,7 +95,7 @@ func TestKnativeDeployer_Delete(t *testing.T) {
 
 	artifact := testArtifact(testutil.RandomName())
 	artifact.Target = api.TargetKnative
-
+	artifact.Namespace = ns
 	_, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
 
@@ -117,7 +114,7 @@ func TestKnativeDeployer_FullLifecycle(t *testing.T) {
 
 	artifact := testArtifact(testutil.RandomName())
 	artifact.Target = api.TargetKnative
-
+	artifact.Namespace = ns
 	// Deploy
 	result, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)

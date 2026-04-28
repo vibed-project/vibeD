@@ -16,13 +16,13 @@ import (
 
 // BuildRequest describes what to build.
 type BuildRequest struct {
-	SourceDir string
-	ImageName string
-	Language  string            // "static", "nodejs", "python", "go", or "" for auto
-	Env       map[string]string
-	Publish   bool // Push to registry after build
+        SourceDir string
+        ImageName string
+        Namespace string
+        Language  string // "static", "nodejs", "python", "go", or "" for auto
+        Env       map[string]string
+        Publish   bool // Push to registry after build
 }
-
 // BuildResult contains the output of a successful build.
 type BuildResult struct {
 	ImageRef string

@@ -94,7 +94,7 @@ type UserGitHubConf struct {
 
 // UserGitLabConf is per-user GitLab storage configuration.
 type UserGitLabConf struct {
-	URL       string `yaml:"url,omitempty"`   // defaults "https://gitlab.com"
+	URL       string `yaml:"url,omitempty"` // defaults "https://gitlab.com"
 	ProjectID int    `yaml:"projectID"`
 	Branch    string `yaml:"branch,omitempty"` // defaults "main"
 	Token     string `yaml:"token,omitempty"`  // supports "env:VAR" and "file:PATH"
@@ -130,8 +130,8 @@ type DeploymentConfig struct {
 }
 
 type BuilderConfig struct {
-	Engine           string        `yaml:"engine"`           // "pack" or "buildah" (default: "buildah")
-	Image            string        `yaml:"image"`            // buildpacks builder image (pack only)
+	Engine           string        `yaml:"engine"` // "pack" or "buildah" (default: "buildah")
+	Image            string        `yaml:"image"`  // buildpacks builder image (pack only)
 	RunImage         string        `yaml:"runImage"`
 	PullPolicy       string        `yaml:"pullPolicy"`
 	ContainerRuntime string        `yaml:"containerRuntime"` // "auto", "docker", "podman"

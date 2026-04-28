@@ -16,17 +16,17 @@ import (
 
 const schema = `
 CREATE TABLE IF NOT EXISTS artifacts (
-	id           TEXT PRIMARY KEY,
-	name         TEXT UNIQUE NOT NULL,
-	owner_id     TEXT NOT NULL DEFAULT '',
-	status       TEXT NOT NULL,
-	target       TEXT NOT NULL DEFAULT '',
-	image_ref    TEXT NOT NULL DEFAULT '',
-	url          TEXT NOT NULL DEFAULT '',
-	port         INTEGER NOT NULL DEFAULT 0,
-	env_vars     TEXT NOT NULL DEFAULT '{}',
-	secret_refs  TEXT NOT NULL DEFAULT '{}',
-	language     TEXT NOT NULL DEFAULT '',
+        id           TEXT PRIMARY KEY,
+        name         TEXT UNIQUE NOT NULL,
+        owner_id     TEXT NOT NULL DEFAULT '',
+        namespace    TEXT NOT NULL DEFAULT '',
+        status       TEXT NOT NULL,
+        target       TEXT NOT NULL DEFAULT '',
+        image_ref    TEXT NOT NULL DEFAULT '',
+        url          TEXT NOT NULL DEFAULT '',
+        port         INTEGER NOT NULL DEFAULT 0,
+        env_vars     TEXT NOT NULL DEFAULT '{}',
+        secret_refs  TEXT NOT NULL DEFAULT '{}',	language     TEXT NOT NULL DEFAULT '',
 	static_files TEXT NOT NULL DEFAULT '',
 	error        TEXT NOT NULL DEFAULT '',
 	created_at   TEXT NOT NULL,
@@ -79,27 +79,27 @@ CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact_id ON artifact_version
 CREATE INDEX IF NOT EXISTS idx_share_links_artifact_id ON share_links(artifact_id);
 
 CREATE TABLE IF NOT EXISTS departments (
-	id         TEXT PRIMARY KEY,
-	name       TEXT UNIQUE NOT NULL,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-);
-`
+        id         TEXT PRIMARY KEY,
+        name       TEXT UNIQUE NOT NULL,
+        namespace  TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+);`
 
 // SQLiteStore is a persistent ArtifactStore backed by SQLite.
 type SQLiteStore struct {
 	db *sql.DB
 
 	// Prepared statements for hot paths
-	stmtGetArtifact           *sql.Stmt
-	stmtGetArtifactByName     *sql.Stmt
-	stmtCreateArtifact        *sql.Stmt
-	stmtUpdateArtifact        *sql.Stmt
-	stmtDeleteArtifact        *sql.Stmt
-	stmtCreateVersion         *sql.Stmt
-	stmtListVersions          *sql.Stmt
-	stmtGetUser               *sql.Stmt
-	stmtGetUserByName         *sql.Stmt
+	stmtGetArtifact       *sql.Stmt
+	stmtGetArtifactByName *sql.Stmt
+	stmtCreateArtifact    *sql.Stmt
+	stmtUpdateArtifact    *sql.Stmt
+	stmtDeleteArtifact    *sql.Stmt
+	stmtCreateVersion     *sql.Stmt
+	stmtListVersions      *sql.Stmt
+	stmtGetUser           *sql.Stmt
+	stmtGetUserByName     *sql.Stmt
 }
 
 // NewSQLiteStore opens (or creates) a SQLite database at the given path
@@ -129,8 +129,16 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	}
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("creating schema: %w", err)
+	        db.Close()
+	        return nil, fmt.Errorf("initializing schema: %w", err)
+	}
+
+	// Migrations
+	if _, err := db.Exec(`ALTER TABLE artifacts ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`); err != nil {
+	        // Ignore duplicate column error
+	}
+	if _, err := db.Exec(`ALTER TABLE departments ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`); err != nil {
+	        // Ignore duplicate column error
 	}
 
 	// Migration: add department_id to users if missing
@@ -162,38 +170,50 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) prepareStatements() error {
 	var err error
-	
-	s.stmtGetArtifact, err = s.db.Prepare(`SELECT id, name, owner_id, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE id = ?`)
-	if err != nil { return err }
-	
-	s.stmtGetArtifactByName, err = s.db.Prepare(`SELECT id, name, owner_id, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE name = ?`)
-	if err != nil { return err }
+
+	s.stmtGetArtifact, err = s.db.Prepare(`SELECT id, name, owner_id, namespace, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE id = ?`)
+	if err != nil {
+	        return err
+	}
+
+	s.stmtGetArtifactByName, err = s.db.Prepare(`SELECT id, name, owner_id, namespace, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE name = ?`)
+	if err != nil {
+	        return err
+	}
 
 	s.stmtCreateArtifact, err = s.db.Prepare(`
-		INSERT INTO artifacts (
-			id, name, owner_id, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	        INSERT INTO artifacts (
+	                id, name, owner_id, namespace, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with
+	        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
-	if err != nil { return err }
+	if err != nil {
+	        return err
+	}
 
 	s.stmtUpdateArtifact, err = s.db.Prepare(`
-		UPDATE artifacts SET
-			name = ?, owner_id = ?, status = ?, target = ?, image_ref = ?, url = ?, port = ?,
-			env_vars = ?, secret_refs = ?, language = ?, static_files = ?, error = ?, created_at = ?, updated_at = ?,
-			storage_ref = ?, version = ?, version_id = ?, shared_with = ?
-		WHERE id = ?
+	        UPDATE artifacts SET
+	                name = ?, owner_id = ?, namespace = ?, status = ?, target = ?, image_ref = ?, url = ?, port = ?,
+	                env_vars = ?, secret_refs = ?, language = ?, static_files = ?, error = ?, created_at = ?, updated_at = ?,
+	                storage_ref = ?, version = ?, version_id = ?, shared_with = ?
+	        WHERE id = ?
 	`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	s.stmtDeleteArtifact, err = s.db.Prepare(`DELETE FROM artifacts WHERE id = ?`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	s.stmtCreateVersion, err = s.db.Prepare(`
 		INSERT INTO artifact_versions (
 			version_id, artifact_id, version, image_ref, storage_ref, env_vars, secret_refs, status, url, created_at, created_by
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	s.stmtListVersions, err = s.db.Prepare(`
 		SELECT version_id, artifact_id, version, image_ref, storage_ref, env_vars, secret_refs, status, url, created_at, created_by 
@@ -201,31 +221,54 @@ func (s *SQLiteStore) prepareStatements() error {
 		WHERE artifact_id = ? 
 		ORDER BY version ASC
 	`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	s.stmtGetUser, err = s.db.Prepare(`SELECT id, name, email, role, status, provider, department_id, api_key_hash, created_at, updated_at FROM users WHERE id = ?`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	s.stmtGetUserByName, err = s.db.Prepare(`SELECT id, name, email, role, status, provider, department_id, api_key_hash, created_at, updated_at FROM users WHERE name = ? COLLATE NOCASE`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
 // Close closes the database and all prepared statements.
 func (s *SQLiteStore) Close() error {
-	if s.stmtGetArtifact != nil { s.stmtGetArtifact.Close() }
-	if s.stmtGetArtifactByName != nil { s.stmtGetArtifactByName.Close() }
-	if s.stmtCreateArtifact != nil { s.stmtCreateArtifact.Close() }
-	if s.stmtUpdateArtifact != nil { s.stmtUpdateArtifact.Close() }
-	if s.stmtDeleteArtifact != nil { s.stmtDeleteArtifact.Close() }
-	if s.stmtCreateVersion != nil { s.stmtCreateVersion.Close() }
-	if s.stmtListVersions != nil { s.stmtListVersions.Close() }
-	if s.stmtGetUser != nil { s.stmtGetUser.Close() }
-	if s.stmtGetUserByName != nil { s.stmtGetUserByName.Close() }
+	if s.stmtGetArtifact != nil {
+		s.stmtGetArtifact.Close()
+	}
+	if s.stmtGetArtifactByName != nil {
+		s.stmtGetArtifactByName.Close()
+	}
+	if s.stmtCreateArtifact != nil {
+		s.stmtCreateArtifact.Close()
+	}
+	if s.stmtUpdateArtifact != nil {
+		s.stmtUpdateArtifact.Close()
+	}
+	if s.stmtDeleteArtifact != nil {
+		s.stmtDeleteArtifact.Close()
+	}
+	if s.stmtCreateVersion != nil {
+		s.stmtCreateVersion.Close()
+	}
+	if s.stmtListVersions != nil {
+		s.stmtListVersions.Close()
+	}
+	if s.stmtGetUser != nil {
+		s.stmtGetUser.Close()
+	}
+	if s.stmtGetUserByName != nil {
+		s.stmtGetUserByName.Close()
+	}
 	return s.db.Close()
 }
-
 
 func (s *SQLiteStore) Create(ctx context.Context, artifact *api.Artifact) error {
 	envVars, err := json.Marshal(artifact.EnvVars)
@@ -242,11 +285,11 @@ func (s *SQLiteStore) Create(ctx context.Context, artifact *api.Artifact) error 
 	}
 
 	_, err = s.stmtCreateArtifact.ExecContext(ctx,
-		artifact.ID, artifact.Name, artifact.OwnerID, string(artifact.Status),
-		string(artifact.Target), artifact.ImageRef, artifact.URL, artifact.Port,
-		string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
-		artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
-		artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
+	        artifact.ID, artifact.Name, artifact.OwnerID, artifact.Namespace, string(artifact.Status),
+	        string(artifact.Target), artifact.ImageRef, artifact.URL, artifact.Port,
+	        string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
+	        artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
+	        artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -310,9 +353,8 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) (*ListResult, 
 	}
 
 	// Fetch rows with ordering and optional pagination
-	query := `SELECT id, name, owner_id, status, target, url, created_at, updated_at, version, shared_with FROM artifacts` + whereClause + ` ORDER BY created_at DESC`
+	query := `SELECT id, name, owner_id, namespace, status, target, url, created_at, updated_at, version, shared_with FROM artifacts` + whereClause + ` ORDER BY created_at DESC`
 	queryArgs := append([]interface{}{}, args...)
-
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		queryArgs = append(queryArgs, opts.Limit, opts.Offset)
@@ -331,17 +373,16 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) (*ListResult, 
 
 	for rows.Next() {
 		var (
-			summary                api.ArtifactSummary
-			status, target         string
-			createdAt, updatedAt   string
-			sharedWithJSON         string
+			summary              api.ArtifactSummary
+			status, target       string
+			createdAt, updatedAt string
+			sharedWithJSON       string
 		)
 		if err := rows.Scan(
-			&summary.ID, &summary.Name, &summary.OwnerID,
-			&status, &target, &summary.URL,
-			&createdAt, &updatedAt, &summary.Version, &sharedWithJSON,
-		); err != nil {
-			return nil, fmt.Errorf("scanning artifact summary: %w", err)
+		        &summary.ID, &summary.Name, &summary.OwnerID, &summary.Namespace,
+		        &status, &target, &summary.URL,
+		        &createdAt, &updatedAt, &summary.Version, &sharedWithJSON,
+		); err != nil {			return nil, fmt.Errorf("scanning artifact summary: %w", err)
 		}
 
 		summary.Status = api.ArtifactStatus(status)
@@ -380,12 +421,12 @@ func (s *SQLiteStore) Update(ctx context.Context, artifact *api.Artifact) error 
 	}
 
 	res, err := s.stmtUpdateArtifact.ExecContext(ctx,
-		artifact.Name, artifact.OwnerID, string(artifact.Status),
-		string(artifact.Target), artifact.ImageRef, artifact.URL, artifact.Port,
-		string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
-		artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
-		artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
-		artifact.ID,
+	        artifact.Name, artifact.OwnerID, artifact.Namespace, string(artifact.Status),
+	        string(artifact.Target), artifact.ImageRef, artifact.URL, artifact.Port,
+	        string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
+	        artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
+	        artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
+	        artifact.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating artifact: %w", err)
@@ -485,21 +526,21 @@ type scanner interface {
 
 func scanArtifact(row scanner) (*api.Artifact, error) {
 	var (
-		a               api.Artifact
-		status, target  string
-		envVarsJSON     string
-		secretRefsJSON  string
-		sharedWithJSON  string
-		createdAt       string
-		updatedAt       string
+		a              api.Artifact
+		status, target string
+		envVarsJSON    string
+		secretRefsJSON string
+		sharedWithJSON string
+		createdAt      string
+		updatedAt      string
 	)
 
 	err := row.Scan(
-		&a.ID, &a.Name, &a.OwnerID, &status, &target,
-		&a.ImageRef, &a.URL, &a.Port, &envVarsJSON, &secretRefsJSON,
-		&a.Language, &a.StaticFiles, &a.Error,
-		&createdAt, &updatedAt, &a.StorageRef,
-		&a.Version, &a.VersionID, &sharedWithJSON,
+	        &a.ID, &a.Name, &a.OwnerID, &a.Namespace, &status, &target,
+	        &a.ImageRef, &a.URL, &a.Port, &envVarsJSON, &secretRefsJSON,
+	        &a.Language, &a.StaticFiles, &a.Error,
+	        &createdAt, &updatedAt, &a.StorageRef,
+	        &a.Version, &a.VersionID, &sharedWithJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -769,9 +810,9 @@ func (s *SQLiteStore) RevokeShareLink(ctx context.Context, token string) error {
 
 func (s *SQLiteStore) CreateDepartment(ctx context.Context, dept *api.Department) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO departments (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		dept.ID, dept.Name,
-		dept.CreatedAt.Format(time.RFC3339Nano), dept.UpdatedAt.Format(time.RFC3339Nano),
+	        `INSERT INTO departments (id, name, namespace, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+	        dept.ID, dept.Name, dept.Namespace,
+	        dept.CreatedAt.Format(time.RFC3339Nano), dept.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -786,8 +827,8 @@ func (s *SQLiteStore) GetDepartment(ctx context.Context, id string) (*api.Depart
 	var d api.Department
 	var createdAt, updatedAt string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, created_at, updated_at FROM departments WHERE id = ?`, id,
-	).Scan(&d.ID, &d.Name, &createdAt, &updatedAt)
+	        `SELECT id, name, namespace, created_at, updated_at FROM departments WHERE id = ?`, id,
+	).Scan(&d.ID, &d.Name, &d.Namespace, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("department %q not found", id)
 	}
@@ -803,8 +844,8 @@ func (s *SQLiteStore) GetDepartmentByName(ctx context.Context, name string) (*ap
 	var d api.Department
 	var createdAt, updatedAt string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, created_at, updated_at FROM departments WHERE name = ?`, name,
-	).Scan(&d.ID, &d.Name, &createdAt, &updatedAt)
+	        `SELECT id, name, namespace, created_at, updated_at FROM departments WHERE name = ?`, name,
+	).Scan(&d.ID, &d.Name, &d.Namespace, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("department %q not found", name)
 	}
@@ -818,19 +859,19 @@ func (s *SQLiteStore) GetDepartmentByName(ctx context.Context, name string) (*ap
 
 func (s *SQLiteStore) ListDepartments(ctx context.Context) ([]api.Department, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, created_at, updated_at FROM departments ORDER BY name`)
+	        `SELECT id, name, namespace, created_at, updated_at FROM departments ORDER BY name`)
 	if err != nil {
-		return nil, fmt.Errorf("listing departments: %w", err)
+	        return nil, fmt.Errorf("listing departments: %w", err)
 	}
 	defer rows.Close()
 
 	var depts []api.Department
 	for rows.Next() {
-		var d api.Department
-		var createdAt, updatedAt string
-		if err := rows.Scan(&d.ID, &d.Name, &createdAt, &updatedAt); err != nil {
-			return nil, fmt.Errorf("scanning department: %w", err)
-		}
+	        var d api.Department
+	        var createdAt, updatedAt string
+	        if err := rows.Scan(&d.ID, &d.Name, &d.Namespace, &createdAt, &updatedAt); err != nil {
+	                return nil, fmt.Errorf("scanning department: %w", err)
+	        }
 		d.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		d.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 		depts = append(depts, d)
@@ -840,8 +881,8 @@ func (s *SQLiteStore) ListDepartments(ctx context.Context) ([]api.Department, er
 
 func (s *SQLiteStore) UpdateDepartment(ctx context.Context, dept *api.Department) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE departments SET name=?, updated_at=? WHERE id=?`,
-		dept.Name, dept.UpdatedAt.Format(time.RFC3339Nano), dept.ID,
+	        `UPDATE departments SET name=?, namespace=?, updated_at=? WHERE id=?`,
+	        dept.Name, dept.Namespace, dept.UpdatedAt.Format(time.RFC3339Nano), dept.ID,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {

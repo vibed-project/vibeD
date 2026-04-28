@@ -43,15 +43,16 @@ var dnsNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // DeployRequest is the input for deploying a new artifact.
 type DeployRequest struct {
-	Name       string
-	Files      map[string]string
-	Language   string
-	Target     string
-	EnvVars    map[string]string
-	SecretRefs map[string]string // env var name → "secret-name:key"
-	Port       int
+        Name         string
+        Files        map[string]string
+        Language     string
+        Target       string
+        EnvVars      map[string]string
+        SecretRefs   map[string]string // env var name → "secret-name:key"
+        Port         int
+        OwnerID      string
+        DepartmentID string
 }
-
 // UpdateRequest is the input for updating an existing artifact.
 type UpdateRequest struct {
 	ArtifactID string
@@ -72,14 +73,15 @@ type DeployResult struct {
 
 // Orchestrator coordinates the full deploy/update/delete lifecycle.
 type Orchestrator struct {
-	cfg         *config.Config
-	detector    *environment.Detector
-	builder builder.Builder
-	factory *deployer.Factory
-	storage     storage.Storage
-	store       store.ArtifactStore
-	metrics     *metrics.Metrics
-	clientset   kubernetes.Interface
+	cfg            *config.Config
+	detector       *environment.Detector
+	builder        builder.Builder
+	factory        *deployer.Factory
+	storage        storage.Storage
+	store          store.ArtifactStore
+	userStore      store.UserStore
+	metrics        *metrics.Metrics
+	clientset      kubernetes.Interface
 	events         *events.EventBus
 	shareLinkStore store.ShareLinkStore
 	imageBase      string
@@ -95,8 +97,8 @@ func NewOrchestrator(
 	factory *deployer.Factory,
 	stg storage.Storage,
 	st store.ArtifactStore,
-	m *metrics.Metrics,
-	clientset kubernetes.Interface,
+	userStore store.UserStore,
+	m *metrics.Metrics,	clientset kubernetes.Interface,
 	bus *events.EventBus,
 	shareLinkStore store.ShareLinkStore,
 	logger *slog.Logger,
@@ -107,19 +109,19 @@ func NewOrchestrator(
 	}
 
 	return &Orchestrator{
-		cfg:      cfg,
-		detector: detector,
-		builder:  bldr,
-		factory:  factory,
-		storage:     stg,
-		store:       st,
-		metrics:     m,
-		clientset:   clientset,
+		cfg:            cfg,
+		detector:       detector,
+		builder:        bldr,
+		factory:        factory,
+		storage:        stg,
+		store:          st,
+		userStore:      userStore,
+		metrics:        m,		clientset:      clientset,
 		events:         bus,
 		shareLinkStore: shareLinkStore,
 		imageBase:      imageBase,
 		tracer:         otel.Tracer("vibed/orchestrator"),
-		logger:      logger,
+		logger:         logger,
 	}
 }
 
@@ -270,19 +272,27 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*Deploy
 	artifactID := generateID()
 	now := time.Now()
 
-	artifact := &api.Artifact{
-		ID:        artifactID,
-		Name:      req.Name,
-		OwnerID:   vibedauth.UserIDFromContext(ctx),
-		Status:    api.StatusPending,
-		Language:  req.Language,
-		EnvVars:    req.EnvVars,
-		SecretRefs: req.SecretRefs,
-		Port:       req.Port,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+	namespace := o.cfg.Deployment.Namespace // fallback
+	if req.DepartmentID != "" && o.userStore != nil {
+	        dept, err := o.userStore.GetDepartment(ctx, req.DepartmentID)
+	        if err == nil && dept.Namespace != "" {
+	                namespace = dept.Namespace
+	        }
 	}
 
+	artifact := &api.Artifact{
+	        ID:         artifactID,
+	        Name:       req.Name,
+	        OwnerID:    vibedauth.UserIDFromContext(ctx),
+	        Namespace:  namespace,
+	        Status:     api.StatusPending,
+	        Language:   req.Language,
+	        EnvVars:    req.EnvVars,
+	        SecretRefs: req.SecretRefs,
+	        Port:       req.Port,
+	        CreatedAt:  now,
+	        UpdatedAt:  now,
+	}
 	// 3. Create artifact record
 	if err := o.store.Create(ctx, artifact); err != nil {
 		return nil, err
@@ -344,11 +354,12 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*Deploy
 	// handle the push separately in the registry.Push span below.
 	builderPublishes := activeBuilder.PublishesInternally()
 	buildResult, err := activeBuilder.Build(buildCtx, builder.BuildRequest{
-		SourceDir: storageRef.LocalPath,
-		ImageName: imageName,
-		Language:  lang,
-		Env:       req.EnvVars,
-		Publish:   builderPublishes && o.cfg.Registry.Enabled,
+	        SourceDir: storageRef.LocalPath,
+	        ImageName: imageName,
+	        Namespace: artifact.Namespace,
+	        Language:  lang,
+	        Env:       req.EnvVars,
+	        Publish:   builderPublishes && o.cfg.Registry.Enabled,
 	})
 
 	buildDur := time.Since(buildStart).Seconds()
@@ -573,12 +584,12 @@ func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*Deploy
 	buildCtx, buildSpan := o.tracer.Start(ctx, "builder.Build",
 		trace.WithAttributes(attribute.String("builder.image", imageName), attribute.String("builder.language", lang)))
 	buildResult, err := activeBuilder.Build(buildCtx, builder.BuildRequest{
-		SourceDir: storageRef.LocalPath,
-		ImageName: imageName,
-		Language:  lang,
-		Env:       artifact.EnvVars,
-		Publish:   builderPublishes && o.cfg.Registry.Enabled,
-	})
+	        SourceDir: storageRef.LocalPath,
+	        ImageName: imageName,
+	        Namespace: artifact.Namespace,
+	        Language:  lang,
+	        Env:       artifact.EnvVars,
+	        Publish:   builderPublishes && o.cfg.Registry.Enabled,	})
 
 	buildDur := time.Since(buildStart).Seconds()
 
@@ -810,14 +821,12 @@ func (o *Orchestrator) updateStatus(ctx context.Context, artifact *api.Artifact,
 	o.publishStatusEvent(artifact)
 }
 
-
-
 func (o *Orchestrator) finalizeDeployment(ctx context.Context, artifact *api.Artifact, deployResult *deployer.DeployResult, userID string) {
 	artifact.URL = deployResult.URL
 	artifact.Status = api.StatusRunning
 	artifact.Error = ""
 	artifact.UpdatedAt = time.Now()
-	
+
 	newVersion := artifact.Version + 1
 	if newVersion <= 1 {
 		newVersion = 2 // pre-versioning artifacts jump from 0 to 2

@@ -20,35 +20,31 @@ import (
 
 // KnativeDeployer deploys artifacts as Knative Services.
 type KnativeDeployer struct {
-	knClient     knversioned.Interface
-	k8sClientset kubernetes.Interface
-	namespace    string
-	domainSuffix string
-	gatewayPort  int
-	logger       *slog.Logger
+        knClient     knversioned.Interface
+        k8sClientset kubernetes.Interface
+        domainSuffix string
+        gatewayPort  int
+        logger       *slog.Logger
 }
 
 // NewKnativeDeployer creates a new KnativeDeployer.
 func NewKnativeDeployer(
-	knClient knversioned.Interface,
-	k8sClientset kubernetes.Interface,
-	cfg config.DeploymentConfig,
-	knCfg config.KnativeConfig,
-	logger *slog.Logger,
+        knClient knversioned.Interface,
+        k8sClientset kubernetes.Interface,
+        knCfg config.KnativeConfig,
+        logger *slog.Logger,
 ) *KnativeDeployer {
-	return &KnativeDeployer{
-		knClient:     knClient,
-		k8sClientset: k8sClientset,
-		namespace:    cfg.Namespace,
-		domainSuffix: knCfg.DomainSuffix,
-		gatewayPort:  knCfg.GatewayPort,
-		logger:       logger,
-	}
+        return &KnativeDeployer{
+                knClient:     knClient,
+                k8sClientset: k8sClientset,
+                domainSuffix: knCfg.DomainSuffix,
+                gatewayPort:  knCfg.GatewayPort,
+                logger:       logger,
+        }
 }
 
-func (d *KnativeDeployer) waitForReady(ctx context.Context, name string) error {
-	d.logger.Info("waiting for Knative Service to become ready", "name", name)
-	
+func (d *KnativeDeployer) waitForReady(ctx context.Context, namespace, name string) error {	d.logger.Info("waiting for Knative Service to become ready", "name", name)
+
 	// Ensure we don't wait forever if the context doesn't have a deadline
 	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
@@ -61,7 +57,7 @@ func (d *KnativeDeployer) waitForReady(ctx context.Context, name string) error {
 		case <-waitCtx.Done():
 			return fmt.Errorf("timeout waiting for Knative Service %q to be ready: %w", name, waitCtx.Err())
 		case <-ticker.C:
-			svc, err := d.knClient.ServingV1().Services(d.namespace).Get(waitCtx, name, metav1.GetOptions{})
+			svc, err := d.knClient.ServingV1().Services(namespace).Get(waitCtx, name, metav1.GetOptions{})
 			if err != nil {
 				d.logger.Debug("error getting Knative Service status", "name", name, "error", err)
 				continue
@@ -86,21 +82,21 @@ func (d *KnativeDeployer) Deploy(ctx context.Context, artifact *api.Artifact) (*
 
 	d.logger.Info("creating Knative Service",
 		"name", artifact.Name,
-		"namespace", d.namespace,
+		"namespace", artifact.Namespace,
 		"image", artifact.ImageRef,
-	)
+		)
 
-	_, err := d.knClient.ServingV1().Services(d.namespace).Create(ctx, ksvc, metav1.CreateOptions{})
-	if err != nil {
+		_, err := d.knClient.ServingV1().Services(artifact.Namespace).Create(ctx, ksvc, metav1.CreateOptions{})
+		if err != nil {
 		return nil, fmt.Errorf("creating Knative Service: %w", err)
 	}
 
-	if err := d.waitForReady(ctx, artifact.Name); err != nil {
-		return nil, err
+	if err := d.waitForReady(ctx, artifact.Namespace, artifact.Name); err != nil {
+	        return nil, err
 	}
 
 	// Refetch to get the latest status URL after readiness
-	readySvc, err := d.knClient.ServingV1().Services(d.namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
+	readySvc, err := d.knClient.ServingV1().Services(artifact.Namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting Knative Service after ready: %w", err)
 	}
@@ -114,11 +110,11 @@ func (d *KnativeDeployer) Deploy(ctx context.Context, artifact *api.Artifact) (*
 func (d *KnativeDeployer) Update(ctx context.Context, artifact *api.Artifact) (*DeployResult, error) {
 	// For static updates, recreate the service to pick up ConfigMap changes
 	if artifact.StaticFiles != "" {
-		_ = d.knClient.ServingV1().Services(d.namespace).Delete(ctx, artifact.Name, metav1.DeleteOptions{})
-		return d.Deploy(ctx, artifact)
+	        _ = d.knClient.ServingV1().Services(artifact.Namespace).Delete(ctx, artifact.Name, metav1.DeleteOptions{})
+	        return d.Deploy(ctx, artifact)
 	}
 
-	existing, err := d.knClient.ServingV1().Services(d.namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
+	existing, err := d.knClient.ServingV1().Services(artifact.Namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting existing Knative Service: %w", err)
 	}
@@ -133,16 +129,16 @@ func (d *KnativeDeployer) Update(ctx context.Context, artifact *api.Artifact) (*
 		existing.Spec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: int32(artifact.Port)}}
 	}
 
-	_, err = d.knClient.ServingV1().Services(d.namespace).Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = d.knClient.ServingV1().Services(artifact.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("updating Knative Service: %w", err)
 	}
 
-	if err := d.waitForReady(ctx, artifact.Name); err != nil {
-		return nil, err
+	if err := d.waitForReady(ctx, artifact.Namespace, artifact.Name); err != nil {
+	        return nil, err
 	}
 
-	readySvc, err := d.knClient.ServingV1().Services(d.namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
+	readySvc, err := d.knClient.ServingV1().Services(artifact.Namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting Knative Service after ready: %w", err)
 	}
@@ -153,19 +149,19 @@ func (d *KnativeDeployer) Update(ctx context.Context, artifact *api.Artifact) (*
 
 func (d *KnativeDeployer) Delete(ctx context.Context, artifact *api.Artifact) error {
 	d.logger.Info("deleting Knative Service", "name", artifact.Name)
-	err := d.knClient.ServingV1().Services(d.namespace).Delete(ctx, artifact.Name, metav1.DeleteOptions{})
+	err := d.knClient.ServingV1().Services(artifact.Namespace).Delete(ctx, artifact.Name, metav1.DeleteOptions{})
 	if err != nil {
 		return fmt.Errorf("deleting Knative Service: %w", err)
 	}
 	// Clean up static ConfigMap if present
 	if artifact.StaticFiles != "" {
-		_ = d.k8sClientset.CoreV1().ConfigMaps(d.namespace).Delete(ctx, artifact.StaticFiles, metav1.DeleteOptions{})
+	        _ = d.k8sClientset.CoreV1().ConfigMaps(artifact.Namespace).Delete(ctx, artifact.StaticFiles, metav1.DeleteOptions{})
 	}
 	return nil
 }
 
 func (d *KnativeDeployer) GetURL(ctx context.Context, artifact *api.Artifact) (string, error) {
-	svc, err := d.knClient.ServingV1().Services(d.namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
+	svc, err := d.knClient.ServingV1().Services(artifact.Namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("getting Knative Service: %w", err)
 	}
@@ -174,7 +170,7 @@ func (d *KnativeDeployer) GetURL(ctx context.Context, artifact *api.Artifact) (s
 
 func (d *KnativeDeployer) GetLogs(ctx context.Context, artifact *api.Artifact, lines int) ([]string, error) {
 	selector := fmt.Sprintf("serving.knative.dev/service=%s", artifact.Name)
-	logLines, err := FetchPodLogs(ctx, d.k8sClientset, d.namespace, selector, "user-container", lines)
+	logLines, err := FetchPodLogs(ctx, d.k8sClientset, artifact.Namespace, selector, "user-container", lines)
 	if err != nil {
 		return nil, err
 	}
@@ -209,11 +205,10 @@ func (d *KnativeDeployer) buildService(artifact *api.Artifact) *knservingv1.Serv
 	}
 
 	return &knservingv1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      artifact.Name,
-			Namespace: d.namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "vibed",
+	        ObjectMeta: metav1.ObjectMeta{
+	                Name:      artifact.Name,
+	                Namespace: artifact.Namespace,
+	                Labels: map[string]string{				"app.kubernetes.io/managed-by": "vibed",
 				"vibed.dev/artifact-id":        artifact.ID,
 			},
 		},

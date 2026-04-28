@@ -10,10 +10,10 @@ import (
 )
 
 type deployArtifactInput struct {
-	Name     string            `json:"name" jsonschema:"Unique name for the artifact (lowercase and DNS-safe)"`
-	Files    map[string]string `json:"files" jsonschema:"Map of relative file path to file content"`
-	Language string            `json:"language,omitempty" jsonschema:"Language/framework hint (e.g. nodejs python go static)"`
-	Target   string            `json:"target,omitempty" jsonschema:"Deployment target: knative kubernetes or auto (default: auto)"`
+	Name       string            `json:"name" jsonschema:"Unique name for the artifact (lowercase and DNS-safe)"`
+	Files      map[string]string `json:"files" jsonschema:"Map of relative file path to file content"`
+	Language   string            `json:"language,omitempty" jsonschema:"Language/framework hint (e.g. nodejs python go static)"`
+	Target     string            `json:"target,omitempty" jsonschema:"Deployment target: knative kubernetes or auto (default: auto)"`
 	EnvVars    map[string]string `json:"env_vars,omitempty" jsonschema:"Environment variables for the deployed artifact"`
 	SecretRefs map[string]string `json:"secret_refs,omitempty" jsonschema:"Map of env var name to Kubernetes Secret reference in format 'secret-name:key'. The secret must exist in the deployment namespace. Example: {\"DB_PASSWORD\": \"my-db-creds:password\"}"`
 	Port       int               `json:"port,omitempty" jsonschema:"Port the application listens on (auto-detected if not set)"`

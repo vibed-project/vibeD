@@ -53,9 +53,8 @@ func testOrch(t *testing.T) (*orchestrator.Orchestrator, string) {
 	// Deployer factory with K8s deployer
 	factory := deployer.NewFactory()
 	k8sDep := deployer.NewKubernetesDeployer(
-		clients.Clientset,
-		cfg.Deployment,
-		logger,
+	        clients.Clientset,
+	        logger,
 	)
 	factory.Register(api.TargetKubernetes, k8sDep)
 
@@ -69,19 +68,19 @@ func testOrch(t *testing.T) (*orchestrator.Orchestrator, string) {
 	bus := events.NewEventBus()
 
 	orch := orchestrator.NewOrchestrator(
-		cfg,
-		detector,
-		mockBuilder,
-		factory,
-		localStorage,
-		sqliteStore,
-		m,
-		clients.Clientset,
-		bus,
-		sqliteStore,
-		logger,
+	        cfg,
+	        detector,
+	        mockBuilder,
+	        factory,
+	        localStorage,
+	        sqliteStore,
+	        sqliteStore,
+	        m,
+	        clients.Clientset,
+	        bus,
+	        sqliteStore,
+	        logger,
 	)
-
 	return orch, ns
 }
 
@@ -306,14 +305,13 @@ func TestOrchestrator_BuildFailure(t *testing.T) {
 	localStorage, err := storage.NewLocalStorage(tmpDir)
 	require.NoError(t, err)
 
-
 	// Mock builder that always fails
 	failBuilder := &testutil.MockBuilder{
 		Err: errors.New("buildpack failed: out of memory"),
 	}
 
 	factory := deployer.NewFactory()
-	k8sDep := deployer.NewKubernetesDeployer(clients.Clientset, cfg.Deployment, logger)
+	k8sDep := deployer.NewKubernetesDeployer(clients.Clientset, logger)
 	factory.Register(api.TargetKubernetes, k8sDep)
 
 	detector := environment.NewDetector(clients, logger)
@@ -326,8 +324,7 @@ func TestOrchestrator_BuildFailure(t *testing.T) {
 
 	bus := events.NewEventBus()
 
-	orch := orchestrator.NewOrchestrator(cfg, detector, failBuilder, factory, localStorage, sqliteStore, m, clients.Clientset, bus, sqliteStore, logger)
-
+	orch := orchestrator.NewOrchestrator(cfg, detector, failBuilder, factory, localStorage, sqliteStore, sqliteStore, m, clients.Clientset, bus, sqliteStore, logger)
 	ctx := context.Background()
 	req := testutil.SampleDeployRequest(testutil.RandomName())
 

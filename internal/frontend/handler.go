@@ -1,21 +1,26 @@
 package frontend
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"io"
-	"io/fs"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
+        "context"
+        "crypto/rand"
+        "crypto/sha256"
+        "encoding/hex"
+        "encoding/json"
+        "fmt"
+        "io"
+        "io/fs"
+        "net/http"
+        "strconv"
+        "strings"
+        "time"
 
-	vibedauth "github.com/vibed-project/vibeD/internal/auth"
-	"github.com/vibed-project/vibeD/internal/config"
+        corev1 "k8s.io/api/core/v1"
+        metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+        vibedauth "github.com/vibed-project/vibeD/internal/auth"
+        "github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/events"
+	"github.com/vibed-project/vibeD/internal/k8s"
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/store"
@@ -42,27 +47,26 @@ func writeError(w http.ResponseWriter, err error, fallbackStatus int) {
 }
 
 // NewHandler creates an HTTP handler that serves the frontend and REST API.
-func NewHandler(orch *orchestrator.Orchestrator, cfg *config.Config, bus *events.EventBus, m *metrics.Metrics, userStore store.UserStore) http.Handler {
-	mux := http.NewServeMux()
+func NewHandler(orch *orchestrator.Orchestrator, cfg *config.Config, bus *events.EventBus, m *metrics.Metrics, userStore store.UserStore, k8sClients *k8s.Clients) http.Handler {
+        mux := http.NewServeMux()
 
-	// API documentation (Swagger UI)
-	mux.Handle("/api/docs", http.RedirectHandler("/api/docs/", http.StatusMovedPermanently))
-	mux.Handle("/api/docs/", http.StripPrefix("/api/docs", swaggerUIHandler()))
+        // API documentation (Swagger UI)
+        mux.Handle("/api/docs", http.RedirectHandler("/api/docs/", http.StatusMovedPermanently))
+        mux.Handle("/api/docs/", http.StripPrefix("/api/docs", swaggerUIHandler()))
 
-	// SSE event stream
-	mux.HandleFunc("/api/events", handleSSE(bus, m))
+        // SSE event stream
+        mux.HandleFunc("/api/events", handleSSE(bus, m))
 
-	// API routes
-	mux.HandleFunc("/api/artifacts", handleArtifacts(orch))
-	mux.HandleFunc("/api/artifacts/", handleArtifacts(orch))
-	mux.HandleFunc("/api/targets", handleTargets(orch))
-	mux.HandleFunc("/api/whoami", handleWhoami(userStore))
-	mux.HandleFunc("/api/organization", handleOrganization(cfg))
-	mux.HandleFunc("/api/users", handleUsers(userStore))
-	mux.HandleFunc("/api/users/", handleUserDetail(userStore))
-	mux.HandleFunc("/api/departments", handleDepartments(userStore))
-	mux.HandleFunc("/api/departments/", handleDepartmentDetail(userStore))
-
+        // API routes
+        mux.HandleFunc("/api/artifacts", handleArtifacts(orch))
+        mux.HandleFunc("/api/artifacts/", handleArtifacts(orch))
+        mux.HandleFunc("/api/targets", handleTargets(orch))
+        mux.HandleFunc("/api/whoami", handleWhoami(userStore))
+        mux.HandleFunc("/api/organization", handleOrganization(cfg))
+        mux.HandleFunc("/api/users", handleUsers(userStore))
+        mux.HandleFunc("/api/users/", handleUserDetail(userStore))
+        mux.HandleFunc("/api/departments", handleDepartments(userStore, k8sClients))
+        mux.HandleFunc("/api/departments/", handleDepartmentDetail(userStore, k8sClients))
 	// Share link routes (public — auth bypassed in SkipAuthPaths)
 	mux.HandleFunc("/api/share/", handlePublicShareLink(orch))
 	mux.HandleFunc("/api/share-links/", handleShareLinkRevoke(orch))
@@ -516,7 +520,7 @@ func handleUserDetail(userStore store.UserStore) http.HandlerFunc {
 
 // --- Department handlers ---
 
-func handleDepartments(userStore store.UserStore) http.HandlerFunc {
+func handleDepartments(userStore store.UserStore, k8sClients *k8s.Clients) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if userStore == nil {
 			http.Error(w, "user management not available", http.StatusServiceUnavailable)
@@ -553,15 +557,37 @@ func handleDepartments(userStore store.UserStore) http.HandlerFunc {
 				return
 			}
 			now := time.Now()
+			nsName := "vibed-dept-" + strings.ToLower(strings.ReplaceAll(body.Name, " ", "-"))
 			dept := &api.Department{
-				ID:        fmt.Sprintf("dept-%x", now.UnixNano()),
-				Name:      body.Name,
-				CreatedAt: now,
-				UpdatedAt: now,
+			        ID:        fmt.Sprintf("dept-%x", now.UnixNano()),
+			        Name:      body.Name,
+			        Namespace: nsName,
+			        CreatedAt: now,
+			        UpdatedAt: now,
 			}
+
+			if k8sClients != nil {
+			        nsObj := &corev1.Namespace{
+			                ObjectMeta: metav1.ObjectMeta{
+			                        Name: nsName,
+			                        Labels: map[string]string{
+			                                "vibed.dev/tenant": dept.ID,
+			                        },
+			                },
+			        }
+			        if _, err := k8sClients.Clientset.CoreV1().Namespaces().Create(r.Context(), nsObj, metav1.CreateOptions{}); err != nil {
+			                writeError(w, fmt.Errorf("failed to provision namespace: %w", err), http.StatusInternalServerError)
+			                return
+			        }
+			}
+
 			if err := userStore.CreateDepartment(r.Context(), dept); err != nil {
-				writeError(w, err, http.StatusConflict)
-				return
+			        // Attempt rollback if db save fails
+			        if k8sClients != nil {
+			                _ = k8sClients.Clientset.CoreV1().Namespaces().Delete(context.Background(), nsName, metav1.DeleteOptions{})
+			        }
+			        writeError(w, err, http.StatusConflict)
+			        return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -573,7 +599,7 @@ func handleDepartments(userStore store.UserStore) http.HandlerFunc {
 	}
 }
 
-func handleDepartmentDetail(userStore store.UserStore) http.HandlerFunc {
+func handleDepartmentDetail(userStore store.UserStore, k8sClients *k8s.Clients) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if userStore == nil {
 			http.Error(w, "user management not available", http.StatusServiceUnavailable)
@@ -625,13 +651,25 @@ func handleDepartmentDetail(userStore store.UserStore) http.HandlerFunc {
 			json.NewEncoder(w).Encode(dept)
 
 		case http.MethodDelete:
-			if err := userStore.DeleteDepartment(r.Context(), deptID); err != nil {
-				writeError(w, err, http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+		        // Get department to find namespace
+		        dept, err := userStore.GetDepartment(r.Context(), deptID)
+		        if err != nil {
+		                http.Error(w, "not found", http.StatusNotFound)
+		                return
+		        }
 
+		        if err := userStore.DeleteDepartment(r.Context(), deptID); err != nil {
+		                writeError(w, err, http.StatusInternalServerError)
+		                return
+		        }
+
+		        // Cascade delete K8s namespace
+		        if k8sClients != nil && dept.Namespace != "" {
+		                _ = k8sClients.Clientset.CoreV1().Namespaces().Delete(context.Background(), dept.Namespace, metav1.DeleteOptions{})
+		        }
+
+		        w.Header().Set("Content-Type", "application/json")
+		        json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}

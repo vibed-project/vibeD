@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deployer"
 	"github.com/vibed-project/vibeD/pkg/api"
 	"github.com/vibed-project/vibeD/tests/testutil"
@@ -24,9 +23,7 @@ func newK8sDeployer(t *testing.T, ns string) *deployer.KubernetesDeployer {
 	t.Helper()
 	clients := testutil.MustGetClients(t)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	cfg := config.DeploymentConfig{Namespace: ns}
-	return deployer.NewKubernetesDeployer(clients.Clientset, cfg, logger)
-}
+	return deployer.NewKubernetesDeployer(clients.Clientset, logger)}
 
 func testArtifact(name string) *api.Artifact {
 	return &api.Artifact{
@@ -47,6 +44,7 @@ func TestKubernetesDeployer_Deploy(t *testing.T) {
 	ctx := context.Background()
 
 	artifact := testArtifact(testutil.RandomName())
+	artifact.Namespace = ns
 	result, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.URL)
@@ -75,6 +73,7 @@ func TestKubernetesDeployer_GetURL(t *testing.T) {
 	ctx := context.Background()
 
 	artifact := testArtifact(testutil.RandomName())
+	artifact.Namespace = ns
 	_, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
 
@@ -92,6 +91,7 @@ func TestKubernetesDeployer_Update(t *testing.T) {
 	ctx := context.Background()
 
 	artifact := testArtifact(testutil.RandomName())
+	artifact.Namespace = ns
 	_, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
 
@@ -124,6 +124,7 @@ func TestKubernetesDeployer_GetLogs(t *testing.T) {
 	ctx := context.Background()
 
 	artifact := testArtifact(testutil.RandomName())
+	artifact.Namespace = ns
 	_, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
 
@@ -147,6 +148,7 @@ func TestKubernetesDeployer_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	artifact := testArtifact(testutil.RandomName())
+	artifact.Namespace = ns
 	_, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
 
@@ -171,7 +173,7 @@ func TestKubernetesDeployer_FullLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	artifact := testArtifact(testutil.RandomName())
-
+	artifact.Namespace = ns
 	// Deploy
 	result, err := d.Deploy(ctx, artifact)
 	require.NoError(t, err)
