@@ -101,9 +101,8 @@ setup-registry:
 	kubectl wait --for=condition=Available deployment/kind-registry -n default --timeout=60s
 	@echo "Configuring containerd registry mirror for kind-registry:5000..."
 	@REGISTRY_IP=$$(kubectl get svc kind-registry -n default -o jsonpath='{.spec.clusterIP}') && \
-		docker exec $(KIND_CLUSTER)-control-plane mkdir -p /etc/containerd/certs.d/kind-registry:5000 && \
-		docker exec $(KIND_CLUSTER)-control-plane sh -c "printf '[host.\"http://'$$REGISTRY_IP':5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n  skip_verify = true\n' > /etc/containerd/certs.d/kind-registry:5000/hosts.toml"
-	kubectl create namespace vibed-system --dry-run=client -o yaml | kubectl apply -f -
+		podman exec $(KIND_CLUSTER)-control-plane mkdir -p /etc/containerd/certs.d/kind-registry:5000 && \
+		podman exec $(KIND_CLUSTER)-control-plane sh -c "printf '[host.\"http://'$$REGISTRY_IP':5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n  skip_verify = true\n' > /etc/containerd/certs.d/kind-registry:5000/hosts.toml"	kubectl create namespace vibed-system --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -f deploy/kind/registry-external.yaml
 
 install-deps: install-knative setup-registry
