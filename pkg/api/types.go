@@ -9,11 +9,11 @@ import (
 type DeploymentTarget string
 
 const (
-	TargetAuto       DeploymentTarget = "auto"
-	TargetKnative    DeploymentTarget = "knative"
-	TargetKubernetes DeploymentTarget = "kubernetes"
+        TargetAuto       DeploymentTarget = "auto"
+        TargetKnative    DeploymentTarget = "knative"
+        TargetKubernetes DeploymentTarget = "kubernetes"
+        TargetSandbox    DeploymentTarget = "sandbox"
 )
-
 // ArtifactStatus represents the lifecycle state of a deployed artifact.
 type ArtifactStatus string
 

@@ -97,8 +97,6 @@ func main() {
 
 	var bldr builder.Builder
 	switch cfg.Builder.Engine {
-	case "pack":
-		bldr = builder.NewPackBuilder(cfg.Builder, logger)
 	case "buildah", "":
 		ns := cfg.Builder.Buildah.Namespace
 		if ns == "" {
@@ -219,11 +217,15 @@ func main() {
 	} else {
 		knDeployer := deployer.NewKnativeDeployer(knClient, k8sClients.Clientset, cfg.Knative, logger)
 		factory.Register(api.TargetKnative, knDeployer)
-		}
+	}
 
-		// Register Kubernetes deployer
-		k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, logger)
-		factory.Register(api.TargetKubernetes, k8sDeployer)
+	// Register Sandbox deployer
+	sbDeployer := deployer.NewSandboxDeployer(k8sClients.DynamicClient, k8sClients.Clientset, logger)
+	factory.Register(api.TargetSandbox, sbDeployer)
+
+	// Register Kubernetes deployer
+	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, logger)
+	factory.Register(api.TargetKubernetes, k8sDeployer)
 
 	// Create orchestrator
 	// Create event bus for SSE streaming

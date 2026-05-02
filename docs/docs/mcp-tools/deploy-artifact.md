@@ -11,9 +11,9 @@ The primary tool for deploying web artifacts to the cluster.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Unique DNS-safe name (lowercase, hyphens OK) |
-| `files` | object | Yes | Map of relative file paths to file content |
+| `files` | object | Yes | Map of relative file paths to file content. **Tip:** Provide a `Dockerfile` at the root to completely customize the build. |
 | `language` | string | No | Language hint (nodejs, python, go, static) |
-| `target` | string | No | Deployment target (auto, knative, kubernetes) |
+| `target` | string | No | Deployment target (auto, knative, sandbox, kubernetes) |
 | `env_vars` | object | No | Environment variables for the artifact |
 | `secret_refs` | object | No | Map of env var name to K8s Secret reference (`secret-name:key`) |
 | `port` | number | No | Port the app listens on (auto-detected) |
@@ -38,7 +38,7 @@ The primary tool for deploying web artifacts to the cluster.
 {
   "artifact_id": "a1b2c3d4e5f6g7h8",
   "name": "my-portfolio",
-  "url": "http://my-portfolio.default.127.0.0.1.sslip.io",
+  "url": "http://my-portfolio.default.localhost",
   "target": "knative",
   "status": "running",
   "image_ref": "vibed-artifacts/my-portfolio:latest"
@@ -50,6 +50,6 @@ The primary tool for deploying web artifacts to the cluster.
 1. **Validates** the name (DNS-safe, unique)
 2. **Stores** source files to the configured storage backend
 3. **Detects** the best deployment target
-4. **Builds** a container image using Buildah (runs as a Kubernetes Job)
-5. **Deploys** to the cluster (Knative Service, K8s Deployment, or OAM App)
+4. **Builds** a container image using Buildah. If a `Dockerfile` is provided in the files map, it is used directly; otherwise, one is auto-generated.
+5. **Deploys** to the cluster (Knative Service, Sandbox, or K8s Deployment)
 6. **Returns** the access URL and artifact metadata

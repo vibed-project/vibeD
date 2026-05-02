@@ -36,7 +36,7 @@ Update an existing deployed artifact with new source files. Triggers a rebuild a
 {
   "artifact_id": "a1b2c3d4",
   "name": "my-portfolio",
-  "url": "http://my-portfolio.default.127.0.0.1.sslip.io:31080",
+  "url": "http://my-portfolio.default.localhost:31080",
   "target": "knative",
   "status": "running",
   "image_ref": "kind-registry:5000/vibed-artifacts/my-portfolio:v2",

@@ -39,8 +39,7 @@ func newKnativeDeployer(t *testing.T, ns string) *deployer.KnativeDeployer {
 	require.NoError(t, err)
 
 	knCfg := config.KnativeConfig{
-	        DomainSuffix: "127.0.0.1.sslip.io",
-	        IngressClass: "kourier.ingress.networking.knative.dev",
+	        DomainSuffix: "localhost",	        IngressClass: "kourier.ingress.networking.knative.dev",
 	}
 	return deployer.NewKnativeDeployer(knClient, clients.Clientset, knCfg, logger)}
 

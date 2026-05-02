@@ -21,7 +21,7 @@ Add this to your Claude Desktop configuration (`~/Library/Application Support/Cl
       "command": "npx",
       "args": [
         "mcp-remote",
-        "http://vibed.127.0.0.1.sslip.io:9090/mcp/",
+        "http://vibed.localhost:9090/mcp/",
         "--allow-http"
       ]
     }

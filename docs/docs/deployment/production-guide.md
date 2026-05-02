@@ -323,4 +323,4 @@ Before going to production, verify:
 - [ ] **Registry credentials** use workload identity or image pull secrets
 - [ ] **Metrics endpoint** (`/metrics`) not publicly exposed (use NetworkPolicy or firewall)
 - [ ] **Store backend** set to `sqlite` (default) or `configmap` (not `memory`)
-- [ ] **Knative domain** uses a real domain (not `sslip.io`)
+- [ ] **Knative domain** uses a real domain (not `localhost`)

@@ -97,7 +97,7 @@ config:
       name: "vibed-artifacts"
       namespace: ""  # Defaults to release namespace
   knative:
-    domainSuffix: "127.0.0.1.sslip.io"
+    domainSuffix: "localhost"
     ingressClass: "kourier.ingress.networking.knative.dev"
     # -- External gateway port for Knative URLs. Set to 0 or 80 to omit from URLs.
     # In Kind dev setup, NodePort 31080 maps to host port 80, so use 80 (default HTTP).

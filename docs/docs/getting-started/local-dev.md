@@ -35,7 +35,7 @@ make install-knative
 This installs:
 - Knative Serving CRDs and core components
 - Kourier as the ingress layer (NodePort mode)
-- sslip.io DNS for automatic URL resolution
+- Localhost domain for automatic URL resolution
 
 ### 3. Build and Run vibeD
 
@@ -53,13 +53,13 @@ Open `http://localhost:8080` in your browser. You should see the vibeD dashboard
 
 ## Accessing Deployed Artifacts
 
-With sslip.io DNS, artifacts deployed via Knative get URLs like:
+With the `.localhost` domain suffix configured, artifacts deployed via Knative get URLs like:
 
 ```
-http://my-app.default.127.0.0.1.sslip.io
+http://my-app.default.localhost
 ```
 
-These resolve to `127.0.0.1` and route through the ingress layer on port 80.
+Modern operating systems (like macOS, Linux, and Windows 11) automatically resolve any domain ending in `.localhost` to `127.0.0.1`, which then routes through the ingress layer on port 80.
 
 ### Port-Forward Access
 
@@ -80,7 +80,7 @@ kubectl port-forward svc/envoy 8081:80 -n projectcontour
 Then access artifacts by appending the port to the URL:
 
 ```
-http://my-app.default.127.0.0.1.sslip.io:8081
+http://my-app.default.localhost:8081
 ```
 
 :::tip Using port 80 directly
@@ -99,18 +99,14 @@ To connect AI tools (like Claude Desktop) to the vibeD MCP server running in-clu
 kubectl port-forward svc/vibed 9090:8080 -n vibe-system
 ```
 
-The MCP endpoint is then available at `http://localhost:9090/mcp/`. If vibeD is exposed via an HTTPProxy/Ingress (e.g. `vibed.127.0.0.1.sslip.io`), you can also reach it through the ingress port-forward on port 8081.
+The MCP endpoint is then available at `http://localhost:9090/mcp/`. If vibeD is exposed via an HTTPProxy/Ingress (e.g. `vibed.localhost`), you can also reach it through the ingress port-forward on port 8081.
 
 ### DNS Troubleshooting
 
-If your browser shows `DNS_PROBE_FINISHED_NXDOMAIN`, your router's DNS may not resolve sslip.io domains. Fix by switching to a public DNS resolver:
-
-**macOS**: System Settings → Network → Wi-Fi → Details → DNS → add `8.8.8.8`
-
-Or add entries manually to `/etc/hosts`:
+If your browser cannot resolve `.localhost` domains (older Windows versions or custom network setups), you can add entries manually to your `/etc/hosts` file (or `C:\Windows\System32\drivers\etc\hosts` on Windows):
 
 ```bash
-sudo sh -c 'echo "127.0.0.1 my-app.default.127.0.0.1.sslip.io" >> /etc/hosts'
+sudo sh -c 'echo "127.0.0.1 my-app.default.localhost" >> /etc/hosts'
 ```
 
 ## Teardown

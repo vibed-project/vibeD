@@ -90,8 +90,7 @@ install-knative:
 	kubectl patch configmap/config-network -n knative-serving \
 		--type merge -p '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
 	kubectl patch configmap/config-domain -n knative-serving \
-		--type merge -p '{"data":{"127.0.0.1.sslip.io":""}}'
-	kubectl patch service kourier -n kourier-system \
+	        --type merge -p '{"data":{"localhost":""}}'	kubectl patch service kourier -n kourier-system \
 		--type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"http2","port":80,"targetPort":8080,"nodePort":31080,"protocol":"TCP"}]}}'
 	kubectl patch configmap/config-deployment -n knative-serving \
 		--type merge -p '{"data":{"registries-skipping-tag-resolving":"kind-registry:5000"}}'
@@ -142,8 +141,7 @@ dev-status:
 	@echo "  vibeD Dashboard:  http://localhost:8080"
 	@echo "  vibeD API:        http://localhost:8080/api/artifacts"
 	@echo "  Swagger UI:       http://localhost:8080/api/docs/"
-	@echo "  Knative Apps:     http://<app>.127.0.0.1.sslip.io (port 80)"
-	@echo "  Grafana:          http://localhost:3000  (admin / vibed-dev)"
+	@echo "  Knative Apps:     http://<app>.localhost (port 80)"	@echo "  Grafana:          http://localhost:3000  (admin / vibed-dev)"
 	@echo "  Prometheus:       http://localhost:9090"
 	@echo "  Explore Traces:   Grafana -> Explore -> Tempo"
 	@echo "  Explore Logs:     Grafana -> Explore -> Loki"

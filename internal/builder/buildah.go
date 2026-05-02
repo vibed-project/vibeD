@@ -85,10 +85,24 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 			files[e.Name()] = ""
 		}
 	}
-	dockerfile := GenerateDockerfile(req.Language, files)
+	
 	dockerfilePath := filepath.Join(req.SourceDir, "Dockerfile")
-	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0644); err != nil {
-		return nil, fmt.Errorf("writing Dockerfile: %w", err)
+	
+	// Check if a Dockerfile already exists (case-insensitive check)
+	hasCustomDockerfile := false
+	for name := range files {
+		if strings.EqualFold(name, "Dockerfile") {
+			hasCustomDockerfile = true
+			b.logger.Info("using provided custom Dockerfile", "file", name)
+			break
+		}
+	}
+
+	if !hasCustomDockerfile {
+		dockerfile := GenerateDockerfile(req.Language, files)
+		if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0644); err != nil {
+			return nil, fmt.Errorf("writing generated Dockerfile: %w", err)
+		}
 	}
 
 	// 2. Compute sub-path relative to PVC mount

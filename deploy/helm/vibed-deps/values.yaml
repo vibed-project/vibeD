@@ -4,5 +4,9 @@ knative:
   version: "v1.17.0"
   kourier:
     nodePort: 31080
-  domain: "127.0.0.1.sslip.io"
+  domain: "localhost"
 
+
+sandbox:
+  # -- Whether to install agent-sandbox prerequisites (not supported automatically yet, please use kubectl apply from their releases)
+  enabled: false

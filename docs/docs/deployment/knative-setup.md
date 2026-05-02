@@ -30,7 +30,7 @@ helm install vibed-deps deploy/helm/vibed-deps/ \
 
 | Value | Default | Production |
 |-------|---------|------------|
-| `knative.domain` | `127.0.0.1.sslip.io` | Your real domain |
+| `knative.domain` | `localhost` | Your real domain |
 | `knative.kourier.nodePort` | `31080` | `0` (use LoadBalancer) |
 | `knative.version` | `v1.17.0` | Latest stable |
 
@@ -94,7 +94,7 @@ kubectl apply -f https://github.com/knative/net-contour/releases/download/knativ
 
 ### 5. Configure Domain
 
-Replace the default `sslip.io` domain with your production domain:
+Replace the default `.localhost` development domain with your production domain:
 
 ```bash
 kubectl patch configmap/config-domain \

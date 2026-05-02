@@ -93,7 +93,7 @@ kubernetes:
   context: ""                 # Specific kubeconfig context
 
 knative:
-  domainSuffix: "127.0.0.1.sslip.io"
+  domainSuffix: "localhost"
   ingressClass: "kourier.ingress.networking.knative.dev"
   gatewayPort: 80             # External gateway port for URLs (0 or 80 = omitted from URLs)
 

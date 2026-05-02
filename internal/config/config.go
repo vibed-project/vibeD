@@ -268,7 +268,7 @@ func Default() *Config {
 			},
 		},
 		Knative: KnativeConfig{
-			DomainSuffix: "127.0.0.1.sslip.io",
+			DomainSuffix: "localhost",
 			IngressClass: "kourier.ingress.networking.knative.dev",
 		},
 		Limits: LimitsConfig{

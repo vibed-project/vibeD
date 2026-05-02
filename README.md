@@ -73,7 +73,7 @@ kubectl port-forward svc/vibed 8080:8080 -n vibed-system
 kubectl port-forward svc/kourier 8081:80 -n kourier-system
 ```
 
-Deployed artifacts are accessible at `http://<name>.default.127.0.0.1.sslip.io:8081`.
+Deployed artifacts are accessible at `http://<name>.default.localhost:8081`.
 
 ## Connect to Claude Desktop
 
@@ -172,7 +172,7 @@ store:
   backend: "memory"        # memory | configmap
 
 knative:
-  domainSuffix: "127.0.0.1.sslip.io"
+  domainSuffix: "localhost"
 ```
 
 Every field has an environment variable override (e.g. `VIBED_SERVER_TRANSPORT`). See [Configuration Reference](docs/docs/configuration/config-reference.md) for the full list.

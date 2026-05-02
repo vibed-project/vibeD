@@ -177,8 +177,8 @@ done
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
-| 1 | Port 80 (default) | Set `knative.gatewayPort: 80`. Deploy. | URL has no port: `http://app.default.127.0.0.1.sslip.io` |
-| 2 | Custom port | Set `knative.gatewayPort: 31080`. Deploy. | URL includes port: `http://app.default.127.0.0.1.sslip.io:31080` |
+| 1 | Port 80 (default) | Set `knative.gatewayPort: 80`. Deploy. | URL has no port: `http://app.default.localhost` |
+| 2 | Custom port | Set `knative.gatewayPort: 31080`. Deploy. | URL includes port: `http://app.default.localhost:31080` |
 
 ---
 

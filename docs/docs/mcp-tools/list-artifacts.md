@@ -34,7 +34,7 @@ List deployed artifacts with their status, deployment target, and access URLs. S
       "name": "my-portfolio",
       "status": "running",
       "target": "knative",
-      "url": "http://my-portfolio.default.127.0.0.1.sslip.io",
+      "url": "http://my-portfolio.default.localhost",
       "created_at": "2026-03-14T10:00:00Z"
     }
   ],
