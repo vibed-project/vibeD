@@ -101,6 +101,27 @@ tracing:
   enabled: false              # Enable OpenTelemetry distributed tracing
   endpoint: ""                # OTLP gRPC endpoint (e.g. "http://jaeger:4317"); empty = stdout
   sampleRate: 1.0             # Sampling rate 0.0-1.0 (1.0 = sample all traces)
+
+# Instant Preview fast path — see Concepts › Instant Preview.
+# Disabled by default; requires the agent-sandbox CRD in the cluster.
+fastPath:
+  enabled: false              # Master switch for the fast path
+  namespace: ""               # Namespace for warm runner pods (empty = deployment.namespace)
+  replenishInterval: "15s"    # How often the pool tops itself up
+  readyTimeout: "2m"          # How long to wait for a new runner's agent to come up
+  maxIdleAge: "1h"            # Recycle idle runners older than this
+  previewTTL: "1h"            # How long a preview lives before the GC reaps it
+  autoPromote: false          # Automatically promote every preview to a durable build
+  agentToken: ""              # Shared bearer token for the control API (empty = generated at startup)
+  runners:                    # Per-language warm runner pools
+    python:
+      image: "ghcr.io/vibed-project/vibed-runner-python:latest"
+      poolSize: 2             # Warm idle pods to maintain
+      controlPort: 9000       # Agent control API port
+      appPort: 8080           # User app port
+    nodejs:
+      image: "ghcr.io/vibed-project/vibed-runner-node:latest"
+      poolSize: 2
 ```
 
 ## Environment Variables
@@ -130,6 +151,9 @@ Every config field has an environment variable override:
 | `VIBED_GC_INTERVAL` | `gc.interval` | `1h` |
 | `VIBED_GC_MAX_AGE` | `gc.maxAge` | `24h` |
 | `VIBED_GC_DRY_RUN` | `gc.dryRun` | `true` |
+| `VIBED_FASTPATH_ENABLED` | `fastPath.enabled` | `true` |
+| `VIBED_FASTPATH_NAMESPACE` | `fastPath.namespace` | `vibed-runners` |
+| `VIBED_FASTPATH_AUTO_PROMOTE` | `fastPath.autoPromote` | `true` |
 | `VIBED_AUTH_ENABLED` | `auth.enabled` | `true` |
 | `VIBED_AUTH_MODE` | `auth.mode` | `apikey` |
 | `VIBED_AUTH_API_KEY` | (appends API key) | `vibed_sk_...` |

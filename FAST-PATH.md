@@ -157,8 +157,8 @@ stable.
 | 5.2 | ☑ | `FastPath` config block | `internal/config/config.go` — full block landed across Phases 1–5: enabled, namespace, replenish/ready/idle timings, per-language runner (image, pool size, ports), `agentToken`, `autoPromote`, `previewTTL`. (Per-runner pod resource limits deferred — noted in risks.) |
 | 5.3 | ☑ | Helm `values.yaml` + `configmap.yaml` for `FastPath` | `deploy/helm/vibed/` — full `config.fastPath` block in `values.yaml` (disabled by default) rendered into `configmap.yaml`, including the per-language `runners` map. `helm template` verified for both off and on. |
 | 5.4 | ☑ | Verify `agents.x-k8s.io` RBAC sufficient for pool churn | Verified — the existing `agents.x-k8s.io/sandboxes` rule already grants `get/list/watch/create/update/delete`, which covers pool churn (create/delete), the GC sweep (list/delete), and the SandboxDeployer. Comment in `rbac.yaml` updated to note the pool. |
-| 5.5 | ☐ | Docs: instant preview, promote, runner images | `docs/docs/` |
-| 5.6 | ☐ | Load test + fast-vs-fallback / preview-vs-promote metrics dashboard | `testbed/observability/` |
+| 5.5 | ☑ | Docs: instant preview, promote, runner images | `docs/docs/concepts/instant-preview.md` + `mcp-tools/promote-artifact.md` (new), `config-reference.md` `fastPath` block + env vars, `mcp-tools/overview.md` table, `sidebars.js`. |
+| 5.6 | ◑ | Metrics dashboard panels (load test deferred) | `testbed/observability/dashboards/vibed-overview.json` — new "Fast Path" row: Idle Runners, Runner Claims (warm vs cold), Claim Latency P99. **Load test deferred** — needs the full fast-path stack on a live cluster; a manual follow-up. |
 
 ## Risks / open questions
 
@@ -189,4 +189,32 @@ inject a hello-world by hand) before the orchestrator wiring in Phase 3.
 
 ### Implementation log
 
-_(empty — add dated entries as items land; note surprises here.)_
+**2026-05-14:** All 6 phases implemented on branch `v0.3.0`. The fast path is
+live end-to-end: an eligible Python/Node app skips the build, claims a warm
+Sandbox-CRD runner, gets its source injected over the agent control API, and
+serves — then can be promoted to a durable build. Disabled by default behind
+`fastPath.enabled`.
+
+Surprises / decisions:
+- The pre-baked manifests were moved to `internal/prebaked/manifests/*.yaml` as
+  a single source of truth — `go:embed`'d into vibeD for the dependency gate
+  AND `COPY`'d into the runner images by their Dockerfiles. Avoids drift.
+- `gopkg.in/yaml.v3` *does* decode duration strings (`"15s"`) into
+  `time.Duration` and *rejects* bare integer nanoseconds — so the helm config
+  renders fast-path durations as quoted strings, matching `deployment.readyTimeout`.
+- RBAC needed no change: the DEPLOY-STABILITY work already granted the full
+  verb set on `agents.x-k8s.io/sandboxes`, which covers pool churn + the GC.
+- The deployer and pool are consumed through small interfaces (`runnerPool`,
+  `agentClient`, `PreviewReaper`) so each layer unit-tests with stubs.
+
+Deferred / follow-ups:
+- **External reachability of previews** — the RunnerDeployer returns an
+  in-cluster `*.svc.cluster.local` URL (same as the SandboxDeployer). A user
+  outside the cluster can't reach a preview without an ingress/route or
+  port-forward. Pre-existing gap, but it blunts the "instant preview" value.
+- **Per-runner pod resource limits** — `RunnerConfig` has no resources field;
+  runner pods inherit no limits. Worth adding for pods running untrusted code.
+- **Load test (5.6)** — needs the full stack on a live cluster; not run here.
+- **Promote integration test** — `canPromote` is unit-tested; the full
+  build→swap→release path wants an integration test alongside the cluster-gated
+  `orchestrator_integration_test.go`.

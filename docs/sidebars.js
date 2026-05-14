@@ -10,7 +10,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Concepts',
-      items: ['concepts/architecture', 'concepts/deployment-targets', 'concepts/artifact-lifecycle'],
+      items: ['concepts/architecture', 'concepts/deployment-targets', 'concepts/artifact-lifecycle', 'concepts/instant-preview'],
     },
     {
       type: 'category',
@@ -36,6 +36,7 @@ const sidebars = {
         'mcp-tools/list-artifacts',
         'mcp-tools/get-artifact-status',
         'mcp-tools/update-artifact',
+        'mcp-tools/promote-artifact',
         'mcp-tools/delete-artifact',
         'mcp-tools/get-artifact-logs',
         'mcp-tools/list-deployment-targets',
