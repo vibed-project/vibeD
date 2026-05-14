@@ -1,55 +1,22 @@
 package builder
 
-import "strings"
-
-// DetectLanguage inspects the file map and returns the best-guess language.
-// Returns "static", "nodejs", "python", "go", or "rust".
-func DetectLanguage(files map[string]string) string {
-	hasGoFile := false
-	for name := range files {
-		lower := strings.ToLower(name)
-		switch {
-		case lower == "go.mod":
-			return "go" // explicit module file wins immediately
-		case lower == "cargo.toml":
-			return "rust"
-		case lower == "package.json":
-			return "nodejs"
-		case lower == "requirements.txt" || lower == "main.py" || lower == "app.py":
-			return "python"
-		case strings.HasSuffix(lower, ".go"):
-			hasGoFile = true
-		}
-	}
-	// Any .go source file without a go.mod is still a Go app —
-	// the Dockerfile handles module init + tidy automatically.
-	if hasGoFile {
-		return "go"
-	}
-	// Check for HTML files (static site)
-	for name := range files {
-		if strings.HasSuffix(strings.ToLower(name), ".html") {
-			return "static"
-		}
-	}
-	return "static"
-}
+import "github.com/vibed-project/vibeD/internal/appspec"
 
 // GenerateDockerfile returns a Dockerfile for the given language.
 // If language is empty or "auto", it auto-detects from the file map.
 func GenerateDockerfile(language string, files map[string]string) string {
 	if language == "" || language == "auto" {
-		language = DetectLanguage(files)
+		language = appspec.DetectLanguage(files)
 	}
 
 	switch language {
-	case "nodejs":
+	case appspec.LangNodeJS:
 		return dockerfileNodeJS(files)
-	case "python":
+	case appspec.LangPython:
 		return dockerfilePython(files)
-	case "go":
+	case appspec.LangGo:
 		return dockerfileGo()
-	case "rust":
+	case appspec.LangRust:
 		return dockerfileRust()
 	default:
 		return dockerfileStatic()
@@ -65,13 +32,7 @@ EXPOSE 8080
 }
 
 func dockerfileNodeJS(files map[string]string) string {
-	entrypoint := "index.js"
-	for _, candidate := range []string{"index.js", "server.js", "app.js", "main.js"} {
-		if _, ok := files[candidate]; ok {
-			entrypoint = candidate
-			break
-		}
-	}
+	entrypoint := appspec.Entrypoint(appspec.LangNodeJS, files)
 	return `FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
@@ -88,14 +49,7 @@ CMD ["node", "` + entrypoint + `"]
 }
 
 func dockerfilePython(files map[string]string) string {
-	// Find the Python entry point: app.py, main.py, or first .py file
-	entrypoint := "app.py"
-	for _, candidate := range []string{"app.py", "main.py", "server.py", "run.py"} {
-		if _, ok := files[candidate]; ok {
-			entrypoint = candidate
-			break
-		}
-	}
+	entrypoint := appspec.Entrypoint(appspec.LangPython, files)
 	return `FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt* ./

@@ -104,7 +104,7 @@ stable.
 | # | Status | What | Where |
 |---|--------|------|-------|
 | 0.1 | ☐ | Runner agent: control port, source-bundle ingest, process supervise, log capture, health report | `internal/runner-agent/` (new) |
-| 0.2 | ☐ | Entrypoint detection shared with builder (`main.py`/`app.py`, `package.json` main/`index.js`) | refactor `internal/builder/dockerfile.go` → shared helper |
+| 0.2 | ☑ | Entrypoint detection shared with builder (`main.py`/`app.py`, `package.json` main/`index.js`) | new `internal/appspec` package — `DetectLanguage`, `Entrypoint`, `RunCommand`, `Interpreted`; consumed by `internal/builder/dockerfile.go` + `internal/orchestrator` |
 | 0.3 | ☐ | `vibed-runner-python` image: interpreter + pre-baked deps + agent as PID 1 | `runners/python/` (new), `Makefile` |
 | 0.4 | ☐ | `vibed-runner-node` image: same shape | `runners/node/` (new), `Makefile` |
 | 0.5 | ☐ | Pre-baked deps manifest format + per-image manifest files | `runners/*/prebaked.yaml` |
