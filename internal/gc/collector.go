@@ -10,8 +10,12 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	knversioned "knative.dev/serving/pkg/client/clientset/versioned"
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/metrics"
@@ -32,19 +36,25 @@ const (
 
 // GarbageCollector periodically scans for orphaned K8s resources and removes them.
 type GarbageCollector struct {
-	clientset kubernetes.Interface
-	store     store.ArtifactStore
-	namespace string
-	interval  time.Duration
-	maxAge    time.Duration
-	dryRun    bool
-	metrics   *metrics.Metrics
-	logger    *slog.Logger
+	clientset     kubernetes.Interface
+	knClient      knversioned.Interface // optional; nil if Knative not installed
+	dynamicClient dynamic.Interface     // optional; nil if not provided
+	store         store.ArtifactStore
+	namespace     string
+	interval      time.Duration
+	maxAge        time.Duration
+	dryRun        bool
+	metrics       *metrics.Metrics
+	logger        *slog.Logger
 }
 
 // NewGarbageCollector creates a new GarbageCollector from the given config.
+// knClient and dynamicClient are optional — pass nil to skip the
+// corresponding GC passes (e.g. nil knClient when Knative is not installed).
 func NewGarbageCollector(
 	clientset kubernetes.Interface,
+	knClient knversioned.Interface,
+	dynamicClient dynamic.Interface,
 	st store.ArtifactStore,
 	namespace string,
 	cfg config.GCConfig,
@@ -61,14 +71,16 @@ func NewGarbageCollector(
 	}
 
 	return &GarbageCollector{
-		clientset: clientset,
-		store:     st,
-		namespace: namespace,
-		interval:  interval,
-		maxAge:    maxAge,
-		dryRun:    cfg.DryRun,
-		metrics:   m,
-		logger:    logger.With("component", "gc"),
+		clientset:     clientset,
+		knClient:      knClient,
+		dynamicClient: dynamicClient,
+		store:         st,
+		namespace:     namespace,
+		interval:      interval,
+		maxAge:        maxAge,
+		dryRun:        cfg.DryRun,
+		metrics:       m,
+		logger:        logger.With("component", "gc"),
 	}, nil
 }
 
@@ -112,7 +124,105 @@ func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.cleanOrphanedJobs(ctx, activeArtifacts)
 	gc.cleanOrphanedConfigMaps(ctx, activeArtifacts)
 	gc.cleanOrphanedDeployments(ctx, activeArtifacts)
+	gc.cleanOrphanedKnativeServices(ctx, activeArtifacts)
+	gc.cleanOrphanedSandboxes(ctx, activeArtifacts)
 	gc.logger.Info("GC cycle complete")
+}
+
+// cleanOrphanedKnativeServices deletes Knative Services whose artifact no
+// longer exists in the store. Skipped silently when no Knative client was
+// supplied (e.g. cluster doesn't have Knative installed).
+func (gc *GarbageCollector) cleanOrphanedKnativeServices(ctx context.Context, activeArtifacts map[string]bool) {
+	if gc.knClient == nil {
+		return
+	}
+	services, err := gc.knClient.ServingV1().Services(gc.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelManagedBy,
+	})
+	if err != nil {
+		// CRD not installed: silent skip.
+		if k8serrors.IsNotFound(err) {
+			return
+		}
+		gc.logger.Warn("failed to list knative services for GC", "error", err)
+		return
+	}
+
+	for _, svc := range services.Items {
+		artifactID := svc.Labels[labelArtifactID]
+		if artifactID == "" {
+			continue
+		}
+		if activeArtifacts[artifactID] {
+			continue
+		}
+
+		if gc.dryRun {
+			gc.logger.Info("dry-run: would delete orphaned knative service", "service", svc.Name, "artifactID", artifactID)
+			continue
+		}
+
+		if err := gc.knClient.ServingV1().Services(gc.namespace).Delete(ctx, svc.Name, metav1.DeleteOptions{}); err != nil {
+			if k8serrors.IsNotFound(err) {
+				continue
+			}
+			gc.logger.Warn("failed to delete orphaned knative service", "service", svc.Name, "error", err)
+			continue
+		}
+		gc.metrics.GCResourcesCleaned.WithLabelValues("knative_service").Inc()
+		gc.logger.Info("deleted orphaned knative service", "service", svc.Name, "artifactID", artifactID)
+	}
+}
+
+// cleanOrphanedSandboxes deletes Sandbox CRs whose artifact no longer exists
+// in the store. Skipped silently when the agent-sandbox CRD isn't installed.
+func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeArtifacts map[string]bool) {
+	if gc.dynamicClient == nil {
+		return
+	}
+	sandboxGVR := schema.GroupVersionResource{
+		Group:    "agents.x-k8s.io",
+		Version:  "v1alpha1",
+		Resource: "sandboxes",
+	}
+
+	list, err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelManagedBy,
+	})
+	if err != nil {
+		// agent-sandbox CRD not installed in this cluster: silent skip.
+		if k8serrors.IsNotFound(err) {
+			return
+		}
+		gc.logger.Warn("failed to list sandboxes for GC", "error", err)
+		return
+	}
+
+	for _, sb := range list.Items {
+		labels := sb.GetLabels()
+		artifactID := labels[labelArtifactID]
+		if artifactID == "" {
+			continue
+		}
+		if activeArtifacts[artifactID] {
+			continue
+		}
+
+		if gc.dryRun {
+			gc.logger.Info("dry-run: would delete orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
+			continue
+		}
+
+		if err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).Delete(ctx, sb.GetName(), metav1.DeleteOptions{}); err != nil {
+			if k8serrors.IsNotFound(err) {
+				continue
+			}
+			gc.logger.Warn("failed to delete orphaned sandbox", "sandbox", sb.GetName(), "error", err)
+			continue
+		}
+		gc.metrics.GCResourcesCleaned.WithLabelValues("sandbox").Inc()
+		gc.logger.Info("deleted orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
+	}
 }
 
 // cleanOrphanedJobs deletes completed/failed build Jobs whose artifact

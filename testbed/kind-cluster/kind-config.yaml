@@ -1,5 +1,7 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+# Enable per-host containerd config dir so testbed/kind-registry/scripts/configure-containerd.sh
+# can drop a hosts.toml for "kind-registry:5000".
 containerdConfigPatches:
   - |-
     [plugins."io.containerd.grpc.v1.cri".registry]
@@ -7,21 +9,26 @@ containerdConfigPatches:
 nodes:
   - role: control-plane
     extraPortMappings:
+      # Kourier ingress (testbed/knative)
       - containerPort: 31080
         hostPort: 80
         protocol: TCP
       - containerPort: 31443
         hostPort: 443
         protocol: TCP
-      # Grafana (vibed-observability chart)
+      # Grafana (testbed/observability)
       - containerPort: 31300
         hostPort: 3000
         protocol: TCP
-      # Prometheus (vibed-observability chart)
+      # Prometheus (testbed/observability)
       - containerPort: 31900
         hostPort: 9090
         protocol: TCP
       # vibeD API + Dashboard
       - containerPort: 31808
         hostPort: 8080
+        protocol: TCP
+      # Keycloak (testbed/keycloak) — issuer URL hostname depends on this
+      - containerPort: 31888
+        hostPort: 31888
         protocol: TCP

@@ -11,8 +11,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SandboxDeployer implements the Deployer interface using agent-sandbox CRDs.
@@ -38,11 +41,19 @@ var sandboxGVR = schema.GroupVersionResource{
 	Resource: "sandboxes",
 }
 
-func (s *SandboxDeployer) buildSandboxObj(artifact *api.Artifact) *unstructured.Unstructured {
-	// Build the basic pod containers block
+func (s *SandboxDeployer) buildSandboxObj(ctx context.Context, artifact *api.Artifact) *unstructured.Unstructured {
+	// Build the basic pod containers block. SecurityContext fields below
+	// satisfy PodSecurity Standards "restricted"; keep these in sync with
+	// HardenedContainerSecurityContext() in helpers.go.
 	container := map[string]interface{}{
 		"name":  "user-container",
 		"image": artifact.ImageRef,
+		"securityContext": map[string]interface{}{
+			"allowPrivilegeEscalation": false,
+			"capabilities": map[string]interface{}{
+				"drop": []interface{}{"ALL"},
+			},
+		},
 	}
 
 	// Add port if specified
@@ -87,6 +98,9 @@ func (s *SandboxDeployer) buildSandboxObj(artifact *api.Artifact) *unstructured.
 	if artifact.OwnerID != "" {
 		labels["vibed.dev/owner-id"] = artifact.OwnerID
 	}
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		labels[TraceIDLabel] = span.SpanContext().TraceID().String()
+	}
 
 	// Build the full CRD
 	obj := &unstructured.Unstructured{
@@ -104,6 +118,12 @@ func (s *SandboxDeployer) buildSandboxObj(artifact *api.Artifact) *unstructured.
 						"containers": []interface{}{
 							container,
 						},
+						"securityContext": map[string]interface{}{
+							"runAsNonRoot": true,
+							"seccompProfile": map[string]interface{}{
+								"type": "RuntimeDefault",
+							},
+						},
 					},
 				},
 			},
@@ -115,7 +135,7 @@ func (s *SandboxDeployer) buildSandboxObj(artifact *api.Artifact) *unstructured.
 func (s *SandboxDeployer) Deploy(ctx context.Context, artifact *api.Artifact) (*DeployResult, error) {
 	s.logger.Info("deploying Sandbox", "name", artifact.Name, "namespace", artifact.Namespace)
 
-	obj := s.buildSandboxObj(artifact)
+	obj := s.buildSandboxObj(ctx, artifact)
 	_, err := s.dynamicClient.Resource(sandboxGVR).Namespace(artifact.Namespace).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("creating Sandbox: %w", err)
@@ -133,18 +153,21 @@ func (s *SandboxDeployer) Deploy(ctx context.Context, artifact *api.Artifact) (*
 func (s *SandboxDeployer) Update(ctx context.Context, artifact *api.Artifact) (*DeployResult, error) {
 	s.logger.Info("updating Sandbox", "name", artifact.Name, "namespace", artifact.Namespace)
 
-	// In Kubernetes you usually need to read the existing object to get the ResourceVersion for updates
-	existing, err := s.dynamicClient.Resource(sandboxGVR).Namespace(artifact.Namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
+	// Apply with merge patch instead of full Update so we don't blow away
+	// controller-set defaults / status that aren't reflected in our spec.
+	// We patch only the fields we own (image, env, port, labels) — the
+	// agent-sandbox controller fills in the rest.
+	obj := s.buildSandboxObj(ctx, artifact)
+	patch, err := obj.MarshalJSON()
 	if err != nil {
-		return nil, fmt.Errorf("getting existing Sandbox to update: %w", err)
+		return nil, fmt.Errorf("marshaling Sandbox patch: %w", err)
 	}
 
-	obj := s.buildSandboxObj(artifact)
-	obj.SetResourceVersion(existing.GetResourceVersion())
-
-	_, err = s.dynamicClient.Resource(sandboxGVR).Namespace(artifact.Namespace).Update(ctx, obj, metav1.UpdateOptions{})
+	_, err = s.dynamicClient.Resource(sandboxGVR).
+		Namespace(artifact.Namespace).
+		Patch(ctx, artifact.Name, types.MergePatchType, patch, metav1.PatchOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("updating Sandbox: %w", err)
+		return nil, fmt.Errorf("patching Sandbox: %w", err)
 	}
 
 	url, _ := s.GetURL(ctx, artifact)

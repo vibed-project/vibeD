@@ -294,4 +294,4 @@ Update and rollback operations are similarly instrumented. HTTP requests are tra
 
 ### Viewing Traces
 
-Any OpenTelemetry-compatible backend works: Jaeger, Grafana Tempo, Datadog, Honeycomb, or New Relic. For the dev setup with `vibed-observability` chart, add Tempo as a Helm dependency or use the stdout exporter for quick debugging.
+Any OpenTelemetry-compatible backend works: Jaeger, Grafana Tempo, Datadog, Honeycomb, or New Relic. For the dev setup the `testbed/observability` chart bundles Tempo (plus Loki for logs and Prometheus for metrics); use the stdout exporter for quick debugging without a backend.

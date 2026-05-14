@@ -1,0 +1,15 @@
+apiVersion: v2
+name: kind-registry
+description: In-cluster Docker registry for kind testbed clusters
+type: application
+version: 0.1.0
+appVersion: "2"
+keywords:
+  - registry
+  - kind
+  - testbed
+home: https://github.com/maxkorbacher/vibed
+sources:
+  - https://github.com/maxkorbacher/vibed
+maintainers:
+  - name: vibeD

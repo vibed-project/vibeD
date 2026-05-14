@@ -8,12 +8,15 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sync/singleflight"
 
+	"github.com/vibed-project/vibeD/internal/appspec"
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/builder"
 	"github.com/vibed-project/vibeD/internal/config"
@@ -35,6 +38,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/daemon"
 
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -87,6 +91,16 @@ type Orchestrator struct {
 	imageBase      string
 	tracer         trace.Tracer
 	logger         *slog.Logger
+
+	// lifeCtx is cancelled on orchestrator Shutdown — async goroutines derive
+	// their context from this so SIGTERM unblocks in-flight deploys instead of
+	// leaking them. Set via SetLifecycleContext (called from main.go).
+	lifeCtx context.Context
+
+	// deployFlight collapses concurrent deploys for the same artifact name.
+	// MCP clients on flaky networks otherwise spawn multiple parallel
+	// build+deploy chains that race each other to write the store.
+	deployFlight singleflight.Group
 }
 
 // NewOrchestrator creates a new Orchestrator with all subsystems wired.
@@ -122,7 +136,17 @@ func NewOrchestrator(
 		imageBase:      imageBase,
 		tracer:         otel.Tracer("vibed/orchestrator"),
 		logger:         logger,
+		// Default to context.Background() until SetLifecycleContext is called;
+		// callers that don't use Shutdown semantics still get correct behavior.
+		lifeCtx: context.Background(),
 	}
+}
+
+// SetLifecycleContext wires a long-lived context into the orchestrator.
+// Async goroutines (AsyncDeploy, AsyncUpdate) derive from this context so
+// SIGTERM cancels in-flight builds instead of leaving them orphaned.
+func (o *Orchestrator) SetLifecycleContext(ctx context.Context) {
+	o.lifeCtx = ctx
 }
 
 // Deploy handles the full deployment flow: validate → store → build → deploy.
@@ -138,7 +162,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 	traceID := span.SpanContext().TraceID().String()
 	o.logger.Info("deploy started", "artifact", req.Name, "trace_id", traceID)
 
-	result, err := o.doDeploy(ctx, req)
+	result, err := o.doDeploy(ctx, req, "")
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -153,6 +177,10 @@ func (o *Orchestrator) Deploy(ctx context.Context, req DeployRequest) (*DeployRe
 // the slow build + push + deploy in a background goroutine. Returns immediately with
 // status "building" and the artifact_id so the caller can poll get_artifact_status.
 // This prevents MCP client timeouts on long-running builds.
+//
+// Concurrent calls with the same artifact name are collapsed via singleflight:
+// the second caller gets the same DeployResult as the first (same artifact_id),
+// so MCP retries on flaky networks don't spawn parallel build chains.
 func (o *Orchestrator) AsyncDeploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
 	// Fast pre-flight checks so callers get immediate errors for bad input.
 	if err := validateName(req.Name); err != nil {
@@ -162,16 +190,30 @@ func (o *Orchestrator) AsyncDeploy(ctx context.Context, req DeployRequest) (*Dep
 		return nil, &api.ErrInvalidInput{Field: "files", Message: "at least one file is required"}
 	}
 
+	// Collapse duplicate concurrent deploys for the same name. The actual
+	// pre-flight + goroutine spawn happens inside Do; subsequent callers
+	// while the first is still running get the same DeployResult.
+	v, err, _ := o.deployFlight.Do("deploy:"+req.Name, func() (interface{}, error) {
+		return o.asyncDeployImpl(ctx, req)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*DeployResult), nil
+}
+
+func (o *Orchestrator) asyncDeployImpl(ctx context.Context, req DeployRequest) (*DeployResult, error) {
+
 	// Detect language so doDeploy doesn't re-detect (avoids double-scanning large file maps).
 	lang := req.Language
 	if lang == "" || lang == "auto" {
-		lang = builder.DetectLanguage(req.Files)
+		lang = appspec.DetectLanguage(req.Files)
 	}
 	req.Language = lang
 
 	// Capture user identity before the request context is cancelled.
 	ownerID := vibedauth.UserIDFromContext(ctx)
-	bgCtx := vibedauth.WithUserID(context.Background(), ownerID)
+	bgCtx := vibedauth.WithUserID(o.lifeCtx, ownerID)
 
 	bgCtx, span := o.tracer.Start(bgCtx, "orchestrator.Deploy",
 		trace.WithAttributes(
@@ -202,11 +244,25 @@ func (o *Orchestrator) AsyncDeploy(ctx context.Context, req DeployRequest) (*Dep
 		return nil, err
 	}
 
-	// Run the full deploy (including the already-created artifact) in the background.
-	// doDeploy will detect the existing record via GetByName and overwrite it.
+	// Run the full deploy in the background, telling doDeploy to operate on the
+	// pre-created record by ID (no GetByName overwrite, no second store.Create).
+	// The deferred recover ensures a panic anywhere in the deploy pipeline
+	// flips the artifact to "failed" instead of leaving it stuck in
+	// "building" until the GC catches it.
 	go func() {
 		defer span.End()
-		result, err := o.doDeploy(bgCtx, req)
+		defer func() {
+			if r := recover(); r != nil {
+				stack := string(debug.Stack())
+				o.logger.Error("async deploy panicked", "artifact", req.Name, "trace_id", traceID, "panic", r, "stack", stack)
+				if a, _ := o.store.Get(o.lifeCtx, artifactID); a != nil {
+					o.failArtifact(o.lifeCtx, a, fmt.Sprintf("panic during deploy: %v", r))
+				}
+				span.RecordError(fmt.Errorf("panic: %v", r))
+				span.SetStatus(codes.Error, "panic")
+			}
+		}()
+		result, err := o.doDeploy(bgCtx, req, artifactID)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -224,7 +280,14 @@ func (o *Orchestrator) AsyncDeploy(ctx context.Context, req DeployRequest) (*Dep
 	}, nil
 }
 
-func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
+// doDeploy runs the full validate → store → build → deploy pipeline.
+//
+// When prebuiltID is non-empty, the caller (AsyncDeploy) has already created
+// the artifact record synchronously and we operate on that ID instead of
+// generating a new one and overwriting via GetByName. This prevents the
+// double-create bug where the pre-created ID returned to the caller was
+// invalidated mid-flight.
+func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest, prebuiltID string) (*DeployResult, error) {
 	// 1. Validate input
 	if err := validateName(req.Name); err != nil {
 		return nil, err
@@ -257,21 +320,23 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*Deploy
 		}
 	}
 
-	// 1c. Check for duplicate name — allow overwrite if stuck/failed
-	if existing, _ := o.store.GetByName(ctx, req.Name); existing != nil {
-		if existing.Status == api.StatusFailed || existing.Status == api.StatusBuilding {
-			o.logger.Info("overwriting stuck/failed artifact with same name",
-				"name", req.Name, "old_id", existing.ID, "old_status", existing.Status)
-			_ = o.Delete(ctx, existing.ID)
-		} else {
-			return nil, &api.ErrAlreadyExists{Name: req.Name}
+	// 1c. Check for duplicate name — allow overwrite if stuck/failed.
+	// Skip when prebuiltID is set: AsyncDeploy already created our record and
+	// the GetByName below would otherwise find and delete it.
+	if prebuiltID == "" {
+		if existing, _ := o.store.GetByName(ctx, req.Name); existing != nil {
+			if existing.Status == api.StatusFailed || existing.Status == api.StatusBuilding {
+				o.logger.Info("overwriting stuck/failed artifact with same name",
+					"name", req.Name, "old_id", existing.ID, "old_status", existing.Status)
+				_ = o.Delete(ctx, existing.ID)
+			} else {
+				return nil, &api.ErrAlreadyExists{Name: req.Name}
+			}
 		}
 	}
 
-	// 2. Generate artifact ID
-	artifactID := generateID()
+	// 2. Resolve / create artifact record
 	now := time.Now()
-
 	namespace := o.cfg.Deployment.Namespace // fallback
 	if req.DepartmentID != "" && o.userStore != nil {
 	        dept, err := o.userStore.GetDepartment(ctx, req.DepartmentID)
@@ -280,22 +345,40 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*Deploy
 	        }
 	}
 
-	artifact := &api.Artifact{
-	        ID:         artifactID,
-	        Name:       req.Name,
-	        OwnerID:    vibedauth.UserIDFromContext(ctx),
-	        Namespace:  namespace,
-	        Status:     api.StatusPending,
-	        Language:   req.Language,
-	        EnvVars:    req.EnvVars,
-	        SecretRefs: req.SecretRefs,
-	        Port:       req.Port,
-	        CreatedAt:  now,
-	        UpdatedAt:  now,
-	}
-	// 3. Create artifact record
-	if err := o.store.Create(ctx, artifact); err != nil {
-		return nil, err
+	var artifact *api.Artifact
+	var artifactID string
+	if prebuiltID != "" {
+		// AsyncDeploy path: fetch the record it pre-created so we can keep
+		// updating it in place rather than deleting and recreating.
+		existing, err := o.store.Get(ctx, prebuiltID)
+		if err != nil {
+			return nil, fmt.Errorf("prebuilt artifact %s not found: %w", prebuiltID, err)
+		}
+		artifact = existing
+		artifactID = prebuiltID
+		// Fill in fields that AsyncDeploy didn't know yet.
+		artifact.Namespace = namespace
+		artifact.Language = req.Language
+		artifact.UpdatedAt = now
+	} else {
+		artifactID = generateID()
+		artifact = &api.Artifact{
+			ID:         artifactID,
+			Name:       req.Name,
+			OwnerID:    vibedauth.UserIDFromContext(ctx),
+			Namespace:  namespace,
+			Status:     api.StatusPending,
+			Language:   req.Language,
+			EnvVars:    req.EnvVars,
+			SecretRefs: req.SecretRefs,
+			Port:       req.Port,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		// 3. Create artifact record
+		if err := o.store.Create(ctx, artifact); err != nil {
+			return nil, err
+		}
 	}
 
 	// 4. Store source files
@@ -310,7 +393,7 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*Deploy
 	// 5. Detect language early (needed for target selection and go.mod generation)
 	lang := req.Language
 	if lang == "" || lang == "auto" {
-		lang = builder.DetectLanguage(req.Files)
+		lang = appspec.DetectLanguage(req.Files)
 	}
 	artifact.Language = lang
 
@@ -377,7 +460,9 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest) (*Deploy
 
 	o.metrics.BuildsTotal.WithLabelValues("success", lang).Inc()
 	o.metrics.BuildDuration.WithLabelValues("success", lang).Observe(buildDur)
-	artifact.ImageRef = buildResult.ImageRef
+	// Pin to the immutable manifest digest when the builder reported one.
+	// Falls back to the tag for builders that haven't been updated yet.
+	artifact.ImageRef = pinnedImageRef(buildResult)
 
 	// Child span: registry.Push — only needed when the builder doesn't push internally
 	// (i.e. PackBuilder produces a local daemon image that must be pushed via crane).
@@ -462,7 +547,7 @@ func (o *Orchestrator) AsyncUpdate(ctx context.Context, req UpdateRequest) (*Dep
 
 	// Capture identity before request context is cancelled.
 	ownerID := vibedauth.UserIDFromContext(ctx)
-	bgCtx := vibedauth.WithUserID(context.Background(), ownerID)
+	bgCtx := vibedauth.WithUserID(o.lifeCtx, ownerID)
 
 	bgCtx, span := o.tracer.Start(bgCtx, "orchestrator.Update",
 		trace.WithAttributes(attribute.String("artifact.id", req.ArtifactID)))
@@ -474,6 +559,17 @@ func (o *Orchestrator) AsyncUpdate(ctx context.Context, req UpdateRequest) (*Dep
 
 	go func() {
 		defer span.End()
+		defer func() {
+			if r := recover(); r != nil {
+				stack := string(debug.Stack())
+				o.logger.Error("async update panicked", "artifact_id", req.ArtifactID, "trace_id", traceID, "panic", r, "stack", stack)
+				if a, _ := o.store.Get(o.lifeCtx, req.ArtifactID); a != nil {
+					o.failArtifact(o.lifeCtx, a, fmt.Sprintf("panic during update: %v", r))
+				}
+				span.RecordError(fmt.Errorf("panic: %v", r))
+				span.SetStatus(codes.Error, "panic")
+			}
+		}()
 		result, err := o.doUpdate(bgCtx, req)
 		if err != nil {
 			span.RecordError(err)
@@ -560,7 +656,7 @@ func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*Deploy
 	// Detect language for static shortcut
 	lang := artifact.Language
 	if lang == "" || lang == "auto" {
-		lang = builder.DetectLanguage(req.Files)
+		lang = appspec.DetectLanguage(req.Files)
 	}
 	artifact.Language = lang
 
@@ -606,7 +702,7 @@ func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*Deploy
 
 	o.metrics.BuildsTotal.WithLabelValues("success", lang).Inc()
 	o.metrics.BuildDuration.WithLabelValues("success", lang).Observe(buildDur)
-	artifact.ImageRef = buildResult.ImageRef
+	artifact.ImageRef = pinnedImageRef(buildResult)
 
 	// Child span: registry.Push (only for Pack — Buildah/Wasm push inside the K8s Job)
 	if o.cfg.Registry.Enabled && !builderPublishes {
@@ -683,13 +779,25 @@ func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 		return err
 	}
 
-	// Skip deployer cleanup if artifact never got a target (e.g. stuck in building)
+	// Cleanup deployed resources. If artifact.Target is empty (e.g. the build
+	// crashed before target selection) we don't know which backend owns the
+	// resources — sweep every registered deployer best-effort. Otherwise just
+	// the chosen one. NotFound is silent; other errors are logged but do not
+	// block store deletion.
 	if artifact.Target != "" {
 		dep, err := o.factory.Get(artifact.Target)
 		if err != nil {
 			o.logger.Warn("failed to get deployer for delete", "id", artifactID, "target", artifact.Target, "error", err)
 		} else if err := dep.Delete(ctx, artifact); err != nil {
 			o.logger.Warn("failed to delete deployment", "id", artifactID, "error", err)
+		}
+	} else {
+		o.logger.Info("artifact has no Target — sweeping all backends", "id", artifactID)
+		for target, dep := range o.factory.All() {
+			if err := dep.Delete(ctx, artifact); err != nil {
+				o.logger.Debug("backend sweep delete returned error (likely NotFound)",
+					"id", artifactID, "target", target, "error", err)
+			}
 		}
 	}
 
@@ -848,8 +956,14 @@ func (o *Orchestrator) finalizeDeployment(ctx context.Context, artifact *api.Art
 	o.createVersionSnapshot(ctx, artifact)
 }
 func (o *Orchestrator) failArtifact(_ context.Context, artifact *api.Artifact, reason string) {
-	failCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	failCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	// Enrich with cluster-side diagnostics where possible. Best-effort:
+	// failures to fetch don't mask the original reason.
+	if diag := o.collectDeployDiagnostics(failCtx, artifact); diag != "" {
+		reason = reason + "\n" + diag
+	}
 
 	artifact.Status = api.StatusFailed
 	artifact.Error = reason
@@ -862,6 +976,75 @@ func (o *Orchestrator) failArtifact(_ context.Context, artifact *api.Artifact, r
 		)
 	}
 	o.publishStatusEvent(artifact)
+}
+
+// collectDeployDiagnostics builds a short human-readable summary of why a
+// deploy might have failed: relevant K8s resource Conditions and the last
+// few namespace Events tagged with the artifact's name. Returns an empty
+// string when nothing useful could be fetched (e.g. resource never created).
+func (o *Orchestrator) collectDeployDiagnostics(ctx context.Context, artifact *api.Artifact) string {
+	if artifact == nil || artifact.Namespace == "" || artifact.Name == "" {
+		return ""
+	}
+	var parts []string
+
+	// Recent events tagged with the artifact name. Works across all targets
+	// because vibeD names its objects after the artifact.
+	if events, err := o.clientset.CoreV1().Events(artifact.Namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s", artifact.Name),
+		Limit:         10,
+	}); err == nil && len(events.Items) > 0 {
+		// Sort newest-first by lastTimestamp.
+		sort.Slice(events.Items, func(i, j int) bool {
+			return events.Items[i].LastTimestamp.After(events.Items[j].LastTimestamp.Time)
+		})
+		seen := 0
+		var evLines []string
+		for _, ev := range events.Items {
+			if seen >= 5 {
+				break
+			}
+			if ev.Type == "Normal" {
+				continue // surface warnings / errors only
+			}
+			evLines = append(evLines, fmt.Sprintf("  [%s] %s: %s", ev.Type, ev.Reason, strings.TrimSpace(ev.Message)))
+			seen++
+		}
+		if len(evLines) > 0 {
+			parts = append(parts, "Recent events:\n"+strings.Join(evLines, "\n"))
+		}
+	}
+
+	// Pod-level diagnostics: surface waiting reasons (ImagePullBackOff,
+	// CrashLoopBackOff, RunContainerError, …). Limited to the first matching
+	// pod; vibeD typically deploys 1 replica.
+	podSelector := fmt.Sprintf("vibed.dev/artifact-id=%s", artifact.ID)
+	if pods, err := o.clientset.CoreV1().Pods(artifact.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: podSelector,
+		Limit:         5,
+	}); err == nil {
+		var podLines []string
+		for _, pod := range pods.Items {
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+					podLines = append(podLines, fmt.Sprintf("  pod %s container %s: %s — %s",
+						pod.Name, cs.Name, cs.State.Waiting.Reason, strings.TrimSpace(cs.State.Waiting.Message)))
+				}
+				if cs.State.Terminated != nil && cs.State.Terminated.Reason != "" && cs.State.Terminated.Reason != "Completed" {
+					podLines = append(podLines, fmt.Sprintf("  pod %s container %s terminated: %s — %s",
+						pod.Name, cs.Name, cs.State.Terminated.Reason, strings.TrimSpace(cs.State.Terminated.Message)))
+				}
+			}
+		}
+		if len(podLines) > 0 {
+			parts = append(parts, "Pod state:\n"+strings.Join(podLines, "\n"))
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "--- diagnostics ---\n" + strings.Join(parts, "\n")
 }
 
 // publishStatusEvent publishes an artifact lifecycle event to the event bus.
@@ -934,6 +1117,24 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
+// pinnedImageRef returns image@sha256:... when the builder captured a digest,
+// or the original ImageRef tag otherwise. Pinning by digest avoids registry
+// caching surprises and makes Knative revisions reproducibly distinct.
+func pinnedImageRef(r *builder.BuildResult) string {
+	if r == nil {
+		return ""
+	}
+	if r.Digest == "" {
+		return r.ImageRef
+	}
+	// Strip any trailing tag — `repo:tag@digest` is invalid.
+	ref := r.ImageRef
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		ref = ref[:i]
+	}
+	return ref + "@" + r.Digest
+}
+
 const staticNginxConf = `server {
     listen 8080;
     server_name _;
@@ -966,26 +1167,43 @@ func (o *Orchestrator) deployStatic(ctx context.Context, artifact *api.Artifact,
 	}
 	data["nginx.conf"] = staticNginxConf
 
+	cmLabels := map[string]string{
+		"app.kubernetes.io/managed-by": "vibed",
+		"vibed.dev/artifact-id":        artifact.ID,
+	}
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		cmLabels["vibed.dev/trace-id"] = span.SpanContext().TraceID().String()
+	}
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cmName,
 			Namespace: ns,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "vibed",
-				"vibed.dev/artifact-id":        artifact.ID,
-			},
+			Labels:    cmLabels,
 		},
 		Data: data,
 	}
 
-	_, err := o.clientset.CoreV1().ConfigMaps(ns).Create(ctx, cm, metav1.CreateOptions{})
-	if err != nil {
-		o.failArtifact(ctx, artifact, fmt.Sprintf("creating static ConfigMap: %v", err))
-		return nil, fmt.Errorf("creating static ConfigMap: %w", err)
+	// Idempotent apply: if a previous failed deploy left this ConfigMap behind
+	// we Update it instead of failing. The label/data we want is fully derived
+	// from the current request, so overwriting is safe.
+	if _, err := o.clientset.CoreV1().ConfigMaps(ns).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+		if !k8serrors.IsAlreadyExists(err) {
+			o.failArtifact(ctx, artifact, fmt.Sprintf("creating static ConfigMap: %v", err))
+			return nil, fmt.Errorf("creating static ConfigMap: %w", err)
+		}
+		if _, uerr := o.clientset.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{}); uerr != nil {
+			o.failArtifact(ctx, artifact, fmt.Sprintf("updating existing static ConfigMap: %v", uerr))
+			return nil, fmt.Errorf("updating existing static ConfigMap: %w", uerr)
+		}
 	}
 
-	// Set artifact fields for static deploy
-	artifact.ImageRef = "nginx:alpine"
+	// Set artifact fields for static deploy.
+	//
+	// nginxinc/nginx-unprivileged is the official image built to run as a
+	// non-root user (UID 101) with /tmp writable. Stock nginx:alpine binds
+	// :80 as root and writes to /var/cache/nginx — both incompatible with
+	// the runAsNonRoot:true podSecurityContext we set on every workload.
+	artifact.ImageRef = "nginxinc/nginx-unprivileged:alpine"
 	artifact.StaticFiles = cmName
 	if artifact.Port == 0 {
 		artifact.Port = 8080

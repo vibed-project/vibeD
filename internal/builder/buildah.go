@@ -18,6 +18,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // BuildahBuilder builds container images by creating Kubernetes Jobs
@@ -125,7 +127,13 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 	if b.insecure {
 		tlsVerify = "false"
 	}
-	buildScript := `buildah bud --storage-driver=vfs --isolation=chroot -t "$1" /workspace && buildah push --storage-driver=vfs --tls-verify="$2" "$1" "docker://$1"`
+	// After push, write the manifest digest to a marker line vibeD parses
+	// from the Job logs. We pin the deployed image to image@sha256 so
+	// redeploys can't accidentally pull a different blob from registry cache.
+	buildScript := `set -e
+buildah bud --storage-driver=vfs --isolation=chroot -t "$1" /workspace
+buildah push --storage-driver=vfs --tls-verify="$2" --digestfile /tmp/vibed-digest "$1" "docker://$1"
+echo "VIBED_DIGEST=$(cat /tmp/vibed-digest)"`
 
 	// 5. Create K8s Job
 	ns := req.Namespace
@@ -133,20 +141,45 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 	        ns = b.namespace // fallback to global
 	}
 
+	jobLabels := map[string]string{
+		"app.kubernetes.io/managed-by": "vibed",
+		"vibed.dev/component":          "build",
+	}
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		jobLabels["vibed.dev/trace-id"] = span.SpanContext().TraceID().String()
+	}
 	job := &batchv1.Job{
-	        ObjectMeta: metav1.ObjectMeta{
-	                Name:      jobName,
-	                Namespace: ns,
-	                Labels: map[string]string{				"app.kubernetes.io/managed-by": "vibed",
-				"vibed.dev/component":          "build",
-			},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: ns,
+			Labels:    jobLabels,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            ptr.To(int32(0)),
-			TTLSecondsAfterFinished: ptr.To(int32(120)),
+			// Tolerate transient pull/registry/eviction failures with up to
+			// 2 retries, but cap the entire build via ActiveDeadlineSeconds
+			// so a stuck pod doesn't block the artifact forever.
+			BackoffLimit:            ptr.To(int32(2)),
+			ActiveDeadlineSeconds:   ptr.To(int64(b.timeout.Seconds())),
+			// Keep the Job around for 10 minutes after completion so
+			// fetchJobLogs has a chance to grab logs even after a vibeD
+			// restart. Stale finished Jobs get GC'd by the periodic GC sweep.
+			TTLSecondsAfterFinished: ptr.To(int32(600)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
+					// Pod-level securityContext: tighten what we can while
+					// still allowing rootless Buildah to function. Buildah's
+					// in-pod uid-mapping needs newuidmap (setuid binary), so
+					// AllowPrivilegeEscalation cannot be set to false on the
+					// container — keep this Job's namespace at PSA `baseline`
+					// or higher.
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: ptr.To(true),
+						RunAsUser:    ptr.To(int64(1000)),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:    "buildah",
@@ -163,7 +196,8 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 							},
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"SETUID", "SETGID"},
+									Drop: []corev1.Capability{"ALL"},
+									Add:  []corev1.Capability{"SETUID", "SETGID"},
 								},
 							},
 						},
@@ -217,16 +251,39 @@ if k8serrors.IsAlreadyExists(err) {
 		return nil, fmt.Errorf("build failed: %w\nBuild logs:\n%s", err, logs)
 		}
 
-		b.logger.Info("build completed", "image", req.ImageName)
-		b.cleanup(ctx, ns, jobName)
+	// Parse pushed-image digest from Job logs before cleanup. Best-effort:
+	// digest pinning is an optimization, not a hard requirement.
+	digest := parseDigestFromLogs(b.fetchJobLogs(ctx, ns, jobName))
+	b.logger.Info("build completed", "image", req.ImageName, "digest", digest)
+	b.cleanup(ctx, ns, jobName)
 
-		return &BuildResult{
+	return &BuildResult{
 		ImageRef: req.ImageName,
-		}, nil
-		}
+		Digest:   digest,
+	}, nil
+}
 
-		func (b *BuildahBuilder) waitForJob(_ context.Context, namespace, jobName string) error {	// Use a detached context so MCP client disconnects don't kill the build.
-	waitCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
+// parseDigestFromLogs extracts the value of the marker line we emit after
+// a successful push: "VIBED_DIGEST=sha256:...". Returns "" if absent.
+func parseDigestFromLogs(logs string) string {
+	const marker = "VIBED_DIGEST="
+	for _, line := range strings.Split(logs, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, marker) {
+			d := strings.TrimPrefix(line, marker)
+			if strings.HasPrefix(d, "sha256:") {
+				return d
+			}
+		}
+	}
+	return ""
+}
+
+func (b *BuildahBuilder) waitForJob(ctx context.Context, namespace, jobName string) error {
+	// Honor the parent context (orchestrator lifecycle) AND cap with timeout.
+	// This way SIGTERM cancels in-flight builds instead of leaking them, and
+	// runaway builds still hit the b.timeout ceiling.
+	waitCtx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
 	interval := 2 * time.Second

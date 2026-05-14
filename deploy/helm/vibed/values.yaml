@@ -72,6 +72,11 @@ config:
   deployment:
     preferredTarget: "auto"
     namespace: "default"
+    # -- How long deployers wait for a workload (Knative Service / K8s
+    #     Deployment) to become Ready before failing the deploy. Cold image
+    #     pulls + Knative reconcile can take several minutes; the default is
+    #     intentionally generous.
+    readyTimeout: "10m"
   builder:
     engine: "buildah"
     image: "paketobuildpacks/builder-jammy-base:latest"
@@ -117,6 +122,17 @@ config:
     endpoint: ""
     # -- Sampling rate 0.0–1.0 (default: 1.0 = sample all).
     sampleRate: 1.0
+
+  # -- Garbage collector for orphaned K8s resources (Jobs, ConfigMaps,
+  #     Deployments, Knative Services, Sandboxes) whose artifact is gone.
+  gc:
+    enabled: true
+    # -- How often the GC sweep runs (Go duration string).
+    interval: "5m"
+    # -- Resources younger than this are kept even if their artifact is gone.
+    maxAge: "1h"
+    # -- When true, log what would be deleted but don't delete.
+    dryRun: false
 
 persistence:
   enabled: true

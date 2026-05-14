@@ -41,7 +41,7 @@ func newKnativeDeployer(t *testing.T, ns string) *deployer.KnativeDeployer {
 	knCfg := config.KnativeConfig{
 	        DomainSuffix: "localhost",	        IngressClass: "kourier.ingress.networking.knative.dev",
 	}
-	return deployer.NewKnativeDeployer(knClient, clients.Clientset, knCfg, logger)}
+	return deployer.NewKnativeDeployer(knClient, clients.Clientset, knCfg, 0, logger)}
 
 func TestKnativeDeployer_Deploy(t *testing.T) {
 	testutil.SkipIfNoCluster(t)

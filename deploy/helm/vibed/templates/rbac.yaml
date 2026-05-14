@@ -1,14 +1,22 @@
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+# These permissions apply to vibeD's deploy *target* namespace (configurable via
+# config.deployment.namespace), not to vibeD's own namespace. ClusterRole +
+# ClusterRoleBinding so vibeD can deploy into any namespace it's pointed at.
+kind: ClusterRole
 metadata:
   name: {{ include "vibed.fullname" . }}
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "vibed.labels" . | nindent 4 }}
 rules:
   # --- Read-only: pod inspection and log retrieval ---
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+  # --- Events: surfacing pod/Knative failure reasons (ImagePullBackOff,
+  #     PSA admission, etc.) when fetching pod logs returns nothing.
+  - apiGroups: [""]
+    resources: ["events"]
     verbs: ["get", "list", "watch"]
 
   # --- Secrets: for validating secret references during deploy ---
@@ -36,22 +44,36 @@ rules:
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
 
-  # --- Knative Serving: serverless deployment target ---
+  # --- Knative Serving: serverless deployment target.
+  #     Services for CRUD; revisions/routes/configurations read-only so
+  #     waitForReady can surface the underlying revision failure reason
+  #     instead of just the rolled-up Service condition.
   - apiGroups: ["serving.knative.dev"]
     resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["revisions", "routes", "configurations"]
+    verbs: ["get", "list", "watch"]
+
+  # --- agent-sandbox: BYOC + Sandbox CR target. Without these the
+  #     SandboxDeployer 403s silently and BYOC deploys never succeed.
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxtemplates", "sandboxclaims", "sandboxwarmpools"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: {{ include "vibed.fullname" . }}
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "vibed.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: {{ include "vibed.fullname" . }}
 subjects:
   - kind: ServiceAccount

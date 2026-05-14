@@ -23,7 +23,7 @@ func newK8sDeployer(t *testing.T, ns string) *deployer.KubernetesDeployer {
 	t.Helper()
 	clients := testutil.MustGetClients(t)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	return deployer.NewKubernetesDeployer(clients.Clientset, logger)}
+	return deployer.NewKubernetesDeployer(clients.Clientset, 0, logger)}
 
 func testArtifact(name string) *api.Artifact {
 	return &api.Artifact{

@@ -1,0 +1,27 @@
+Keycloak {{ .Values.image.tag }} is starting in namespace {{ .Release.Namespace }}.
+
+Cold start takes ~20-60s. Watch readiness:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ .Release.Name }}
+
+External (host) URL:
+  {{ .Values.hostname }}
+  Admin console: {{ .Values.hostname }}/admin
+  Admin login:   {{ .Values.admin.username }} / {{ .Values.admin.password }}
+
+In-cluster URL (for OIDC discovery from other pods):
+  http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local:8080
+{{- if .Values.realm.file }}
+
+Realm imported on first start: {{ .Values.realm.file }}
+  Issuer: {{ .Values.hostname }}/realms/<realm-name>
+  Discovery: {{ .Values.hostname }}/realms/<realm-name>/.well-known/openid-configuration
+{{- else }}
+
+No realm imported. Create one via the admin console.
+{{- end }}
+
+WARNING: This is DEV-ONLY. Storage is ephemeral (H2 in-pod), credentials are
+plaintext. Do not expose to untrusted networks.
+
+To uninstall:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

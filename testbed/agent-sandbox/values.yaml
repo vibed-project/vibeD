@@ -1,0 +1,31 @@
+# Upstream release tag (without leading "v" is added in the URL).
+version: "v0.4.5"
+
+# Namespace the controller is installed into. Created by the upstream manifest.
+namespace: agent-sandbox-system
+
+manifests:
+  # Core controller + Sandbox CRD.
+  core: "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.4.5/manifest.yaml"
+  # Optional: SandboxTemplate / SandboxClaim / SandboxWarmPool CRDs and their controller.
+  extensions:
+    enabled: true
+    url: "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.4.5/extensions.yaml"
+
+installJob:
+  # Container image used to apply the manifests. Must include kubectl on PATH.
+  image: "bitnami/kubectl:latest"
+  # Service account name created and bound for the install job (cluster-admin scope).
+  serviceAccountName: "agent-sandbox-installer"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Wait for the controller deployment to become Available after install.
+waitForReady:
+  enabled: true
+  timeoutSeconds: 180

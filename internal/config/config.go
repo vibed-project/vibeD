@@ -125,8 +125,9 @@ type RateLimitConfig struct {
 }
 
 type DeploymentConfig struct {
-	PreferredTarget string `yaml:"preferredTarget"` // "auto", "knative", "kubernetes"
-	Namespace       string `yaml:"namespace"`
+	PreferredTarget string        `yaml:"preferredTarget"` // "auto", "knative", "kubernetes"
+	Namespace       string        `yaml:"namespace"`
+	ReadyTimeout    time.Duration `yaml:"readyTimeout"` // how long deployers wait for a workload to become Ready before failing the deploy
 }
 
 type BuilderConfig struct {
@@ -230,6 +231,7 @@ func Default() *Config {
 		Deployment: DeploymentConfig{
 			PreferredTarget: "auto",
 			Namespace:       "default",
+			ReadyTimeout:    10 * time.Minute, // generous; cold image pulls + Knative reconcile can be slow
 		},
 		Builder: BuilderConfig{
 			Engine:           "buildah",

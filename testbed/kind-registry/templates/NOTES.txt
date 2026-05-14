@@ -1,0 +1,25 @@
+{{ .Values.name }} is starting in namespace {{ .Values.namespace }}.
+
+Cluster-internal endpoint:
+  {{ .Values.name }}.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.servicePort }}
+
+To make pods on the kind node resolve and pull from "kind-registry:5000" by bare
+name (e.g. so Knative can use it as a registry-skipping-tag-resolving target),
+run the host-side containerd configurator ONCE after install:
+
+  testbed/kind-registry/scripts/configure-containerd.sh \
+    --cluster <kind-cluster-name> \
+    --runtime podman           # or "docker"
+
+This writes /etc/containerd/certs.d/kind-registry:5000/hosts.toml inside the
+control-plane node, pointing at this Service's ClusterIP.
+{{- if .Values.aliases }}
+
+ExternalName aliases created in:
+{{- range .Values.aliases }}
+  - {{ .namespace }}
+{{- end }}
+{{- end }}
+
+To uninstall:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

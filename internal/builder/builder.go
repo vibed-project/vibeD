@@ -19,6 +19,11 @@ type BuildRequest struct {
 // BuildResult contains the output of a successful build.
 type BuildResult struct {
 	ImageRef string
+	// Digest is the immutable manifest digest of the pushed image
+	// (e.g. "sha256:abc..."). When set, deployers should pin via
+	// "ImageRef@Digest" instead of the tag to avoid registry-cache
+	// surprises and make Knative revisions reproducibly different.
+	Digest string
 }
 
 // Builder builds container images from source code.

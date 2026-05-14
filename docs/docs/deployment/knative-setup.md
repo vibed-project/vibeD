@@ -17,30 +17,32 @@ Knative Serving gives vibeD-deployed artifacts serverless capabilities:
 
 For a comparison of all deployment targets, see [Deployment Targets](../concepts/deployment-targets.md).
 
-## Option A: vibed-deps Helm Chart
+## Option A: testbed Helm Chart
 
-The bundled `vibed-deps` chart provides a quick Knative installation:
+The bundled `testbed/knative` chart installs Knative via the Knative Operator:
 
 ```bash
-helm install vibed-deps deploy/helm/vibed-deps/ \
-  --set knative.domain=vibed.example.com
+helm install knative testbed/knative/ \
+  --namespace knative-system --create-namespace \
+  --set serving.config.domain.\"vibed.example.com\"=
 ```
 
-### Production Overrides
+### Common Overrides
 
-| Value | Default | Production |
-|-------|---------|------------|
-| `knative.domain` | `localhost` | Your real domain |
-| `knative.kourier.nodePort` | `31080` | `0` (use LoadBalancer) |
-| `knative.version` | `v1.17.0` | Latest stable |
+| Value | Default | Production-ish |
+|-------|---------|----------------|
+| `knativeVersion` | `1.17.0` | Latest stable |
+| `serving.config.domain` | `{ "localhost": "" }` | `{ "<your-domain>": "" }` |
+| `serving.ingress.kourier.serviceType` | `NodePort` | `LoadBalancer` |
+| `serving.ingress.kourier.httpNodePort` | `31080` | n/a (LoadBalancer) |
 
 ### Limitations
 
-- Uses a Kubernetes Job with cluster-admin privileges
+- The pre-install Job runs with cluster-admin to apply the Knative Operator manifest
 - May conflict with existing Knative installations
-- Limited configuration options compared to manual install
+- Best for: greenfield clusters without an existing operator or service mesh
 
-Best for: Greenfield clusters without existing Knative or service mesh.
+For details, see [`testbed/knative/README.md`](https://github.com/maxkorbacher/vibed/blob/main/testbed/knative/README.md).
 
 ## Option B: Manual Installation (Recommended)
 

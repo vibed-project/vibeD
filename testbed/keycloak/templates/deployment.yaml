@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "keycloak.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "keycloak.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: keycloak
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Dev mode: auto-build, file-based H2, local cache, realm imported
+          # from the mounted ConfigMap (when configured). No Infinispan
+          # clustering, no /auth prefix, no management-port health endpoints —
+          # probes target the public /realms/master landing page.
+          args:
+            - "start-dev"
+            {{- if .Values.realm.file }}
+            - "--import-realm"
+            {{- end }}
+            - "--http-enabled=true"
+            - "--hostname-strict=false"
+            - "--cache=local"
+          env:
+            - name: KEYCLOAK_ADMIN
+              value: {{ .Values.admin.username | quote }}
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              value: {{ .Values.admin.password | quote }}
+            - name: KC_HOSTNAME
+              value: {{ .Values.hostname | quote }}
+            - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          {{- if .Values.realm.file }}
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+          {{- end }}
+          # Keycloak cold-starts in ~20s once the image is cached, longer on
+          # first pull. TCP probe is enough; HTTP health endpoints require
+          # extra build flags that complicate the dev setup.
+          startupProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /realms/master
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.realm.file }}
+      volumes:
+        - name: realm
+          configMap:
+            name: {{ .Release.Name }}-realm
+      {{- end }}

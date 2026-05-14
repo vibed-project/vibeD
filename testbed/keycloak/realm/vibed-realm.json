@@ -1,0 +1,153 @@
+{
+  "realm": "vibed",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "accessTokenLifespan": 3600,
+  "ssoSessionIdleTimeout": 36000,
+  "ssoSessionMaxLifespan": 36000,
+  "roles": {
+    "realm": [
+      {
+        "name": "vibed-admin",
+        "description": "vibeD administrator — can see all artifacts"
+      },
+      {
+        "name": "vibed-user",
+        "description": "vibeD regular user — can see own artifacts only"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "vibed-mcp",
+      "name": "vibeD MCP Client",
+      "description": "Public OIDC client for mcp-remote + Claude Desktop (PKCE).",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "rootUrl": "",
+      "baseUrl": "",
+      "redirectUris": [
+        "http://127.0.0.1:*/oauth/callback",
+        "http://127.0.0.1:*",
+        "http://localhost:*/oauth/callback",
+        "http://localhost:*"
+      ],
+      "webOrigins": [
+        "+"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-vibed-mcp",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "vibed-mcp",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@vibed.local",
+      "email": "admin@vibed.local",
+      "firstName": "vibeD",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "vibed-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "vibed-admin",
+        "vibed-user"
+      ]
+    },
+    {
+      "username": "alice@vibed.local",
+      "email": "alice@vibed.local",
+      "firstName": "Alice",
+      "lastName": "Example",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "vibed-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "vibed-user"
+      ]
+    },
+    {
+      "username": "bob@vibed.local",
+      "email": "bob@vibed.local",
+      "firstName": "Bob",
+      "lastName": "Example",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "vibed-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "vibed-user"
+      ]
+    },
+    {
+      "username": "carol@vibed.local",
+      "email": "carol@vibed.local",
+      "firstName": "Carol",
+      "lastName": "Example",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "vibed-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "vibed-user"
+      ]
+    }
+  ]
+}

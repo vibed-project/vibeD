@@ -10,6 +10,7 @@ import (
 	"github.com/vibed-project/vibeD/pkg/api"
 
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -20,33 +21,39 @@ import (
 
 // KnativeDeployer deploys artifacts as Knative Services.
 type KnativeDeployer struct {
-        knClient     knversioned.Interface
-        k8sClientset kubernetes.Interface
-        domainSuffix string
-        gatewayPort  int
-        logger       *slog.Logger
+	knClient     knversioned.Interface
+	k8sClientset kubernetes.Interface
+	domainSuffix string
+	gatewayPort  int
+	readyTimeout time.Duration
+	logger       *slog.Logger
 }
 
 // NewKnativeDeployer creates a new KnativeDeployer.
 func NewKnativeDeployer(
-        knClient knversioned.Interface,
-        k8sClientset kubernetes.Interface,
-        knCfg config.KnativeConfig,
-        logger *slog.Logger,
+	knClient knversioned.Interface,
+	k8sClientset kubernetes.Interface,
+	knCfg config.KnativeConfig,
+	readyTimeout time.Duration,
+	logger *slog.Logger,
 ) *KnativeDeployer {
-        return &KnativeDeployer{
-                knClient:     knClient,
-                k8sClientset: k8sClientset,
-                domainSuffix: knCfg.DomainSuffix,
-                gatewayPort:  knCfg.GatewayPort,
-                logger:       logger,
-        }
+	if readyTimeout <= 0 {
+		readyTimeout = 10 * time.Minute
+	}
+	return &KnativeDeployer{
+		knClient:     knClient,
+		k8sClientset: k8sClientset,
+		domainSuffix: knCfg.DomainSuffix,
+		gatewayPort:  knCfg.GatewayPort,
+		readyTimeout: readyTimeout,
+		logger:       logger,
+	}
 }
 
-func (d *KnativeDeployer) waitForReady(ctx context.Context, namespace, name string) error {	d.logger.Info("waiting for Knative Service to become ready", "name", name)
+func (d *KnativeDeployer) waitForReady(ctx context.Context, namespace, name string) error {
+	d.logger.Info("waiting for Knative Service to become ready", "name", name, "timeout", d.readyTimeout)
 
-	// Ensure we don't wait forever if the context doesn't have a deadline
-	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	waitCtx, cancel := context.WithTimeout(ctx, d.readyTimeout)
 	defer cancel()
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -78,7 +85,7 @@ func (d *KnativeDeployer) waitForReady(ctx context.Context, namespace, name stri
 }
 
 func (d *KnativeDeployer) Deploy(ctx context.Context, artifact *api.Artifact) (*DeployResult, error) {
-	ksvc := d.buildService(artifact)
+	ksvc := d.buildService(ctx, artifact)
 
 	d.logger.Info("creating Knative Service",
 		"name", artifact.Name,
@@ -108,29 +115,28 @@ func (d *KnativeDeployer) Deploy(ctx context.Context, artifact *api.Artifact) (*
 }
 
 func (d *KnativeDeployer) Update(ctx context.Context, artifact *api.Artifact) (*DeployResult, error) {
-	// For static updates, recreate the service to pick up ConfigMap changes
-	if artifact.StaticFiles != "" {
-	        _ = d.knClient.ServingV1().Services(artifact.Namespace).Delete(ctx, artifact.Name, metav1.DeleteOptions{})
-	        return d.Deploy(ctx, artifact)
-	}
+	// In-place spec update with retry on conflict. Knative rolls a new
+	// revision automatically; no delete-then-recreate (which causes a 503
+	// window). Rebuilding the full spec via buildService also handles
+	// static deploys where the ConfigMap-backed Volumes change.
+	desired := d.buildService(ctx, artifact)
 
-	existing, err := d.knClient.ServingV1().Services(artifact.Namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("getting existing Knative Service: %w", err)
-	}
-
-	if len(existing.Spec.Template.Spec.Containers) == 0 {
-		return nil, fmt.Errorf("Knative Service %q has no containers", artifact.Name)
-	}
-
-	existing.Spec.Template.Spec.Containers[0].Image = artifact.ImageRef
-	existing.Spec.Template.Spec.Containers[0].Env = BuildEnvVars(artifact)
-	if artifact.Port > 0 {
-		existing.Spec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: int32(artifact.Port)}}
-	}
-
-	_, err = d.knClient.ServingV1().Services(artifact.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
-	if err != nil {
+	for attempt := 0; attempt < 3; attempt++ {
+		existing, err := d.knClient.ServingV1().Services(artifact.Namespace).Get(ctx, artifact.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("getting existing Knative Service: %w", err)
+		}
+		// Preserve immutable fields from existing, copy desired spec into it.
+		existing.Spec = desired.Spec
+		existing.Labels = desired.Labels
+		_, err = d.knClient.ServingV1().Services(artifact.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
+		if err == nil {
+			break
+		}
+		if k8serrors.IsConflict(err) {
+			d.logger.Debug("Knative Service update conflict, retrying", "name", artifact.Name, "attempt", attempt)
+			continue
+		}
 		return nil, fmt.Errorf("updating Knative Service: %w", err)
 	}
 
@@ -180,20 +186,25 @@ func (d *KnativeDeployer) GetLogs(ctx context.Context, artifact *api.Artifact, l
 	return logLines, nil
 }
 
-func (d *KnativeDeployer) buildService(artifact *api.Artifact) *knservingv1.Service {
+func (d *KnativeDeployer) buildService(ctx context.Context, artifact *api.Artifact) *knservingv1.Service {
 	containers := []corev1.Container{
 		{
 			Image:           artifact.ImageRef,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			Env:             BuildEnvVars(artifact),
+			SecurityContext: HardenedContainerSecurityContext(),
 		},
 	}
 
-	if artifact.Port > 0 {
-		containers[0].Ports = []corev1.ContainerPort{
-			{ContainerPort: int32(artifact.Port)},
-		}
+	// Always declare the containerPort so Knative's queue-proxy probes the
+	// right port instead of guessing. Default to 8080 when the caller didn't
+	// specify one — guessing has caused readiness-probe timeouts on first
+	// deploy.
+	port := int32(artifact.Port)
+	if port <= 0 {
+		port = 8080
 	}
+	containers[0].Ports = []corev1.ContainerPort{{ContainerPort: port}}
 
 	var volumes []corev1.Volume
 
@@ -205,20 +216,19 @@ func (d *KnativeDeployer) buildService(artifact *api.Artifact) *knservingv1.Serv
 	}
 
 	return &knservingv1.Service{
-	        ObjectMeta: metav1.ObjectMeta{
-	                Name:      artifact.Name,
-	                Namespace: artifact.Namespace,
-	                Labels: map[string]string{				"app.kubernetes.io/managed-by": "vibed",
-				"vibed.dev/artifact-id":        artifact.ID,
-			},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      artifact.Name,
+			Namespace: artifact.Namespace,
+			Labels:    VibedLabels(ctx, artifact),
 		},
 		Spec: knservingv1.ServiceSpec{
 			ConfigurationSpec: knservingv1.ConfigurationSpec{
 				Template: knservingv1.RevisionTemplateSpec{
 					Spec: knservingv1.RevisionSpec{
 						PodSpec: corev1.PodSpec{
-							Containers: containers,
-							Volumes:    volumes,
+							Containers:      containers,
+							Volumes:         volumes,
+							SecurityContext: HardenedPodSecurityContext(),
 						},
 					},
 				},

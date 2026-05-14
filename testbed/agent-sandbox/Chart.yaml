@@ -1,0 +1,15 @@
+apiVersion: v2
+name: agent-sandbox
+description: kubernetes-sigs/agent-sandbox controller (testbed)
+type: application
+version: 0.1.0
+appVersion: "0.4.5"
+keywords:
+  - agent-sandbox
+  - sandbox
+  - agents
+home: https://github.com/kubernetes-sigs/agent-sandbox
+sources:
+  - https://github.com/kubernetes-sigs/agent-sandbox
+maintainers:
+  - name: vibeD

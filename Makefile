@@ -1,12 +1,23 @@
 GO := GOTOOLCHAIN=auto GO111MODULE=on go
 BINARY := bin/vibed
 KIND_CLUSTER := vibed-dev
-KNATIVE_VERSION := v1.17.0
+KIND_RUNTIME := podman
 GHCR_IMAGE := ghcr.io/vibed-project/vibed
 
-.PHONY: build run test clean setup-cluster install-knative setup-registry install-deps dev teardown lint \
-       test-integration test-integration-short test-integration-setup test-cleanup image load-image \
-       install-observability install-vibed dev-status run-latest
+# Testbed paths (cluster + shared-infra helm charts)
+TESTBED := testbed
+TB_KIND := $(TESTBED)/kind-cluster
+TB_REGISTRY := $(TESTBED)/kind-registry
+TB_KNATIVE := $(TESTBED)/knative
+TB_OBS := $(TESTBED)/observability
+TB_KEYCLOAK := $(TESTBED)/keycloak
+TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
+
+.PHONY: build run run-http web-install web-build docs-install docs-build docs-dev build-all \
+        test test-integration test-integration-short test-integration-setup test-cleanup lint \
+        image load-image \
+        setup-cluster install-registry install-knative install-observability install-keycloak \
+        install-agent-sandbox install-deps install-vibed dev dev-status run-latest teardown clean
 
 ## Build
 
@@ -71,57 +82,55 @@ image:
 
 load-image: image
 	podman save localhost/vibed:dev -o /tmp/vibed-dev.tar
-	KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/vibed-dev.tar --name $(KIND_CLUSTER)
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-dev.tar --name $(KIND_CLUSTER)
 	@rm -f /tmp/vibed-dev.tar
 
-## Local Dev Environment
+## Local Dev Environment (delegates to testbed/)
 
 setup-cluster:
-	KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster \
-		--name $(KIND_CLUSTER) \
-		--config deploy/kind/kind-config.yaml
+	$(TB_KIND)/bootstrap.sh --cluster $(KIND_CLUSTER) --runtime $(KIND_RUNTIME)
+
+install-registry:
+	helm upgrade --install kind-registry $(TB_REGISTRY)/ \
+		--set 'aliases[0].namespace=vibed-system' \
+		--set 'aliases[0].createNamespace=true' \
+		--wait
+	$(TB_REGISTRY)/scripts/configure-containerd.sh \
+		--cluster $(KIND_CLUSTER) --runtime $(KIND_RUNTIME)
 
 install-knative:
-	kubectl apply -f https://github.com/knative/serving/releases/download/knative-$(KNATIVE_VERSION)/serving-crds.yaml
-	kubectl apply -f https://github.com/knative/serving/releases/download/knative-$(KNATIVE_VERSION)/serving-core.yaml
-	kubectl wait --for=condition=Available deployment --all -n knative-serving --timeout=120s
-	kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-$(KNATIVE_VERSION)/kourier.yaml
-	kubectl wait --for=condition=Available deployment --all -n kourier-system --timeout=120s
-	kubectl patch configmap/config-network -n knative-serving \
-		--type merge -p '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
-	kubectl patch configmap/config-domain -n knative-serving \
-	        --type merge -p '{"data":{"localhost":""}}'	kubectl patch service kourier -n kourier-system \
-		--type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"http2","port":80,"targetPort":8080,"nodePort":31080,"protocol":"TCP"}]}}'
-	kubectl patch configmap/config-deployment -n knative-serving \
-		--type merge -p '{"data":{"registries-skipping-tag-resolving":"kind-registry:5000"}}'
-
-setup-registry:
-	kubectl apply -f deploy/kind/registry.yaml
-	kubectl wait --for=condition=Available deployment/kind-registry -n default --timeout=60s
-	@echo "Configuring containerd registry mirror for kind-registry:5000..."
-	@REGISTRY_IP=$$(kubectl get svc kind-registry -n default -o jsonpath='{.spec.clusterIP}') && \
-		podman exec $(KIND_CLUSTER)-control-plane mkdir -p /etc/containerd/certs.d/kind-registry:5000 && \
-		podman exec $(KIND_CLUSTER)-control-plane sh -c "printf '[host.\"http://'$$REGISTRY_IP':5000\"]\n  capabilities = [\"pull\", \"resolve\"]\n  skip_verify = true\n' > /etc/containerd/certs.d/kind-registry:5000/hosts.toml"	kubectl create namespace vibed-system --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -f deploy/kind/registry-external.yaml
-
-install-deps: install-knative setup-registry
+	helm upgrade --install knative $(TB_KNATIVE)/ \
+		--namespace knative-system --create-namespace \
+		--wait --timeout 10m
 
 install-observability:
-	helm dependency build deploy/helm/vibed-observability/
-	helm install vibed-observability deploy/helm/vibed-observability/ \
-		--namespace monitoring --create-namespace --wait --timeout 10m
+	helm dependency build $(TB_OBS)/
+	helm upgrade --install observability $(TB_OBS)/ \
+		--namespace monitoring --create-namespace \
+		--wait --timeout 10m
+
+install-keycloak:
+	helm upgrade --install keycloak $(TB_KEYCLOAK)/ \
+		--namespace vibed-system --create-namespace \
+		--wait --timeout 5m
+
+install-agent-sandbox:
+	helm upgrade --install agent-sandbox $(TB_AGENT_SANDBOX)/ \
+		--namespace agent-sandbox-system --create-namespace \
+		--wait --timeout 5m
+
+install-deps: install-registry install-knative install-keycloak install-agent-sandbox
 
 install-vibed: load-image
-	helm install vibed deploy/helm/vibed/ \
+	helm upgrade --install vibed deploy/helm/vibed/ \
 		--namespace vibed-system --create-namespace \
 		--set image.repository=localhost/vibed --set image.tag=dev --set image.pullPolicy=Never \
 		--set service.type=NodePort --set service.nodePort=31808 \
-		--set metrics.serviceMonitor.enabled=true \
 		--set config.server.baseURL=http://localhost:31808 \
 		--set config.store.backend=sqlite \
 		--set config.store.sqlite.path=/data/vibed/vibed.db \
 		--set config.tracing.enabled=true \
-		--set config.tracing.endpoint=vibed-observability-opentelemetry-collector.monitoring:4317 \
+		--set config.tracing.endpoint=observability-opentelemetry-collector.monitoring:4317 \
 		--wait
 
 dev: setup-cluster install-deps install-observability install-vibed
@@ -134,14 +143,18 @@ dev: setup-cluster install-deps install-observability install-vibed
 dev-status:
 	@echo ""
 	@echo "=== Pods ==="
-	@kubectl get pods -n vibed-system
+	@kubectl get pods -n vibed-system 2>/dev/null || true
 	@kubectl get pods -n monitoring 2>/dev/null || true
+	@kubectl get pods -n knative-serving 2>/dev/null || true
+	@kubectl get pods -n agent-sandbox-system 2>/dev/null || true
 	@echo ""
 	@echo "=== URLs ==="
 	@echo "  vibeD Dashboard:  http://localhost:8080"
 	@echo "  vibeD API:        http://localhost:8080/api/artifacts"
 	@echo "  Swagger UI:       http://localhost:8080/api/docs/"
-	@echo "  Knative Apps:     http://<app>.localhost (port 80)"	@echo "  Grafana:          http://localhost:3000  (admin / vibed-dev)"
+	@echo "  Knative Apps:     http://<app>.localhost (port 80)"
+	@echo "  Keycloak:         http://localhost:31888  (admin / admin)"
+	@echo "  Grafana:          http://localhost:3000  (admin / admin)"
 	@echo "  Prometheus:       http://localhost:9090"
 	@echo "  Explore Traces:   Grafana -> Explore -> Tempo"
 	@echo "  Explore Logs:     Grafana -> Explore -> Loki"
@@ -150,7 +163,7 @@ dev-status:
 run-latest:
 	podman pull $(GHCR_IMAGE):latest
 	podman save $(GHCR_IMAGE):latest -o /tmp/vibed-latest.tar
-	KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/vibed-latest.tar --name $(KIND_CLUSTER)
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-latest.tar --name $(KIND_CLUSTER)
 	@rm -f /tmp/vibed-latest.tar
 	helm upgrade --install vibed deploy/helm/vibed/ \
 		--namespace vibed-system --create-namespace \
@@ -162,7 +175,7 @@ run-latest:
 	@$(MAKE) dev-status
 
 teardown:
-	kind delete cluster --name $(KIND_CLUSTER)
+	$(TB_KIND)/teardown.sh --cluster $(KIND_CLUSTER) --runtime $(KIND_RUNTIME)
 
 clean:
 	rm -rf bin/

@@ -42,18 +42,18 @@ The final image exposes port 8080 and runs as a non-root user.
 
 vibeD can deploy artifacts to Knative or plain Kubernetes. If you want Knative (recommended for serverless scaling), install it first.
 
-### Option A: vibed-deps Chart (Quick Start)
+### Option A: testbed/knative Chart (Quick Start)
 
-The bundled `vibed-deps` chart installs Knative Serving and Kourier:
+The bundled `testbed/knative` chart installs Knative Serving via the Knative Operator:
 
 ```bash
-helm install vibed-deps deploy/helm/vibed-deps/ \
-  --set knative.domain=vibed.example.com \
-  --set knative.kourier.nodePort=0
+helm install knative testbed/knative/ \
+  --namespace knative-system --create-namespace \
+  --set serving.ingress.kourier.serviceType=LoadBalancer
 ```
 
 :::warning
-The vibed-deps chart uses a Job with cluster-admin privileges. For production clusters with existing Knative installations, use Option B.
+The chart's pre-install Job runs with cluster-admin to apply the Knative Operator manifest. For production clusters with an existing operator or service mesh, use Option B.
 :::
 
 ### Option B: Manual Knative Installation (Recommended)

@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-install" .Release.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "agentSandbox.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "agentSandbox.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.installJob.serviceAccountName }}
+      restartPolicy: OnFailure
+      containers:
+        - name: kubectl
+          image: {{ .Values.installJob.image | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "Applying agent-sandbox core manifest:"
+              echo "  {{ .Values.manifests.core }}"
+              kubectl apply -f {{ .Values.manifests.core | quote }}
+              {{- if .Values.manifests.extensions.enabled }}
+              echo "Applying agent-sandbox extensions manifest:"
+              echo "  {{ .Values.manifests.extensions.url }}"
+              kubectl apply -f {{ .Values.manifests.extensions.url | quote }}
+              {{- end }}
+              {{- if .Values.waitForReady.enabled }}
+              echo "Waiting for agent-sandbox-controller to become Available..."
+              kubectl -n {{ .Values.namespace }} \
+                wait --for=condition=Available --timeout={{ .Values.waitForReady.timeoutSeconds }}s \
+                deployment/agent-sandbox-controller
+              {{- end }}
+          resources:
+            {{- toYaml .Values.installJob.resources | nindent 12 }}

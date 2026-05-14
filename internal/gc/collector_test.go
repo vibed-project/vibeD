@@ -30,7 +30,7 @@ func newTestGC(t *testing.T, clientset *fake.Clientset, st store.ArtifactStore, 
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	gc, err := NewGarbageCollector(
-		clientset, st, testNamespace,
+		clientset, nil, nil, st, testNamespace,
 		config.GCConfig{
 			Enabled:  true,
 			Interval: "1h",
@@ -257,7 +257,7 @@ func TestGC_StopsOnContextCancel(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	collector, err := NewGarbageCollector(
-		clientset, st, testNamespace,
+		clientset, nil, nil, st, testNamespace,
 		config.GCConfig{
 			Enabled:  true,
 			Interval: "100ms",

@@ -1,0 +1,19 @@
+apiVersion: v2
+name: keycloak
+description: |
+  DEV-ONLY Keycloak deployment for the vibeD testbed cluster.
+  Imports a configurable realm (vibeD's by default) on first start. Ephemeral
+  H2 storage, plaintext credentials in the bundled realm — not for production.
+type: application
+version: 0.1.0
+appVersion: "25.0.0"
+keywords:
+  - keycloak
+  - oidc
+  - testbed
+home: https://github.com/maxkorbacher/vibed
+sources:
+  - https://github.com/maxkorbacher/vibed
+  - https://www.keycloak.org/
+maintainers:
+  - name: vibeD

@@ -1,0 +1,62 @@
+# Knative Serving release version installed by the operator.
+knativeVersion: "1.17.0"
+
+operator:
+  # Namespace the Knative Operator is installed into.
+  namespace: knative-operator
+  # URL of the upstream operator manifest (kubectl-applied by a pre-install hook job).
+  manifestURL: "https://github.com/knative/operator/releases/download/knative-v1.17.0/operator.yaml"
+  installJob:
+    # Container image used to apply the manifest. Must include kubectl on PATH.
+    image: "bitnami/kubectl:latest"
+    # Service account name created and bound for the install job (cluster-admin scope).
+    serviceAccountName: "knative-operator-installer"
+    # Resources for the one-shot install job.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+serving:
+  # Namespace the KnativeServing CR (and reconciled core deployments) live in.
+  namespace: knative-serving
+  # Ingress layer. Set kourier.enabled=true for kourier (default), or wire istio/contour
+  # via the .config block if you prefer.
+  ingress:
+    kourier:
+      enabled: true
+      # Expose the kourier gateway as NodePort to match the local kind setup.
+      serviceType: NodePort
+      httpNodePort: 31080
+  # Verbatim entries written into KnativeServing.spec.config (one map per Knative configmap).
+  # See https://knative.dev/docs/serving/configuration/ for the full set.
+  config:
+    network:
+      ingress-class: "kourier.ingress.networking.knative.dev"
+    domain:
+      # Empty value disables sslip/nip default; bare key acts as wildcard for the value.
+      "localhost": ""
+    deployment:
+      registries-skipping-tag-resolving: "kind-registry:5000"
+    # Knative gates many PodSpec/SecurityContext fields behind feature flags.
+    # vibeD sets pod- and container-level securityContext on every workload to
+    # satisfy PodSecurity Standards "restricted"; without these flags the
+    # admission webhook rejects the Service.
+    features:
+      kubernetes.podspec-securitycontext: "enabled"
+      kubernetes.containerspec-addcapabilities: "enabled"
+  # Optional high-availability replica count for control-plane components.
+  highAvailability:
+    replicas: 1
+
+# Wait for the KnativeServing CR to reach Ready=True after install. Disabled
+# by default — Knative reconciliation is highly variable and a failed wait
+# triggers a helm rollback even though the cluster state is fine. Run
+# `kubectl -n knative-serving wait --for=condition=Ready knativeserving/knative-serving`
+# manually if you want to block.
+waitForReady:
+  enabled: false
+  timeoutSeconds: 300

@@ -1,0 +1,17 @@
+Knative Serving {{ .Values.knativeVersion }} is being installed via the Knative Operator.
+
+Watch progress:
+  kubectl -n {{ .Values.serving.namespace }} get knativeserving knative-serving -w
+
+Once Ready, list core deployments:
+  kubectl -n {{ .Values.serving.namespace }} get deploy
+{{- if .Values.serving.ingress.kourier.enabled }}
+
+Kourier gateway is exposed as {{ .Values.serving.ingress.kourier.serviceType }}{{ if eq .Values.serving.ingress.kourier.serviceType "NodePort" }} on nodePort {{ .Values.serving.ingress.kourier.httpNodePort }}{{ end }}:
+  kubectl -n kourier-system get svc kourier
+{{- end }}
+
+To uninstall:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  # The Knative Operator and CRDs are NOT removed automatically. Delete with:
+  #   kubectl delete -f {{ .Values.operator.manifestURL }}

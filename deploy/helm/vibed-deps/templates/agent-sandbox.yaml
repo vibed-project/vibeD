@@ -1,5 +1,0 @@
-{{- if .Values.sandbox.enabled }}
-# Simple deployment helper to optionally include agent-sandbox if requested
-# Currently we assume users will apply the release manifest directly, but this 
-# provides a hook for future native chart dependencies.
-{{- end }}

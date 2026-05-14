@@ -1,0 +1,15 @@
+apiVersion: v2
+name: knative
+description: Knative Serving deployment via the Knative Operator (testbed)
+type: application
+version: 0.1.0
+appVersion: "1.17.0"
+keywords:
+  - knative
+  - serving
+  - serverless
+home: https://knative.dev
+sources:
+  - https://github.com/knative/operator
+maintainers:
+  - name: vibeD

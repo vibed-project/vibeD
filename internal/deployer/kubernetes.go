@@ -17,25 +17,31 @@ import (
 
 // KubernetesDeployer deploys artifacts as plain Kubernetes Deployments + Services.
 type KubernetesDeployer struct {
-        clientset kubernetes.Interface
-        logger    *slog.Logger
+	clientset    kubernetes.Interface
+	readyTimeout time.Duration
+	logger       *slog.Logger
 }
 
 // NewKubernetesDeployer creates a new KubernetesDeployer.
 func NewKubernetesDeployer(
-        clientset kubernetes.Interface,
-        logger *slog.Logger,
+	clientset kubernetes.Interface,
+	readyTimeout time.Duration,
+	logger *slog.Logger,
 ) *KubernetesDeployer {
-        return &KubernetesDeployer{
-                clientset: clientset,
-                logger:    logger,
-        }
+	if readyTimeout <= 0 {
+		readyTimeout = 10 * time.Minute
+	}
+	return &KubernetesDeployer{
+		clientset:    clientset,
+		readyTimeout: readyTimeout,
+		logger:       logger,
+	}
 }
 
-func (d *KubernetesDeployer) waitForReady(ctx context.Context, namespace, name string) error {	d.logger.Info("waiting for Kubernetes Deployment to become ready", "name", name)
+func (d *KubernetesDeployer) waitForReady(ctx context.Context, namespace, name string) error {
+	d.logger.Info("waiting for Kubernetes Deployment to become ready", "name", name, "timeout", d.readyTimeout)
 
-	// Ensure we don't wait forever if the context doesn't have a deadline
-	waitCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	waitCtx, cancel := context.WithTimeout(ctx, d.readyTimeout)
 	defer cancel()
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -80,11 +86,8 @@ func (d *KubernetesDeployer) Deploy(ctx context.Context, artifact *api.Artifact)
 		port = 8080
 	}
 
-	labels := map[string]string{
-		"app":                          artifact.Name,
-		"app.kubernetes.io/managed-by": "vibed",
-		"vibed.dev/artifact-id":        artifact.ID,
-	}
+	labels := VibedLabels(ctx, artifact)
+	labels["app"] = artifact.Name
 
 	// Build container spec
 	container := corev1.Container{
@@ -93,6 +96,7 @@ func (d *KubernetesDeployer) Deploy(ctx context.Context, artifact *api.Artifact)
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Ports:           []corev1.ContainerPort{{ContainerPort: int32(port)}},
 		Env:             BuildEnvVars(artifact),
+		SecurityContext: HardenedContainerSecurityContext(),
 	}
 
 	var volumes []corev1.Volume
@@ -119,8 +123,9 @@ func (d *KubernetesDeployer) Deploy(ctx context.Context, artifact *api.Artifact)
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{container},
-					Volumes:    volumes,
+					Containers:      []corev1.Container{container},
+					Volumes:         volumes,
+					SecurityContext: HardenedPodSecurityContext(),
 				},
 			},
 		},

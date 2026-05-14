@@ -214,8 +214,9 @@ func main() {
 	knClient, err := knversioned.NewForConfig(k8sClients.RestConfig)
 	if err != nil {
 		logger.Warn("failed to create Knative client (Knative may not be installed)", "error", err)
+		knClient = nil // explicit so GC can detect "no Knative" via nil check
 	} else {
-		knDeployer := deployer.NewKnativeDeployer(knClient, k8sClients.Clientset, cfg.Knative, logger)
+		knDeployer := deployer.NewKnativeDeployer(knClient, k8sClients.Clientset, cfg.Knative, cfg.Deployment.ReadyTimeout, logger)
 		factory.Register(api.TargetKnative, knDeployer)
 	}
 
@@ -224,7 +225,7 @@ func main() {
 	factory.Register(api.TargetSandbox, sbDeployer)
 
 	// Register Kubernetes deployer
-	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, logger)
+	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, cfg.Deployment.ReadyTimeout, logger)
 	factory.Register(api.TargetKubernetes, k8sDeployer)
 
 	// Create orchestrator
@@ -238,21 +239,25 @@ func main() {
 	}
 
 	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, userStore, m, k8sClients.Clientset, bus, shareLinkStore, logger)
+
+	// Lifecycle context shared by GC and orchestrator's async goroutines so
+	// SIGTERM cancels in-flight builds and the GC loop together.
+	lifeCtx, lifeCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer lifeCancel()
+	orch.SetLifecycleContext(lifeCtx)
+
 	// Start garbage collector
 	if cfg.GC.Enabled {
 		collector, err := gc.NewGarbageCollector(
-			k8sClients.Clientset, st, cfg.Deployment.Namespace,
+			k8sClients.Clientset, knClient, k8sClients.DynamicClient,
+			st, cfg.Deployment.Namespace,
 			cfg.GC, m, logger,
 		)
 		if err != nil {
 			logger.Error("failed to create garbage collector", "error", err)
 			os.Exit(1)
 		}
-		// GC runs in background; ctx from signal.NotifyContext will stop it on shutdown.
-		// We create ctx early here so GC can start before the transport blocks.
-		gcCtx, gcCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer gcCancel()
-		go collector.Run(gcCtx)
+		go collector.Run(lifeCtx)
 	}
 
 	// Create MCP server

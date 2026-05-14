@@ -1,5 +1,16 @@
-# Full observability stack for vibeD local development.
-# Prometheus (metrics) + Grafana (dashboards) + Tempo (traces) + Loki (logs) + OTel Collector.
+# Observability stack for the vibeD testbed cluster.
+# Prometheus (metrics) + Grafana (dashboards) + Tempo (traces) + Loki (logs) +
+# Promtail (log shipper) + OpenTelemetry Collector (trace ingest).
+#
+# IMPORTANT: This chart's subchart service names depend on the helm release name.
+# Datasource and exporter URLs below assume the release is installed as
+# `helm install observability ... -n monitoring`. If you use a different release
+# name, override the URLs in `grafana.datasources`, `promtail.config.clients`,
+# and `opentelemetry-collector.config.exporters."otlp/tempo".endpoint`.
+
+# Optional bundled Grafana dashboard for vibeD (enable to ship the example).
+vibedDashboard:
+  enabled: true
 
 # --- Prometheus ---
 prometheus:
@@ -51,7 +62,7 @@ prometheus:
 
 # --- Grafana ---
 grafana:
-  adminPassword: "vibed-dev"
+  adminPassword: "admin"
   service:
     type: NodePort
     nodePort: 31300
@@ -62,13 +73,13 @@ grafana:
         - name: Prometheus
           type: prometheus
           uid: prometheus
-          url: http://vibed-observability-prometheus-server:80
+          url: http://observability-prometheus-server:80
           isDefault: true
           access: proxy
         - name: Tempo
           type: tempo
           uid: tempo
-          url: http://vibed-observability-tempo:3100
+          url: http://observability-tempo:3100
           access: proxy
           jsonData:
             tracesToMetrics:
@@ -84,7 +95,7 @@ grafana:
         - name: Loki
           type: loki
           uid: loki
-          url: http://vibed-observability-loki:3100
+          url: http://observability-loki:3100
           access: proxy
           jsonData:
             derivedFields:
@@ -163,7 +174,7 @@ loki:
 promtail:
   config:
     clients:
-      - url: http://vibed-observability-loki:3100/loki/api/v1/push
+      - url: http://observability-loki:3100/loki/api/v1/push
     snippets:
       pipelineStages:
         - cri: {}
@@ -195,7 +206,7 @@ opentelemetry-collector:
         send_batch_size: 1024
     exporters:
       otlp/tempo:
-        endpoint: "vibed-observability-tempo:4317"
+        endpoint: "observability-tempo:4317"
         tls:
           insecure: true
       debug:

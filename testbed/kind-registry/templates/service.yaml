@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "kindRegistry.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "kindRegistry.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.servicePort }}
+      targetPort: http
+      protocol: TCP

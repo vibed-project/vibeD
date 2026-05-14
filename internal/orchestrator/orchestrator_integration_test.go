@@ -53,8 +53,9 @@ func testOrch(t *testing.T) (*orchestrator.Orchestrator, string) {
 	// Deployer factory with K8s deployer
 	factory := deployer.NewFactory()
 	k8sDep := deployer.NewKubernetesDeployer(
-	        clients.Clientset,
-	        logger,
+		clients.Clientset,
+		0,
+		logger,
 	)
 	factory.Register(api.TargetKubernetes, k8sDep)
 
@@ -311,7 +312,7 @@ func TestOrchestrator_BuildFailure(t *testing.T) {
 	}
 
 	factory := deployer.NewFactory()
-	k8sDep := deployer.NewKubernetesDeployer(clients.Clientset, logger)
+	k8sDep := deployer.NewKubernetesDeployer(clients.Clientset, 0, logger)
 	factory.Register(api.TargetKubernetes, k8sDep)
 
 	detector := environment.NewDetector(clients, logger)
