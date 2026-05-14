@@ -75,6 +75,7 @@ Key characteristics:
 | **Store** | `ArtifactStore` | In-memory, ConfigMap, SQLite (all support owner-scoped listing) |
 | **Storage** | `Storage` | Local filesystem, GitHub, GitLab, UserStorageRouter (per-user routing) |
 | **Builder** | `Builder` | Buildah (K8s Jobs) — runs provided Dockerfile or auto-generates one per language |
-| **Deployer** | `Deployer` | Knative, Sandbox, Kubernetes |
+| **Deployer** | `Deployer` | Knative, Sandbox, Kubernetes, Runner ([Instant Preview](./instant-preview.md) fast path) |
+| **Runner Pool** | — | Warm Sandbox-CRD pods that source is injected into, skipping the per-request build |
 | **Registry** | `Registry` | Any OCI-compatible registry |
 | **EventBus** | — | In-memory pub/sub with SSE streaming |

@@ -57,9 +57,25 @@ Most Prometheus installations with annotation-based discovery will scrape vibeD 
 |--------|------|--------|-------------|
 | `vibed_gc_resources_cleaned_total` | Counter | `type` | Total resources cleaned by garbage collector |
 
-The `type` label values are: `job`, `configmap`, `deployment`, `service`.
+The `type` label values are: `job`, `configmap`, `deployment`, `service`,
+`knative_service`, `sandbox`, and `preview` (expired fast-path previews).
 
 The GC runs periodically (default: every 1 hour) and removes orphaned Kubernetes resources whose artifact no longer exists in the store. See [Configuration Reference](../configuration/config-reference.md) for GC settings.
+
+### Fast Path / Runner Pool Metrics
+
+Emitted when the [Instant Preview](../concepts/instant-preview.md) fast path is enabled.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `vibed_pool_runners_idle` | Gauge | `language` | Warm idle runner pods available to claim |
+| `vibed_pool_claims_total` | Counter | `language`, `source` | Runner claims, by `source` (`warm` pool hit vs `cold` on-demand) |
+| `vibed_pool_claim_duration_seconds` | Histogram | `language`, `source` | Time to obtain a runner |
+| `vibed_pool_runners_created_total` | Counter | `language`, `status` | Runner pods created, by outcome (`ready` vs `failed` warm-up) |
+
+A healthy pool keeps `vibed_pool_runners_idle` at the configured pool size and
+serves most claims from the `warm` source; a rising `cold` claim rate means the
+pool is being drained faster than it replenishes.
 
 ### HTTP API Metrics
 
@@ -239,7 +255,10 @@ The Helm chart configures these probes with sensible defaults:
 
 ## Grafana Dashboard
 
-vibeD does not ship a bundled Grafana dashboard, but you can build one from the metrics above. Recommended panels:
+The `testbed/observability` stack ships a ready-made **vibeD Overview** dashboard
+(`testbed/observability/dashboards/vibed-overview.json`) — installed
+automatically by `make install-observability`. You can also build your own from
+the metrics above. Recommended panels:
 
 - **Build Rate** - `rate(vibed_builds_total[5m])` by status
 - **Build Duration P99** - `histogram_quantile(0.99, rate(vibed_build_duration_seconds_bucket[5m]))`
@@ -251,6 +270,9 @@ vibeD does not ship a bundled Grafana dashboard, but you can build one from the 
 - **HTTP Latency P99** - `histogram_quantile(0.99, rate(vibed_http_request_duration_seconds_bucket[5m]))`
 - **GC Cleanup Rate** - `rate(vibed_gc_resources_cleaned_total[1h])` by type
 - **SSE Connections** - `vibed_sse_connections_active`
+- **Idle Runners** - `vibed_pool_runners_idle` by language
+- **Runner Claims (warm vs cold)** - `rate(vibed_pool_claims_total[5m])` by source
+- **Claim Latency P99** - `histogram_quantile(0.99, sum(rate(vibed_pool_claim_duration_seconds_bucket[5m])) by (le))`
 
 ## Distributed Tracing (OpenTelemetry)
 

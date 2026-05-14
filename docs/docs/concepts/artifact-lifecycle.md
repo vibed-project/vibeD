@@ -12,10 +12,25 @@ Every artifact goes through a well-defined lifecycle from creation to deletion.
 |-------|-------------|
 | `pending` | Artifact record created, waiting for processing |
 | `building` | Source code stored, container image being built |
-| `deploying` | Image built, deploying to cluster |
+| `deploying` | Image built (or source ready), deploying to cluster |
 | `running` | Successfully deployed, accessible via URL |
 | `failed` | Build or deployment failed (check error field) |
 | `deleted` | Removed from cluster and store |
+
+## Deployment Modes
+
+Every artifact also carries a **`mode`** distinguishing how it is deployed:
+
+| Mode | Description |
+|------|-------------|
+| `built` | A durable artifact backed by a built (or static) image — the default path |
+| `preview` | An ephemeral [Instant Preview](./instant-preview.md) running on a warm pooled runner pod, no container build |
+
+A `preview` artifact skips the `building` state entirely (`pending → deploying →
+running`). It can be **promoted** to a `built` artifact — `promote_artifact`
+runs the real build, swaps the live deployment, and recycles the pooled runner;
+the `artifact_id` is stable across the promote. Previews are reaped by the
+garbage collector after `fastPath.previewTTL`.
 
 ## Flow
 
@@ -71,7 +86,8 @@ When auth is disabled, `owner_id` is empty and all artifacts are accessible to e
 Calling `update_artifact` on a running artifact:
 1. Verifies the caller owns the artifact (when auth enabled)
 2. Stores new source files (overwrites previous)
-3. Rebuilds the container image
+3. Rebuilds the container image — **or**, for a `preview`, re-injects the source
+   into its runner with no rebuild
 4. Updates the deployment (new revision for Knative)
 5. Returns the new URL
 

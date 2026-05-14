@@ -10,8 +10,9 @@ vibeD bridges AI coding tools (Claude, Gemini, ChatGPT) with your own Kubernetes
 
 ## Features
 
-- **MCP Server** — 11 tools for deploying, updating, listing, and deleting artifacts
+- **MCP Server** — 15 tools for deploying, updating, listing, promoting, and deleting artifacts
 - **Instant static deploys** — HTML/CSS/JS files deploy in milliseconds via ConfigMap + nginx (no build step)
+- **Instant Preview fast path** — Python/Node apps with pre-baked dependencies skip the build entirely: source is injected into a warm pooled runner pod, then promoted to a durable build on demand
 - **Buildah builder** — Auto-generates Dockerfiles for Node.js, Python, and Go apps; builds container images in-cluster via Kubernetes Jobs
 - **Multi-target deployment** — Knative Serving (serverless) or plain Kubernetes (Deployment + Service)
 - **Auto-detection** — Discovers available deployment targets by checking cluster CRDs
@@ -111,15 +112,21 @@ Then ask Claude: *"Create a simple portfolio website and deploy it using vibeD"*
 
 ## MCP Tools
 
+vibeD exposes 15 MCP tools. The core deploy lifecycle:
+
 | Tool | Description |
 |------|-------------|
 | `deploy_artifact` | Deploy source files as a web artifact |
 | `update_artifact` | Update an existing artifact with new files |
+| `promote_artifact` | Promote a fast-path preview into a durable build |
 | `list_artifacts` | List all deployed artifacts with status |
 | `get_artifact_status` | Get detailed status for one artifact |
 | `get_artifact_logs` | Retrieve pod logs for debugging |
 | `delete_artifact` | Stop and remove an artifact |
 | `list_deployment_targets` | Show available deployment backends |
+
+Plus version (`list_versions`, `rollback_artifact`), sharing (`share_artifact`,
+`unshare_artifact`), and share-link tools — see the [docs](https://vibed-project.github.io/vibeD/docs/mcp-tools/overview).
 
 ## How It Works
 
@@ -132,19 +139,25 @@ AI Tool (Claude, Gemini, etc.)
 │  vibeD   │  MCP Server + Dashboard
 └────┬─────┘
      │
-     ├── Static HTML/CSS/JS? → ConfigMap + nginx:alpine (instant)
+     ├── Static HTML/CSS/JS? → ConfigMap + nginx (instant)
      │
-     └── App code? → Buildah Job → Container Image
-                                        │
-                     ┌──────────────────┤
-                     ▼                  ▼
-               Knative Serving    Kubernetes Deployment
-               (serverless)       (always available)
+     ├── Python/Node, pre-baked deps? → inject into a warm runner pod
+     │                                  (Instant Preview — no build)
+     │                                        │ promote
+     │                                        ▼
+     └── App code? ───────────────────→ Buildah Job → Container Image
+                                                │
+                             ┌──────────────────┤
+                             ▼                  ▼
+                       Knative Serving    Kubernetes Deployment
+                       (serverless)       (always available)
 ```
 
 **Static files** (HTML, CSS, JS under 900KB) are stored in a Kubernetes ConfigMap and served by nginx — no container build, deploys in milliseconds.
 
-**Application code** (Node.js, Python, Go) gets an auto-generated Dockerfile, built into a container image by a Buildah Kubernetes Job, and deployed to the selected target.
+**Instant Preview** — Python/Node apps whose dependencies are all pre-baked into the runner image skip the build: their source is injected into a warm, pre-running pooled pod. The preview is ephemeral; `promote_artifact` runs the real build for a durable artifact. See the [Instant Preview docs](https://vibed-project.github.io/vibeD/docs/concepts/instant-preview).
+
+**Application code** (Node.js, Python, Go) that needs a build gets an auto-generated Dockerfile, built into a container image by a Buildah Kubernetes Job, and deployed to the selected target.
 
 ## Configuration
 

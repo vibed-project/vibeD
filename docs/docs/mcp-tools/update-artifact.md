@@ -48,6 +48,6 @@ Update an existing deployed artifact with new source files. Triggers a rebuild a
 
 1. **Validates** the artifact exists and the caller has permission
 2. **Stores** the new source files (replaces previous files)
-3. **Rebuilds** the container image
-4. **Redeploys** with the new image
+3. **Rebuilds** the container image — or, for an [Instant Preview](../concepts/instant-preview.md) (`mode: preview`), re-injects the source into its runner pod with no rebuild
+4. **Redeploys** with the new image (or restarts the runner process)
 5. **Creates** a version snapshot for rollback

@@ -34,3 +34,10 @@ No parameters required.
 ```
 
 This tool is useful for AI agents to decide which `target` to pass to `deploy_artifact`. When `target` is set to `auto` (the default), vibeD uses this detection internally to pick the best target.
+
+:::note
+The [Instant Preview](../concepts/instant-preview.md) `runner` target is **not**
+listed here — it is enabled via configuration (`fastPath.enabled`), not
+auto-detected from CRDs. When enabled, eligible apps take it automatically on an
+`auto` deploy.
+:::

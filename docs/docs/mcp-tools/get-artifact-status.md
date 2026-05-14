@@ -30,6 +30,7 @@ Returns the full artifact object:
   "name": "my-portfolio",
   "status": "running",
   "target": "knative",
+  "mode": "built",
   "url": "http://my-portfolio.default.localhost:31080",
   "image_ref": "kind-registry:5000/vibed-artifacts/my-portfolio:v1",
   "language": "static",
@@ -42,5 +43,9 @@ Returns the full artifact object:
   "updated_at": "2026-03-14T12:30:00Z"
 }
 ```
+
+The `mode` field is `built` for a normal artifact or `preview` for an
+ephemeral [Instant Preview](../concepts/instant-preview.md) running on a
+pooled runner.
 
 Note: `secret_refs` shows only the reference (`secret-name:key`), never the actual secret value.
