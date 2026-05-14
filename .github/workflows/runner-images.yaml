@@ -1,0 +1,74 @@
+name: Runner Images
+
+# The Instant Preview fast-path runner images (see FAST-PATH.md). Built once
+# and pushed to GHCR — only when the runner definitions or the runner agent
+# source actually change, not on every merge to main.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'runners/**'
+      - 'cmd/vibed-runner-agent/**'
+      - 'internal/runneragent/**'
+      - 'internal/appspec/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/runner-images.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        runner:
+          - name: python
+            image: vibed-project/vibed-runner-python
+          - name: node
+            image: vibed-project/vibed-runner-node
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.runner.image }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: runners/${{ matrix.runner.name }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64

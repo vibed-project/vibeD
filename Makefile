@@ -3,6 +3,8 @@ BINARY := bin/vibed
 KIND_CLUSTER := vibed-dev
 KIND_RUNTIME := podman
 GHCR_IMAGE := ghcr.io/vibed-project/vibed
+RUNNER_PYTHON_IMAGE := localhost/vibed-runner-python:dev
+RUNNER_NODE_IMAGE := localhost/vibed-runner-node:dev
 
 # Testbed paths (cluster + shared-infra helm charts)
 TESTBED := testbed
@@ -16,6 +18,7 @@ TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
 .PHONY: build run run-http web-install web-build docs-install docs-build docs-dev build-all \
         test test-integration test-integration-short test-integration-setup test-cleanup lint \
         image load-image \
+        runner-images runner-image-python runner-image-node load-runner-images \
         setup-cluster install-registry install-knative install-observability install-keycloak \
         install-agent-sandbox install-deps install-vibed dev dev-status run-latest teardown clean
 
@@ -84,6 +87,25 @@ load-image: image
 	podman save localhost/vibed:dev -o /tmp/vibed-dev.tar
 	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-dev.tar --name $(KIND_CLUSTER)
 	@rm -f /tmp/vibed-dev.tar
+
+## Runner Images (Instant Preview fast path — see FAST-PATH.md)
+## Build context is the repo root: the Dockerfiles compile the runner agent
+## from the Go source tree. Built once, not per request.
+
+runner-images: runner-image-python runner-image-node
+
+runner-image-python:
+	podman build -f runners/python/Dockerfile -t $(RUNNER_PYTHON_IMAGE) .
+
+runner-image-node:
+	podman build -f runners/node/Dockerfile -t $(RUNNER_NODE_IMAGE) .
+
+load-runner-images: runner-images
+	podman save $(RUNNER_PYTHON_IMAGE) -o /tmp/vibed-runner-python.tar
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-runner-python.tar --name $(KIND_CLUSTER)
+	podman save $(RUNNER_NODE_IMAGE) -o /tmp/vibed-runner-node.tar
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-runner-node.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/vibed-runner-python.tar /tmp/vibed-runner-node.tar
 
 ## Local Dev Environment (delegates to testbed/)
 

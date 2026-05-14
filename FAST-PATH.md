@@ -105,10 +105,10 @@ stable.
 |---|--------|------|-------|
 | 0.1 | ☑ | Runner agent: control port, source-bundle ingest, process supervise, log capture, health report | `internal/runneragent/` + `cmd/vibed-runner-agent/` (new) — HTTP control API (`/inject`, `/status`, `/logs`, `/stop`, `/healthz`), bearer-token auth, generation-guarded process supervision, line-oriented log ring buffer, path-traversal-safe file writes |
 | 0.2 | ☑ | Entrypoint detection shared with builder (`main.py`/`app.py`, `package.json` main/`index.js`) | new `internal/appspec` package — `DetectLanguage`, `Entrypoint`, `RunCommand`, `Interpreted`; consumed by `internal/builder/dockerfile.go` + `internal/orchestrator` |
-| 0.3 | ☐ | `vibed-runner-python` image: interpreter + pre-baked deps + agent as PID 1 | `runners/python/` (new), `Makefile` |
-| 0.4 | ☐ | `vibed-runner-node` image: same shape | `runners/node/` (new), `Makefile` |
-| 0.5 | ☐ | Pre-baked deps manifest format + per-image manifest files | `runners/*/prebaked.yaml` |
-| 0.6 | ☐ | `make runner-images` target + CI to build/push to cluster registry | `Makefile`, CI config |
+| 0.3 | ☑ | `vibed-runner-python` image: interpreter + pre-baked deps + agent as PID 1 | `runners/python/{Dockerfile,prebaked.yaml}` — python:3.12-slim, flask/fastapi/uvicorn/gunicorn/requests/jinja2/pydantic pre-baked, agent under tini, non-root UID 1000. Built + smoke-tested (216 MB). |
+| 0.4 | ☑ | `vibed-runner-node` image: same shape | `runners/node/{Dockerfile,prebaked.yaml}` — node:22-bookworm-slim, express/cors pre-baked via NODE_PATH, agent under tini, non-root UID 1000. Built + smoke-tested (272 MB). |
+| 0.5 | ☑ | Pre-baked deps manifest format + per-image manifest files | new `internal/prebaked` package (`Manifest`, `Load`/`Parse`, normalized `Has`); `runners/{python,node}/prebaked.yaml` |
+| 0.6 | ☑ | `make runner-images` target + CI to build/push to cluster registry | `Makefile` (`runner-images`, `runner-image-{python,node}`, `load-runner-images`); `.github/workflows/runner-images.yaml` (multi-arch matrix → GHCR) |
 
 ### Phase 1 — Warm pool manager
 

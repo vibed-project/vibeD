@@ -1,0 +1,20 @@
+# Pre-baked dependency manifest for the vibed-runner-python image.
+#
+# The fast-path dependency gate reads this to decide whether a Python app can
+# run on the warm pool: every dependency in the app's requirements.txt must
+# appear here, otherwise the app falls back to the full container build.
+#
+# This list MUST stay in sync with the `pip install` line in
+# runners/python/Dockerfile. Package names use PEP 503 normalization
+# (case-insensitive; '_' and '.' treated as '-').
+language: python
+image: vibed-runner-python
+runtime: python:3.12-slim
+packages:
+  - flask
+  - fastapi
+  - uvicorn
+  - gunicorn
+  - requests
+  - jinja2
+  - pydantic
