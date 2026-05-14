@@ -1334,6 +1334,13 @@ func (o *Orchestrator) deployRunner(ctx context.Context, artifact *api.Artifact)
 	o.logger.Info("artifact deployed via instant preview (no build)",
 		"id", artifact.ID, "name", artifact.Name, "url", deployResult.URL, "version", 1)
 
+	// fastPath.autoPromote: materialize the durable built artifact in the
+	// background. The preview keeps serving until the swap; a promote failure
+	// leaves it running.
+	if o.cfg.FastPath.AutoPromote {
+		go o.autoPromote(artifact.ID, artifact.OwnerID)
+	}
+
 	return &DeployResult{
 		ArtifactID: artifact.ID,
 		Name:       artifact.Name,
@@ -1384,6 +1391,228 @@ func (o *Orchestrator) updateRunner(ctx context.Context, artifact *api.Artifact)
 		URL:        deployResult.URL,
 		Target:     string(api.TargetRunner),
 		Status:     string(api.StatusRunning),
+	}, nil
+}
+
+// canPromote reports whether an artifact is in a state that can be promoted:
+// a running fast-path preview backed by a pooled runner.
+func canPromote(a *api.Artifact) error {
+	if a.Mode != api.ModePreview || a.Target != api.TargetRunner {
+		return &api.ErrInvalidInput{Field: "artifact_id", Message: "only a fast-path preview can be promoted"}
+	}
+	return nil
+}
+
+// AsyncPromote validates ownership synchronously, then runs the promote
+// (build → deploy → swap → release runner) in a background goroutine. Returns
+// immediately with status "building"; poll get_artifact_status.
+func (o *Orchestrator) AsyncPromote(ctx context.Context, artifactID string) (*DeployResult, error) {
+	artifact, err := o.store.Get(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+		return nil, err
+	}
+	if err := canPromote(artifact); err != nil {
+		return nil, err
+	}
+
+	ownerID := vibedauth.UserIDFromContext(ctx)
+	bgCtx := vibedauth.WithUserID(o.lifeCtx, ownerID)
+	bgCtx, span := o.tracer.Start(bgCtx, "orchestrator.Promote",
+		trace.WithAttributes(attribute.String("artifact.id", artifactID)))
+	traceID := span.SpanContext().TraceID().String()
+	o.logger.Info("async promote started", "artifact_id", artifactID, "trace_id", traceID)
+
+	// Mark building synchronously so the caller sees progress immediately.
+	o.updateStatus(ctx, artifact, api.StatusBuilding)
+
+	go func() {
+		defer span.End()
+		defer func() {
+			if r := recover(); r != nil {
+				stack := string(debug.Stack())
+				o.logger.Error("async promote panicked", "artifact_id", artifactID, "trace_id", traceID, "panic", r, "stack", stack)
+				if a, _ := o.store.Get(o.lifeCtx, artifactID); a != nil {
+					o.failArtifact(o.lifeCtx, a, fmt.Sprintf("panic during promote: %v", r))
+				}
+				span.RecordError(fmt.Errorf("panic: %v", r))
+				span.SetStatus(codes.Error, "panic")
+			}
+		}()
+		result, err := o.doPromote(bgCtx, artifactID)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			o.logger.Error("async promote failed", "artifact_id", artifactID, "trace_id", traceID, "error", err)
+		} else {
+			span.SetStatus(codes.Ok, "")
+			o.logger.Info("async promote completed", "artifact_id", artifactID, "trace_id", traceID, "url", result.URL)
+		}
+	}()
+
+	return &DeployResult{
+		ArtifactID: artifactID,
+		Name:       artifact.Name,
+		Status:     string(api.StatusBuilding),
+	}, nil
+}
+
+// autoPromote runs doPromote in the background for fastPath.autoPromote. It
+// derives from the lifecycle context and recovers panics — a promote failure
+// must never take down the server, and the preview keeps running on failure.
+func (o *Orchestrator) autoPromote(artifactID, ownerID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			o.logger.Error("auto-promote panicked", "artifact_id", artifactID, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	ctx := vibedauth.WithUserID(o.lifeCtx, ownerID)
+	ctx, span := o.tracer.Start(ctx, "orchestrator.AutoPromote",
+		trace.WithAttributes(attribute.String("artifact.id", artifactID)))
+	defer span.End()
+	if _, err := o.doPromote(ctx, artifactID); err != nil {
+		o.logger.Warn("auto-promote failed; preview left running", "artifact_id", artifactID, "error", err)
+	}
+}
+
+// doPromote upgrades a running fast-path preview into a durable built artifact:
+// it runs the real container build, deploys the digest-pinned image to a real
+// backend, swaps the live deployment, and releases the pooled runner. The
+// artifact ID is stable across the promote; the URL changes (callers re-fetch
+// it via get_artifact_status). On any failure the preview is restored and left
+// running — a failed promote never takes the preview down.
+func (o *Orchestrator) doPromote(ctx context.Context, artifactID string) (*DeployResult, error) {
+	artifact, err := o.store.Get(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := canPromote(artifact); err != nil {
+		return nil, err
+	}
+
+	// The runner deployer still owns the live preview pod; capture it now so we
+	// can release the runner only once the built deployment is confirmed up.
+	runnerDep, err := o.factory.Get(api.TargetRunner)
+	if err != nil {
+		return nil, fmt.Errorf("runner deployer unavailable: %w", err)
+	}
+
+	// Snapshot the preview state so a failed promote can restore it verbatim.
+	prevTarget, prevMode := artifact.Target, artifact.Mode
+	prevImageRef, prevURL, prevStatus := artifact.ImageRef, artifact.URL, artifact.Status
+	restorePreview := func() {
+		artifact.Target, artifact.Mode = prevTarget, prevMode
+		artifact.ImageRef, artifact.URL, artifact.Status = prevImageRef, prevURL, prevStatus
+		artifact.Error = ""
+		artifact.UpdatedAt = time.Now()
+		if uerr := o.store.Update(o.lifeCtx, artifact); uerr != nil {
+			o.logger.Warn("promote: failed to restore preview state", "artifact_id", artifactID, "error", uerr)
+		}
+		o.publishStatusEvent(artifact)
+	}
+
+	o.updateStatus(ctx, artifact, api.StatusBuilding)
+
+	// 1. Build the real image from the already-stored source.
+	sourceDir, err := o.storage.GetSourcePath(ctx, artifact.ID)
+	if err != nil {
+		restorePreview()
+		return nil, fmt.Errorf("locating source: %w", err)
+	}
+	imageName := fmt.Sprintf("%s/%s:latest", o.imageBase, artifact.Name)
+
+	o.metrics.BuildsInFlight.Inc()
+	buildStart := time.Now()
+	builderPublishes := o.builder.PublishesInternally()
+	buildCtx, buildSpan := o.tracer.Start(ctx, "builder.Build",
+		trace.WithAttributes(
+			attribute.String("builder.image", imageName),
+			attribute.String("builder.language", artifact.Language),
+		))
+	buildResult, err := o.builder.Build(buildCtx, builder.BuildRequest{
+		SourceDir: sourceDir,
+		ImageName: imageName,
+		Namespace: artifact.Namespace,
+		Language:  artifact.Language,
+		Env:       artifact.EnvVars,
+		Publish:   builderPublishes && o.cfg.Registry.Enabled,
+	})
+	o.metrics.BuildsInFlight.Dec()
+	buildDur := time.Since(buildStart).Seconds()
+	if err != nil {
+		buildSpan.RecordError(err)
+		buildSpan.SetStatus(codes.Error, err.Error())
+		buildSpan.End()
+		o.metrics.BuildsTotal.WithLabelValues("failed", artifact.Language).Inc()
+		o.metrics.BuildDuration.WithLabelValues("failed", artifact.Language).Observe(buildDur)
+		restorePreview()
+		return nil, &api.ErrBuildFailed{Reason: err.Error()}
+	}
+	buildSpan.End()
+	o.metrics.BuildsTotal.WithLabelValues("success", artifact.Language).Inc()
+	o.metrics.BuildDuration.WithLabelValues("success", artifact.Language).Observe(buildDur)
+
+	// 2. Select a durable backend and deploy the built image.
+	target, err := o.detector.SelectTarget(api.DeploymentTarget(o.cfg.Deployment.PreferredTarget))
+	if err != nil {
+		restorePreview()
+		return nil, fmt.Errorf("selecting target: %w", err)
+	}
+	dep, err := o.factory.Get(target)
+	if err != nil {
+		restorePreview()
+		return nil, fmt.Errorf("no deployer for target %q: %w", target, err)
+	}
+
+	// Mutate the artifact for the built deployment. If the deploy fails we tear
+	// down whatever it created and restore the preview state.
+	artifact.ImageRef = pinnedImageRef(buildResult)
+	artifact.Target = target
+	o.updateStatus(ctx, artifact, api.StatusDeploying)
+
+	deployCtx, deploySpan := o.tracer.Start(ctx, "deployer.Deploy",
+		trace.WithAttributes(attribute.String("deployer.target", string(target))))
+	deployStart := time.Now()
+	deployResult, err := dep.Deploy(deployCtx, artifact)
+	deployDur := time.Since(deployStart).Seconds()
+	if err != nil {
+		deploySpan.RecordError(err)
+		deploySpan.SetStatus(codes.Error, err.Error())
+		deploySpan.End()
+		o.metrics.DeploysTotal.WithLabelValues("failed", string(target)).Inc()
+		o.metrics.DeployDuration.WithLabelValues("failed", string(target)).Observe(deployDur)
+		_ = dep.Delete(context.WithoutCancel(ctx), artifact) // best-effort cleanup
+		restorePreview()
+		return nil, &api.ErrDeployFailed{Reason: err.Error()}
+	}
+	deploySpan.End()
+	o.metrics.DeploysTotal.WithLabelValues("success", string(target)).Inc()
+	o.metrics.DeployDuration.WithLabelValues("success", string(target)).Observe(deployDur)
+	o.metrics.ArtifactsActive.WithLabelValues(string(target)).Inc()
+
+	// 3. Swap confirmed — release the pooled runner (the RunnerDeployer keys by
+	// artifact ID, so this still finds it despite Target having changed) and
+	// flip the artifact to a durable built mode.
+	if delErr := runnerDep.Delete(context.WithoutCancel(ctx), artifact); delErr != nil {
+		o.logger.Warn("promote: failed to release pooled runner", "artifact_id", artifactID, "error", delErr)
+	}
+	o.metrics.ArtifactsActive.WithLabelValues(string(api.TargetRunner)).Dec()
+
+	artifact.Mode = api.ModeBuilt
+	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
+
+	o.logger.Info("artifact promoted from preview to built",
+		"id", artifact.ID, "name", artifact.Name, "target", target, "url", deployResult.URL)
+
+	return &DeployResult{
+		ArtifactID: artifact.ID,
+		Name:       artifact.Name,
+		URL:        deployResult.URL,
+		Target:     string(target),
+		Status:     string(api.StatusRunning),
+		ImageRef:   buildResult.ImageRef,
 	}, nil
 }
 

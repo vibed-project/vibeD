@@ -241,6 +241,11 @@ type FastPathConfig struct {
 	// stale images indefinitely (default: "1h").
 	MaxIdleAge time.Duration `yaml:"maxIdleAge"`
 
+	// AutoPromote, when true, automatically promotes every successful preview
+	// into a durable built artifact in the background — the user sees the
+	// preview instantly and the real build materializes shortly after.
+	AutoPromote bool `yaml:"autoPromote"`
+
 	// Runners is keyed by appspec language ("python", "nodejs").
 	Runners map[string]RunnerConfig `yaml:"runners"`
 }
@@ -537,6 +542,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("VIBED_FASTPATH_NAMESPACE"); v != "" {
 		cfg.FastPath.Namespace = v
+	}
+	if v := os.Getenv("VIBED_FASTPATH_AUTO_PROMOTE"); v != "" {
+		cfg.FastPath.AutoPromote, _ = strconv.ParseBool(v)
 	}
 
 	// Tracing overrides (standard OTel env var takes precedence)

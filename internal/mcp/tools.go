@@ -17,6 +17,7 @@ func RegisterTools(server *mcp.Server, orch *orchestrator.Orchestrator, limits c
 	registerLogsTool(server, orch, limits)
 	registerTargetsTool(server, orch)
 	registerUpdateTool(server, orch, limits)
+	registerPromoteTool(server, orch)
 	registerListVersionsTool(server, orch)
 	registerRollbackTool(server, orch)
 	registerShareTool(server, orch)

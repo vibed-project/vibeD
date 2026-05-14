@@ -144,10 +144,10 @@ stable.
 
 | # | Status | What | Where |
 |---|--------|------|-------|
-| 4.1 | ☐ | `promote_artifact` MCP tool | `internal/mcp/` |
-| 4.2 | ☐ | Promote pipeline: build → deploy built image → swap → release runner | `internal/orchestrator/` |
-| 4.3 | ☐ | Optional `autoPromote` config behavior | `internal/orchestrator/`, config |
-| 4.4 | ☐ | Decide + implement URL stability across the swap (ingress alias?) | `internal/deployer/` |
+| 4.1 | ☑ | `promote_artifact` MCP tool | `internal/mcp/tools_promote.go` — `orch.AsyncPromote`; returns "building", poll status. |
+| 4.2 | ☑ | Promote pipeline: build → deploy built image → swap → release runner | `internal/orchestrator/orchestrator.go` — `doPromote`: build from stored source → `SelectTarget` → deploy digest-pinned image → release pooled runner → flip `Mode` to `built`. On *any* failure the preview is restored and left running. `canPromote` guard unit-tested. |
+| 4.3 | ☑ | Optional `autoPromote` config behavior | `config.FastPathConfig.AutoPromote` — `deployRunner` fires `autoPromote` in the background after a successful preview; panic-recovered, lifecycle-context-scoped. |
+| 4.4 | ☑ | Decide URL stability across the swap | **Decided: artifact ID is stable, URL is not.** Promote swaps from the runner's address to the durable backend's URL; callers re-fetch via `get_artifact_status`. No ingress alias — see risks (external reachability of previews is a separate, pre-existing concern). |
 
 ### Phase 5 — GC, config, docs, hardening
 
@@ -169,8 +169,14 @@ stable.
   demand-based pool autoscaling. (Phase 1.2)
 - **Preview sprawl** — previews must be GC'd aggressively or the pool/cluster
   fills. (Phase 5.1)
-- **Promote URL stability** — does the URL change preview → built? May need an
-  ingress alias. (Phase 4.4)
+- **Promote URL stability** — RESOLVED (4.4): artifact ID is stable, URL is not;
+  callers re-fetch via `get_artifact_status` after promote. No ingress alias.
+- **External reachability of previews** — the RunnerDeployer (like the existing
+  SandboxDeployer) returns an in-cluster `*.svc.cluster.local` URL. For a user
+  to actually *see* a preview from outside the cluster, the runner Sandbox needs
+  an ingress/route, a port-forward, or a vibeD-side proxy. This is a pre-existing
+  gap shared with Sandbox deploys, not introduced by the fast path — but it
+  blunts the "instant preview" value until addressed. Candidate for a follow-up.
 - **Knative deliberately not in the fast path** — its revision model resists code
   injection; it stays the home for promoted, built images.
 
