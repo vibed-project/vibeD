@@ -34,16 +34,16 @@ RUN apt-get update \
 
 # Pre-bake common packages into a fixed location and put it on NODE_PATH, so
 # `require('express')` resolves even though /workspace is wiped on every inject.
-# This list MUST stay in sync with runners/node/prebaked.yaml — the fast-path
-# dependency gate trusts that manifest.
+# This list MUST stay in sync with internal/prebaked/manifests/nodejs.yaml —
+# the single source of truth the fast-path dependency gate trusts.
 RUN mkdir -p /opt/vibed \
  && cd /opt/vibed \
  && npm install --no-audit --no-fund \
       express \
       cors
 ENV NODE_PATH=/opt/vibed/node_modules
-# The manifest the dependency gate reads — shipped in the image for reference.
-COPY runners/node/prebaked.yaml /etc/vibed/prebaked.yaml
+# Ship that same manifest in the image for reference / introspection.
+COPY internal/prebaked/manifests/nodejs.yaml /etc/vibed/prebaked.yaml
 
 COPY --from=agent /vibed-runner-agent /usr/local/bin/vibed-runner-agent
 

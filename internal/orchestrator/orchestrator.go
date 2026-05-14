@@ -24,6 +24,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/environment"
 	"github.com/vibed-project/vibeD/internal/events"
 	"github.com/vibed-project/vibeD/internal/metrics"
+	"github.com/vibed-project/vibeD/internal/prebaked"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -403,12 +404,27 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest, prebuilt
 		preferred = api.DeploymentTarget(o.cfg.Deployment.PreferredTarget)
 	}
 
+	// 6a. Instant Preview fast path: route runnable, zero-/pre-baked-dependency
+	// apps to a warm runner pod — instant, no container build.
+	if eligible, reason := o.fastPathEligible(preferred, lang, req.Files); eligible {
+		o.logger.Info("using instant preview fast path (skipping build)",
+			"name", req.Name, "language", lang)
+		artifact.Target = api.TargetRunner
+		artifact.Mode = api.ModePreview
+		return o.deployRunner(ctx, artifact)
+	} else if preferred == api.TargetRunner {
+		// Caller explicitly asked for the fast path but the app isn't eligible.
+		o.failArtifact(ctx, artifact, fmt.Sprintf("not eligible for instant preview: %s", reason))
+		return nil, &api.ErrInvalidInput{Field: "target", Message: "not eligible for instant preview: " + reason}
+	}
+
 	target, err := o.detector.SelectTarget(preferred)
 	if err != nil {
 		o.failArtifact(ctx, artifact, fmt.Sprintf("selecting target: %v", err))
 		return nil, err
 	}
 	artifact.Target = target
+	artifact.Mode = api.ModeBuilt
 
 	// Static shortcut: skip build, use ConfigMap + nginx directly.
 	if lang == "static" && isSmallStatic(req.Files) {
@@ -659,6 +675,13 @@ func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*Deploy
 		lang = appspec.DetectLanguage(req.Files)
 	}
 	artifact.Language = lang
+
+	// Runner fast path: re-inject new source into the existing warm runner,
+	// skip the build entirely. The target is fixed at first deploy.
+	if artifact.Target == api.TargetRunner {
+		o.logger.Info("using instant preview fast path for update (skipping build)", "name", artifact.Name)
+		return o.updateRunner(ctx, artifact)
+	}
 
 	// Static shortcut: update ConfigMap directly, skip build
 	if lang == "static" && isSmallStatic(req.Files) {
@@ -1246,6 +1269,121 @@ func (o *Orchestrator) deployStatic(ctx context.Context, artifact *api.Artifact,
 		Target:     string(target),
 		Status:     string(api.StatusRunning),
 		ImageRef:   "nginx:alpine",
+	}, nil
+}
+
+// fastPathEligible reports whether a deploy should take the Instant Preview
+// fast path. It requires: the fast path enabled, a RunnerDeployer registered,
+// no other backend explicitly pinned by the caller, a runner configured for
+// the language, and the dependency gate cleared. The returned string explains
+// a negative result — surfaced when the caller explicitly requested "runner".
+func (o *Orchestrator) fastPathEligible(preferred api.DeploymentTarget, lang string, files map[string]string) (bool, string) {
+	if !o.cfg.FastPath.Enabled {
+		return false, "fast path is not enabled"
+	}
+	if _, err := o.factory.Get(api.TargetRunner); err != nil {
+		return false, "no runner deployer registered"
+	}
+	// Respect a backend the caller explicitly pinned (anything but auto/runner).
+	if preferred != "" && preferred != api.TargetAuto && preferred != api.TargetRunner {
+		return false, fmt.Sprintf("target %q was explicitly requested", preferred)
+	}
+	if _, ok := o.cfg.FastPath.Runners[lang]; !ok {
+		return false, fmt.Sprintf("no runner configured for language %q", lang)
+	}
+	if ok, missing := prebaked.Eligible(lang, files); !ok {
+		return false, "dependencies not pre-baked: " + strings.Join(missing, ", ")
+	}
+	return true, ""
+}
+
+// deployRunner deploys an artifact via the Instant Preview fast path: a warm
+// pooled runner pod with the source injected, no container build.
+func (o *Orchestrator) deployRunner(ctx context.Context, artifact *api.Artifact) (*DeployResult, error) {
+	o.updateStatus(ctx, artifact, api.StatusDeploying)
+
+	dep, err := o.factory.Get(api.TargetRunner)
+	if err != nil {
+		o.failArtifact(ctx, artifact, fmt.Sprintf("no runner deployer: %v", err))
+		return nil, err
+	}
+
+	deployCtx, deploySpan := o.tracer.Start(ctx, "deployer.Deploy",
+		trace.WithAttributes(attribute.String("deployer.target", string(api.TargetRunner))))
+	deployStart := time.Now()
+	deployResult, err := dep.Deploy(deployCtx, artifact)
+	deployDur := time.Since(deployStart).Seconds()
+
+	if err != nil {
+		deploySpan.RecordError(err)
+		deploySpan.SetStatus(codes.Error, err.Error())
+		deploySpan.End()
+		o.metrics.DeploysTotal.WithLabelValues("failed", string(api.TargetRunner)).Inc()
+		o.metrics.DeployDuration.WithLabelValues("failed", string(api.TargetRunner)).Observe(deployDur)
+		o.failArtifact(ctx, artifact, fmt.Sprintf("runner deploy failed: %v", err))
+		return nil, &api.ErrDeployFailed{Reason: err.Error()}
+	}
+	deploySpan.End()
+
+	o.metrics.DeploysTotal.WithLabelValues("success", string(api.TargetRunner)).Inc()
+	o.metrics.DeployDuration.WithLabelValues("success", string(api.TargetRunner)).Observe(deployDur)
+	o.metrics.ArtifactsActive.WithLabelValues(string(api.TargetRunner)).Inc()
+
+	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
+
+	o.logger.Info("artifact deployed via instant preview (no build)",
+		"id", artifact.ID, "name", artifact.Name, "url", deployResult.URL, "version", 1)
+
+	return &DeployResult{
+		ArtifactID: artifact.ID,
+		Name:       artifact.Name,
+		URL:        deployResult.URL,
+		Target:     string(api.TargetRunner),
+		Status:     string(api.StatusRunning),
+	}, nil
+}
+
+// updateRunner re-injects new source into the artifact's existing warm runner.
+func (o *Orchestrator) updateRunner(ctx context.Context, artifact *api.Artifact) (*DeployResult, error) {
+	o.updateStatus(ctx, artifact, api.StatusDeploying)
+
+	dep, err := o.factory.Get(api.TargetRunner)
+	if err != nil {
+		o.failArtifact(ctx, artifact, fmt.Sprintf("no runner deployer: %v", err))
+		return nil, err
+	}
+
+	deployCtx, deploySpan := o.tracer.Start(ctx, "deployer.Update",
+		trace.WithAttributes(attribute.String("deployer.target", string(api.TargetRunner))))
+	deployStart := time.Now()
+	deployResult, err := dep.Update(deployCtx, artifact)
+	deployDur := time.Since(deployStart).Seconds()
+
+	if err != nil {
+		deploySpan.RecordError(err)
+		deploySpan.SetStatus(codes.Error, err.Error())
+		deploySpan.End()
+		o.metrics.DeploysTotal.WithLabelValues("failed", string(api.TargetRunner)).Inc()
+		o.metrics.DeployDuration.WithLabelValues("failed", string(api.TargetRunner)).Observe(deployDur)
+		o.failArtifact(ctx, artifact, fmt.Sprintf("runner update failed: %v", err))
+		return nil, &api.ErrDeployFailed{Reason: err.Error()}
+	}
+	deploySpan.End()
+
+	o.metrics.DeploysTotal.WithLabelValues("success", string(api.TargetRunner)).Inc()
+	o.metrics.DeployDuration.WithLabelValues("success", string(api.TargetRunner)).Observe(deployDur)
+
+	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
+
+	o.logger.Info("artifact updated via instant preview (no build)",
+		"id", artifact.ID, "name", artifact.Name, "url", deployResult.URL)
+
+	return &DeployResult{
+		ArtifactID: artifact.ID,
+		Name:       artifact.Name,
+		URL:        deployResult.URL,
+		Target:     string(api.TargetRunner),
+		Status:     string(api.StatusRunning),
 	}, nil
 }
 

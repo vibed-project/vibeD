@@ -135,10 +135,10 @@ stable.
 
 | # | Status | What | Where |
 |---|--------|------|-------|
-| 3.1 | ☐ | Dependency gate: scan deps vs pre-baked manifest | `internal/orchestrator/` or `internal/environment/` |
-| 3.2 | ☐ | "Runner shortcut" in `doDeploy` parallel to the static shortcut | `internal/orchestrator/orchestrator.go:~413` |
-| 3.3 | ☐ | `Mode` field on artifact (`preview` \| `built`) | `internal/api/`, store schema |
-| 3.4 | ☐ | Surface `Mode` in `status` / `list` MCP tools + dashboard | `internal/mcp/`, frontend |
+| 3.1 | ☑ | Dependency gate: scan deps vs pre-baked manifest | `internal/prebaked/gate.go` + `registry.go` — `requirements.txt`/`package.json` parsers + `Eligible()`; manifests moved to `internal/prebaked/manifests/*.yaml` (single source of truth, `go:embed`'d into vibeD AND `COPY`'d into the runner images). |
+| 3.2 | ☑ | "Runner shortcut" in `doDeploy` parallel to the static shortcut | `internal/orchestrator/orchestrator.go` — `fastPathEligible` + `deployRunner` in `doDeploy`, `updateRunner` in `doUpdate`; explicit `target: runner` that fails the gate errors clearly. |
+| 3.3 | ☑ | `Mode` field on artifact (`preview` \| `built`) | `pkg/api/types.go` — `DeployMode` + `Mode` on `Artifact` and `ArtifactSummary`; set by the orchestrator (`ModePreview` on the runner path, `ModeBuilt` otherwise). |
+| 3.4 | ☑ | Surface `Mode` in `status` / `list` MCP tools + dashboard | MCP tools return `api.Artifact`/`ArtifactSummary` directly, so `Mode` flows through automatically; dashboard shows a `preview` badge + Instant Preview / Sandbox target labels (`web/src/`). |
 
 ### Phase 4 — Promote
 

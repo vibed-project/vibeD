@@ -1,8 +1,10 @@
 # Pre-baked dependency manifest for the vibed-runner-node image.
 #
-# The fast-path dependency gate reads this to decide whether a Node app can run
-# on the warm pool: every dependency in the app's package.json must appear
-# here, otherwise the app falls back to the full container build.
+# Single source of truth: this file is embedded into the vibeD binary (the
+# fast-path dependency gate reads it to decide whether a Node app can run on
+# the warm pool — every dependency in the app's package.json must appear here,
+# or it falls back to the full container build) AND copied into the runner
+# image by runners/node/Dockerfile.
 #
 # This list MUST stay in sync with the `npm install` line in
 # runners/node/Dockerfile. The packages are installed under

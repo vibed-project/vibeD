@@ -30,6 +30,18 @@ const (
 	StatusDeleted   ArtifactStatus = "deleted"
 )
 
+// DeployMode distinguishes an ephemeral fast-path preview from a durable built
+// artifact.
+type DeployMode string
+
+const (
+	// ModePreview is an Instant Preview running on a pooled runner pod — no
+	// container build, ephemeral, promotable to a durable built artifact.
+	ModePreview DeployMode = "preview"
+	// ModeBuilt is a durable artifact backed by a built or static image.
+	ModeBuilt DeployMode = "built"
+)
+
 // Artifact is the central domain object representing a deployed workload.
 type Artifact struct {
 	ID          string            `json:"id"`
@@ -44,6 +56,7 @@ type Artifact struct {
 	EnvVars     map[string]string `json:"-"`
 	SecretRefs  map[string]string `json:"-"` // env var name → "secret-name:key"
 	Language    string            `json:"language,omitempty"`
+	Mode        DeployMode        `json:"mode,omitempty"`         // "preview" (fast-path runner) or "built"
 	StaticFiles string            `json:"static_files,omitempty"` // ConfigMap name for static content (skip build)
 	Error       string            `json:"error,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
@@ -62,6 +75,7 @@ type ArtifactSummary struct {
 	Namespace  string           `json:"namespace,omitempty"`
 	Status     ArtifactStatus   `json:"status"`
 	Target     DeploymentTarget `json:"target"`
+	Mode       DeployMode       `json:"mode,omitempty"`
 	URL        string           `json:"url,omitempty"`
 	CreatedAt  time.Time        `json:"created_at"`
 	UpdatedAt  time.Time        `json:"updated_at"`
@@ -168,6 +182,7 @@ func (a *Artifact) ToSummary() ArtifactSummary {
 		OwnerID:    a.OwnerID,
 		Status:     a.Status,
 		Target:     a.Target,
+		Mode:       a.Mode,
 		URL:        a.URL,
 		CreatedAt:  a.CreatedAt,
 		UpdatedAt:  a.UpdatedAt,

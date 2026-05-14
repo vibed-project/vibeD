@@ -12,12 +12,11 @@ request.
 
 ```
 runners/
-  python/
-    Dockerfile        # python:3.12-slim + pre-baked deps + runner agent
-    prebaked.yaml     # dependency manifest the fast-path gate reads
-  node/
-    Dockerfile        # node:22-bookworm-slim + pre-baked deps + runner agent
-    prebaked.yaml
+  python/Dockerfile   # python:3.12-slim + pre-baked deps + runner agent
+  node/Dockerfile     # node:22-bookworm-slim + pre-baked deps + runner agent
+internal/prebaked/manifests/
+  python.yaml         # pre-baked dependency manifest — single source of truth
+  nodejs.yaml         #   (embedded into vibeD AND copied into the image)
 ```
 
 Each image bundles three things:
@@ -45,10 +44,12 @@ the agent source — see `.github/workflows/runner-images.yaml`.
 
 ## Adding a pre-baked dependency
 
-The `prebaked.yaml` manifest and the install step in the `Dockerfile` **must
-stay in sync** — the dependency gate trusts the manifest to reflect what the
-image actually contains. To add a package:
+The manifest in `internal/prebaked/manifests/` and the install step in the
+`Dockerfile` **must stay in sync** — vibeD's dependency gate trusts the
+embedded manifest to reflect what the image actually contains. To add a
+package:
 
 1. Add it to the `pip install` / `npm install` line in the `Dockerfile`.
-2. Add its normalized name to `packages:` in `prebaked.yaml`.
+2. Add its normalized name to `packages:` in the matching
+   `internal/prebaked/manifests/*.yaml`.
 3. Rebuild and push the image.

@@ -3,7 +3,8 @@ export interface ArtifactSummary {
   name: string;
   owner_id?: string;
   status: 'pending' | 'building' | 'deploying' | 'running' | 'failed' | 'deleted';
-  target: 'knative' | 'kubernetes';
+  target: 'knative' | 'kubernetes' | 'sandbox' | 'runner';
+  mode?: 'preview' | 'built';
   url?: string;
   created_at: string;
   updated_at: string;

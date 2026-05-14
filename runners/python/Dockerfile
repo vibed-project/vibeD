@@ -33,8 +33,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Pre-bake common web frameworks so zero-dependency / pre-baked apps run with
-# no install step. This list MUST stay in sync with runners/python/prebaked.yaml
-# — the fast-path dependency gate trusts that manifest.
+# no install step. This list MUST stay in sync with
+# internal/prebaked/manifests/python.yaml — the single source of truth the
+# fast-path dependency gate trusts.
 RUN pip install --no-cache-dir --root-user-action=ignore \
       flask \
       fastapi \
@@ -43,8 +44,8 @@ RUN pip install --no-cache-dir --root-user-action=ignore \
       requests \
       jinja2 \
       pydantic
-# The manifest the dependency gate reads — shipped in the image for reference.
-COPY runners/python/prebaked.yaml /etc/vibed/prebaked.yaml
+# Ship that same manifest in the image for reference / introspection.
+COPY internal/prebaked/manifests/python.yaml /etc/vibed/prebaked.yaml
 
 COPY --from=agent /vibed-runner-agent /usr/local/bin/vibed-runner-agent
 
