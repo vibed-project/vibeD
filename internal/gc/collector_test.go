@@ -37,6 +37,7 @@ func newTestGC(t *testing.T, clientset *fake.Clientset, st store.ArtifactStore, 
 			MaxAge:   "1s", // Short maxAge so tests don't need to wait
 			DryRun:   dryRun,
 		},
+		nil, 0, // no preview reaper in these tests
 		testMetrics, logger,
 	)
 	require.NoError(t, err)
@@ -263,6 +264,7 @@ func TestGC_StopsOnContextCancel(t *testing.T) {
 			Interval: "100ms",
 			MaxAge:   "1s",
 		},
+		nil, 0, // no preview reaper in these tests
 		testMetrics, logger,
 	)
 	require.NoError(t, err)

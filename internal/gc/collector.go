@@ -34,6 +34,12 @@ const (
 	labelStoreComponent = "app.kubernetes.io/component"
 )
 
+// PreviewReaper deletes a stale fast-path preview artifact, including
+// recycling its pooled runner. The orchestrator satisfies this.
+type PreviewReaper interface {
+	ReapArtifact(ctx context.Context, artifactID string) error
+}
+
 // GarbageCollector periodically scans for orphaned K8s resources and removes them.
 type GarbageCollector struct {
 	clientset     kubernetes.Interface
@@ -46,11 +52,19 @@ type GarbageCollector struct {
 	dryRun        bool
 	metrics       *metrics.Metrics
 	logger        *slog.Logger
+
+	// previewReaper and previewMaxAge drive the stale-preview pass. When the
+	// reaper is nil or the max-age is non-positive (fast path disabled) the
+	// pass is skipped.
+	previewReaper PreviewReaper
+	previewMaxAge time.Duration
 }
 
 // NewGarbageCollector creates a new GarbageCollector from the given config.
-// knClient and dynamicClient are optional — pass nil to skip the
-// corresponding GC passes (e.g. nil knClient when Knative is not installed).
+// knClient and dynamicClient are optional — pass nil to skip the corresponding
+// GC passes (e.g. nil knClient when Knative is not installed). previewReaper
+// is optional — pass nil (or previewMaxAge <= 0) to skip the stale-preview
+// pass when the fast path is disabled.
 func NewGarbageCollector(
 	clientset kubernetes.Interface,
 	knClient knversioned.Interface,
@@ -58,6 +72,8 @@ func NewGarbageCollector(
 	st store.ArtifactStore,
 	namespace string,
 	cfg config.GCConfig,
+	previewReaper PreviewReaper,
+	previewMaxAge time.Duration,
 	m *metrics.Metrics,
 	logger *slog.Logger,
 ) (*GarbageCollector, error) {
@@ -81,6 +97,8 @@ func NewGarbageCollector(
 		dryRun:        cfg.DryRun,
 		metrics:       m,
 		logger:        logger.With("component", "gc"),
+		previewReaper: previewReaper,
+		previewMaxAge: previewMaxAge,
 	}, nil
 }
 
@@ -126,7 +144,36 @@ func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.cleanOrphanedDeployments(ctx, activeArtifacts)
 	gc.cleanOrphanedKnativeServices(ctx, activeArtifacts)
 	gc.cleanOrphanedSandboxes(ctx, activeArtifacts)
+	gc.cleanStalePreviews(ctx, res.Artifacts)
 	gc.logger.Info("GC cycle complete")
+}
+
+// cleanStalePreviews reaps fast-path preview artifacts older than previewMaxAge.
+// Reaping deletes the artifact and recycles its pooled runner (via the
+// PreviewReaper). Skipped when the fast path is disabled.
+func (gc *GarbageCollector) cleanStalePreviews(ctx context.Context, artifacts []api.ArtifactSummary) {
+	if gc.previewReaper == nil || gc.previewMaxAge <= 0 {
+		return
+	}
+	for _, a := range artifacts {
+		if a.Mode != api.ModePreview {
+			continue
+		}
+		age := time.Since(a.UpdatedAt)
+		if age < gc.previewMaxAge {
+			continue
+		}
+		if gc.dryRun {
+			gc.logger.Info("dry-run: would reap stale preview", "artifact", a.Name, "id", a.ID, "age", age)
+			continue
+		}
+		if err := gc.previewReaper.ReapArtifact(ctx, a.ID); err != nil {
+			gc.logger.Warn("failed to reap stale preview", "artifact", a.Name, "id", a.ID, "error", err)
+			continue
+		}
+		gc.metrics.GCResourcesCleaned.WithLabelValues("preview").Inc()
+		gc.logger.Info("reaped stale preview", "artifact", a.Name, "id", a.ID, "age", age)
+	}
 }
 
 // cleanOrphanedKnativeServices deletes Knative Services whose artifact no

@@ -264,12 +264,19 @@ func main() {
 	defer lifeCancel()
 	orch.SetLifecycleContext(lifeCtx)
 
-	// Start garbage collector
+	// Start garbage collector. When the fast path is on, the GC also reaps
+	// stale previews (deleting the artifact + recycling its pooled runner).
 	if cfg.GC.Enabled {
+		var previewReaper gc.PreviewReaper
+		var previewMaxAge time.Duration
+		if cfg.FastPath.Enabled {
+			previewReaper = orch
+			previewMaxAge = cfg.FastPath.PreviewTTL
+		}
 		collector, err := gc.NewGarbageCollector(
 			k8sClients.Clientset, knClient, k8sClients.DynamicClient,
 			st, cfg.Deployment.Namespace,
-			cfg.GC, m, logger,
+			cfg.GC, previewReaper, previewMaxAge, m, logger,
 		)
 		if err != nil {
 			logger.Error("failed to create garbage collector", "error", err)

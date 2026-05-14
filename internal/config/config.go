@@ -241,6 +241,11 @@ type FastPathConfig struct {
 	// stale images indefinitely (default: "1h").
 	MaxIdleAge time.Duration `yaml:"maxIdleAge"`
 
+	// PreviewTTL is how long a preview artifact may live before the garbage
+	// collector reaps it (deleting the artifact and recycling its runner).
+	// Previews are ephemeral; keep this short (default: "1h").
+	PreviewTTL time.Duration `yaml:"previewTTL"`
+
 	// AutoPromote, when true, automatically promotes every successful preview
 	// into a durable built artifact in the background — the user sees the
 	// preview instantly and the real build materializes shortly after.
@@ -335,6 +340,7 @@ func Default() *Config {
 			ReplenishInterval: 15 * time.Second,
 			ReadyTimeout:      2 * time.Minute,
 			MaxIdleAge:        time.Hour,
+			PreviewTTL:        time.Hour,
 		},
 	}
 }

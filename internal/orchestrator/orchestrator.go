@@ -785,7 +785,7 @@ func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*Deploy
 	}, nil
 }
 
-// Delete stops and removes a deployed artifact.
+// Delete stops and removes a deployed artifact, after an ownership check.
 func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 	ctx, span := o.tracer.Start(ctx, "orchestrator.Delete",
 		trace.WithAttributes(attribute.String("artifact.id", artifactID)))
@@ -801,6 +801,25 @@ func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 		o.metrics.DeletesTotal.WithLabelValues("failed").Inc()
 		return err
 	}
+
+	return o.deleteArtifact(ctx, artifact)
+}
+
+// ReapArtifact deletes an artifact on behalf of the garbage collector — no
+// ownership check, since the GC is a system actor. Used to reap expired
+// fast-path previews (which also recycles their pooled runner).
+func (o *Orchestrator) ReapArtifact(ctx context.Context, artifactID string) error {
+	artifact, err := o.store.Get(ctx, artifactID)
+	if err != nil {
+		return err
+	}
+	return o.deleteArtifact(ctx, artifact)
+}
+
+// deleteArtifact tears down an artifact's backend resources, stored source, and
+// store record. It performs NO ownership check — callers must authorize first.
+func (o *Orchestrator) deleteArtifact(ctx context.Context, artifact *api.Artifact) error {
+	artifactID := artifact.ID
 
 	// Cleanup deployed resources. If artifact.Target is empty (e.g. the build
 	// crashed before target selection) we don't know which backend owns the
