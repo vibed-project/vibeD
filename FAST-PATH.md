@@ -114,13 +114,13 @@ stable.
 
 | # | Status | What | Where |
 |---|--------|------|-------|
-| 1.1 | ☐ | `internal/pool` package: `Claim` / `Release` / `Recycle` | `internal/pool/pool.go` (new) |
-| 1.2 | ☐ | Replenishment loop — top pool up ahead of demand | `internal/pool/` |
-| 1.3 | ☐ | Health + age eviction of idle runners | `internal/pool/` |
-| 1.4 | ☐ | Recycle-never-reuse: destroy + replace pods that ran user code | `internal/pool/` |
-| 1.5 | ☐ | Cold-runner fallback when pool exhausted | `internal/pool/` |
-| 1.6 | ☐ | Wire pool manager into `main.go` as lifecycle-context goroutine | `cmd/vibed/main.go` |
-| 1.7 | ☐ | Pool metrics: size, claim latency, exhaustion rate | `internal/pool/`, metrics package |
+| 1.1 | ☑ | `internal/pool` package: `Claim` / `Release` (recycle) | `internal/pool/pool.go`, `runner.go` (new) — `Claim` warm-or-cold, `Release` deletes the Sandbox CR. Plus `FastPathConfig`/`RunnerConfig` in `internal/config`. |
+| 1.2 | ☑ | Replenishment loop — top pool up ahead of demand | `internal/pool/pool.go` — `replenish` brings idle+pending up to pool size; runs on a ticker in `Run` and async after every `Claim`/`Release`. |
+| 1.3 | ☑ | Health + age eviction of idle runners | `internal/pool/pool.go` — `sweep` recycles idle runners past `MaxIdleAge` or failing the agent health probe; claim-in-flight runners are left untouched. |
+| 1.4 | ☑ | Recycle-never-reuse: destroy + replace pods that ran user code | `internal/pool/pool.go` — `Release` deletes the Sandbox outright; replenish refills with a fresh pod. |
+| 1.5 | ☑ | Cold-runner fallback when pool exhausted | `internal/pool/pool.go` — `Claim` creates + waits for a cold runner when the idle pool is empty, so deploys never fail on a spike. |
+| 1.6 | ☑ | Wire pool manager into `main.go` as lifecycle-context goroutine | `cmd/vibed/main.go` — `pool.New` + `go runnerPool.Run(lifeCtx)` when `fastPath.enabled`. |
+| 1.7 | ☑ | Pool metrics: idle size, claim latency, warm/cold split, warmup outcomes | `internal/metrics/metrics.go` — `vibed_pool_*` runners_idle / claims_total / claim_duration / runners_created. |
 
 ### Phase 2 — RunnerDeployer + code injection
 

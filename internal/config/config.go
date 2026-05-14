@@ -25,6 +25,7 @@ type Config struct {
 	Limits       LimitsConfig       `yaml:"limits"`
 	GC           GCConfig           `yaml:"gc"`
 	Tracing      TracingConfig      `yaml:"tracing"`
+	FastPath     FastPathConfig     `yaml:"fastPath"`
 }
 
 // TracingConfig configures OpenTelemetry distributed tracing.
@@ -215,6 +216,37 @@ type GCConfig struct {
 	DryRun   bool   `yaml:"dryRun"`   // Log without deleting (default: false)
 }
 
+// FastPathConfig configures the Instant Preview fast path: a warm pool of
+// runner pods (Sandbox CRs) that user source is injected into, skipping the
+// per-request container build. Disabled by default.
+type FastPathConfig struct {
+	Enabled bool `yaml:"enabled"` // master switch for the fast path
+
+	// Namespace is where warm runner pods are created. Empty = deployment.namespace.
+	Namespace string `yaml:"namespace"`
+
+	// ReplenishInterval is how often the pool tops itself up to the desired
+	// size (default: "15s").
+	ReplenishInterval time.Duration `yaml:"replenishInterval"`
+	// ReadyTimeout is how long to wait for a freshly created runner's agent to
+	// become reachable before discarding it (default: "2m").
+	ReadyTimeout time.Duration `yaml:"readyTimeout"`
+	// MaxIdleAge recycles idle runners older than this so the pool doesn't pin
+	// stale images indefinitely (default: "1h").
+	MaxIdleAge time.Duration `yaml:"maxIdleAge"`
+
+	// Runners is keyed by appspec language ("python", "nodejs").
+	Runners map[string]RunnerConfig `yaml:"runners"`
+}
+
+// RunnerConfig describes one language's warm runner pool.
+type RunnerConfig struct {
+	Image       string `yaml:"image"`       // runner image ref (required when fastPath.enabled)
+	PoolSize    int    `yaml:"poolSize"`    // warm idle pods to maintain (default: 2)
+	ControlPort int    `yaml:"controlPort"` // agent control API port (default: 9000)
+	AppPort     int    `yaml:"appPort"`     // user app port (default: 8080)
+}
+
 // Default returns a Config with sensible defaults.
 func Default() *Config {
 	return &Config{
@@ -287,7 +319,27 @@ func Default() *Config {
 		Tracing: TracingConfig{
 			SampleRate: 1.0,
 		},
+		FastPath: FastPathConfig{
+			Enabled:           false,
+			ReplenishInterval: 15 * time.Second,
+			ReadyTimeout:      2 * time.Minute,
+			MaxIdleAge:        time.Hour,
+		},
 	}
+}
+
+// runnerDefaults fills in per-runner defaults left unset in the config.
+func runnerDefaults(r RunnerConfig) RunnerConfig {
+	if r.PoolSize == 0 {
+		r.PoolSize = 2
+	}
+	if r.ControlPort == 0 {
+		r.ControlPort = 9000
+	}
+	if r.AppPort == 0 {
+		r.AppPort = 8080
+	}
+	return r
 }
 
 // Load reads configuration from the given file path, applies environment
@@ -310,6 +362,11 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyEnvOverrides(cfg)
+
+	// Fill per-runner defaults so pool code can assume ports/sizes are set.
+	for lang, r := range cfg.FastPath.Runners {
+		cfg.FastPath.Runners[lang] = runnerDefaults(r)
+	}
 
 	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -468,6 +525,14 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.GC.DryRun, _ = strconv.ParseBool(v)
 	}
 
+	// FastPath overrides
+	if v := os.Getenv("VIBED_FASTPATH_ENABLED"); v != "" {
+		cfg.FastPath.Enabled, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("VIBED_FASTPATH_NAMESPACE"); v != "" {
+		cfg.FastPath.Namespace = v
+	}
+
 	// Tracing overrides (standard OTel env var takes precedence)
 	if v := os.Getenv("VIBED_TRACING_ENABLED"); v != "" {
 		cfg.Tracing.Enabled, _ = strconv.ParseBool(v)
@@ -600,6 +665,18 @@ func validate(cfg *Config) error {
 		}
 		if _, err := time.ParseDuration(cfg.GC.MaxAge); err != nil {
 			return fmt.Errorf("gc.maxAge must be a valid duration (got %q): %w", cfg.GC.MaxAge, err)
+		}
+	}
+
+	// Validate FastPath config
+	if cfg.FastPath.Enabled {
+		if len(cfg.FastPath.Runners) == 0 {
+			return fmt.Errorf("fastPath.runners must define at least one language runner when fastPath.enabled is true")
+		}
+		for lang, r := range cfg.FastPath.Runners {
+			if r.Image == "" {
+				return fmt.Errorf("fastPath.runners[%q].image is required when fastPath.enabled is true", lang)
+			}
 		}
 	}
 

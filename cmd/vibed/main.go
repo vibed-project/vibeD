@@ -27,6 +27,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/middleware"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/pool"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
@@ -258,6 +259,15 @@ func main() {
 			os.Exit(1)
 		}
 		go collector.Run(lifeCtx)
+	}
+
+	// Start the warm runner pool for the Instant Preview fast path. The pool
+	// keeps idle runner Sandboxes topped up; the RunnerDeployer (Phase 2)
+	// claims from it. Lives on the lifecycle context so SIGTERM drains it.
+	if cfg.FastPath.Enabled {
+		runnerPool := pool.New(k8sClients.DynamicClient, cfg.FastPath, cfg.Deployment.Namespace, m, logger)
+		go runnerPool.Run(lifeCtx)
+		logger.Info("instant preview fast path enabled", "languages", runnerPool.Languages())
 	}
 
 	// Create MCP server

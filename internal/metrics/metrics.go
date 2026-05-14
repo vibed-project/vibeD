@@ -39,6 +39,12 @@ type Metrics struct {
 
 	// Rate limiting metrics
 	RateLimitedTotal *prometheus.CounterVec
+
+	// Fast-path runner-pool metrics
+	PoolRunnersIdle    *prometheus.GaugeVec     // {language}
+	PoolClaimsTotal    *prometheus.CounterVec   // {language, source} source=warm|cold
+	PoolClaimDuration  *prometheus.HistogramVec // {language, source}
+	PoolRunnersCreated *prometheus.CounterVec   // {language, status} status=ready|failed
 }
 
 var (
@@ -138,6 +144,35 @@ func New() *Metrics {
 				Name:      "rate_limited_total",
 				Help:      "Total number of rate-limited HTTP requests.",
 			}, []string{"client_type"}),
+
+			PoolRunnersIdle: promauto.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: "vibed",
+				Subsystem: "pool",
+				Name:      "runners_idle",
+				Help:      "Number of warm idle runner pods available to claim.",
+			}, []string{"language"}),
+
+			PoolClaimsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+				Namespace: "vibed",
+				Subsystem: "pool",
+				Name:      "claims_total",
+				Help:      "Total runner claims, by language and source (warm pool hit vs cold on-demand).",
+			}, []string{"language", "source"}),
+
+			PoolClaimDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: "vibed",
+				Subsystem: "pool",
+				Name:      "claim_duration_seconds",
+				Help:      "Time to obtain a runner, by language and source.",
+				Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120},
+			}, []string{"language", "source"}),
+
+			PoolRunnersCreated: promauto.NewCounterVec(prometheus.CounterOpts{
+				Namespace: "vibed",
+				Subsystem: "pool",
+				Name:      "runners_created_total",
+				Help:      "Total runner pods created, by language and outcome (ready vs failed warm-up).",
+			}, []string{"language", "status"}),
 		}
 	})
 	return instance
