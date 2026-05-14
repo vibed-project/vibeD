@@ -97,3 +97,28 @@ data:
       maxAge: {{ .maxAge | default "1h" | quote }}
       dryRun: {{ .dryRun | default false }}
     {{- end }}
+    {{- with .Values.config.fastPath }}
+    fastPath:
+      enabled: {{ .enabled | default false }}
+      {{- if .namespace }}
+      namespace: {{ .namespace | quote }}
+      {{- end }}
+      replenishInterval: {{ .replenishInterval | default "15s" | quote }}
+      readyTimeout: {{ .readyTimeout | default "2m" | quote }}
+      maxIdleAge: {{ .maxIdleAge | default "1h" | quote }}
+      previewTTL: {{ .previewTTL | default "1h" | quote }}
+      autoPromote: {{ .autoPromote | default false }}
+      {{- if .agentToken }}
+      agentToken: {{ .agentToken | quote }}
+      {{- end }}
+      {{- with .runners }}
+      runners:
+        {{- range $lang, $r := . }}
+        {{ $lang }}:
+          image: {{ $r.image | quote }}
+          poolSize: {{ int ($r.poolSize | default 2) }}
+          controlPort: {{ int ($r.controlPort | default 9000) }}
+          appPort: {{ int ($r.appPort | default 8080) }}
+        {{- end }}
+      {{- end }}
+    {{- end }}

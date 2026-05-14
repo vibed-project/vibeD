@@ -155,8 +155,8 @@ stable.
 |---|--------|------|-------|
 | 5.1 | ☑ | GC: short max-age for `Mode==preview`; recycle pooled runners on collection | `internal/gc/collector.go` — `cleanStalePreviews` reaps `Mode==preview` artifacts older than `previewTTL` via a `PreviewReaper` (the orchestrator's new `ReapArtifact`, which routes through `RunnerDeployer.Delete` → `pool.Release`). `Delete` refactored into a shared `deleteArtifact`. |
 | 5.2 | ☑ | `FastPath` config block | `internal/config/config.go` — full block landed across Phases 1–5: enabled, namespace, replenish/ready/idle timings, per-language runner (image, pool size, ports), `agentToken`, `autoPromote`, `previewTTL`. (Per-runner pod resource limits deferred — noted in risks.) |
-| 5.3 | ☐ | Helm `values.yaml` + `configmap.yaml` for `FastPath` | `deploy/helm/vibed/` |
-| 5.4 | ☐ | Verify `agents.x-k8s.io` RBAC sufficient for pool churn (create/delete/list) | `deploy/helm/vibed/templates/rbac.yaml` |
+| 5.3 | ☑ | Helm `values.yaml` + `configmap.yaml` for `FastPath` | `deploy/helm/vibed/` — full `config.fastPath` block in `values.yaml` (disabled by default) rendered into `configmap.yaml`, including the per-language `runners` map. `helm template` verified for both off and on. |
+| 5.4 | ☑ | Verify `agents.x-k8s.io` RBAC sufficient for pool churn | Verified — the existing `agents.x-k8s.io/sandboxes` rule already grants `get/list/watch/create/update/delete`, which covers pool churn (create/delete), the GC sweep (list/delete), and the SandboxDeployer. Comment in `rbac.yaml` updated to note the pool. |
 | 5.5 | ☐ | Docs: instant preview, promote, runner images | `docs/docs/` |
 | 5.6 | ☐ | Load test + fast-vs-fallback / preview-vs-promote metrics dashboard | `testbed/observability/` |
 

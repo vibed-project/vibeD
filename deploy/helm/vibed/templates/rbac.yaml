@@ -55,8 +55,11 @@ rules:
     resources: ["revisions", "routes", "configurations"]
     verbs: ["get", "list", "watch"]
 
-  # --- agent-sandbox: BYOC + Sandbox CR target. Without these the
-  #     SandboxDeployer 403s silently and BYOC deploys never succeed.
+  # --- agent-sandbox: BYOC + Sandbox CR target, and the Instant Preview
+  #     fast-path warm runner pool. Without these the SandboxDeployer 403s
+  #     silently and the pool can't create/recycle runner Sandboxes. The full
+  #     verb set covers pool churn (create/delete), the GC sweep (list/delete),
+  #     and the SandboxDeployer (create/update/delete/get).
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]

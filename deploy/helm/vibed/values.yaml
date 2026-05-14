@@ -134,6 +134,38 @@ config:
     # -- When true, log what would be deleted but don't delete.
     dryRun: false
 
+  # -- Instant Preview fast path: a warm pool of runner pods that user source is
+  #     injected into, skipping the per-request container build. Disabled by
+  #     default; requires the agent-sandbox CRD in the cluster.
+  fastPath:
+    enabled: false
+    # -- Namespace for warm runner pods. Empty = deployment.namespace.
+    namespace: ""
+    # -- How often the pool tops itself up to the desired size.
+    replenishInterval: "15s"
+    # -- How long to wait for a new runner's agent to come up before discarding it.
+    readyTimeout: "2m"
+    # -- Recycle idle runners older than this.
+    maxIdleAge: "1h"
+    # -- How long a preview may live before the GC reaps it (runner recycled too).
+    previewTTL: "1h"
+    # -- Automatically promote every preview into a durable built artifact.
+    autoPromote: false
+    # -- Bearer token vibeD and the runner agents share for the control API.
+    #     Empty = generated at startup (fine — previews are ephemeral and the
+    #     pool drains on shutdown, so fresh runners get the fresh token).
+    agentToken: ""
+    # -- Per-language runner pools, keyed by language ("python", "nodejs").
+    runners: {}
+    #   python:
+    #     image: ghcr.io/vibed-project/vibed-runner-python:latest
+    #     poolSize: 2
+    #     controlPort: 9000
+    #     appPort: 8080
+    #   nodejs:
+    #     image: ghcr.io/vibed-project/vibed-runner-node:latest
+    #     poolSize: 2
+
 persistence:
   enabled: true
   size: 5Gi
