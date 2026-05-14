@@ -225,6 +225,12 @@ type FastPathConfig struct {
 	// Namespace is where warm runner pods are created. Empty = deployment.namespace.
 	Namespace string `yaml:"namespace"`
 
+	// AgentToken is the bearer token vibeD and the runner agents share to
+	// authenticate the in-cluster control API. Empty = vibeD generates a
+	// random token at startup (fine: previews are ephemeral and the pool is
+	// drained on shutdown, so fresh runners get the fresh token).
+	AgentToken string `yaml:"agentToken"`
+
 	// ReplenishInterval is how often the pool tops itself up to the desired
 	// size (default: "15s").
 	ReplenishInterval time.Duration `yaml:"replenishInterval"`

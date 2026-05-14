@@ -245,7 +245,7 @@ func (p *Pool) create(ctx context.Context, language string) (*Runner, error) {
 		return nil, fmt.Errorf("%w: %q", ErrLanguageUnsupported, language)
 	}
 	name := runnerName(language)
-	obj := buildSandbox(name, p.ns, language, rc)
+	obj := buildSandbox(name, p.ns, language, p.cfg.AgentToken, rc)
 	if _, err := p.dyn.Resource(sandboxGVR).Namespace(p.ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		return nil, fmt.Errorf("creating runner Sandbox: %w", err)
 	}

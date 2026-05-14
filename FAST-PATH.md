@@ -126,10 +126,10 @@ stable.
 
 | # | Status | What | Where |
 |---|--------|------|-------|
-| 2.1 | ☐ | Agent control-channel client (inject, restart, logs, health) | `internal/deployer/` or `internal/runner-agent/client` |
-| 2.2 | ☐ | `RunnerDeployer` implementing the `Deployer` interface | `internal/deployer/runner.go` (new) |
-| 2.3 | ☐ | Register `RunnerDeployer` in the factory | `cmd/vibed/main.go:211` |
-| 2.4 | ☐ | Authenticated, in-cluster-only injection channel | agent + deployer |
+| 2.1 | ☑ | Agent control-channel client (inject, status, logs, stop, health) | `internal/runneragent/client.go` — bearer-token HTTP client; tested end-to-end against a real `Agent`. |
+| 2.2 | ☑ | `RunnerDeployer` implementing the `Deployer` interface | `internal/deployer/runner.go` (new) — `Deploy` claims a runner + injects source + confirms the process stays up; `Update` re-injects; `Delete` recycles; reads source via `storage.GetSourcePath`. Pool + agent are interfaces, unit-tested with stubs. |
+| 2.3 | ☑ | Register `RunnerDeployer` in the factory | `cmd/vibed/main.go` — `api.TargetRunner` registered when `fastPath.enabled`. |
+| 2.4 | ☑ | Authenticated, in-cluster-only injection channel | `fastPath.agentToken` (auto-generated if unset) → injected into runner pods as `VIBED_AGENT_TOKEN` by the pool, presented as a bearer token by the deployer's client. |
 
 ### Phase 3 — Orchestrator fast-path branch + dependency gate
 

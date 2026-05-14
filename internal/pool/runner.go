@@ -58,8 +58,10 @@ func (r *Runner) AppURL() string {
 // buildSandbox renders the Sandbox CR for a warm runner of the given language.
 // The pod template mirrors the hardened securityContext used by the Sandbox
 // deployer, and gates pod readiness on the agent's /healthz so the Sandbox
-// Service only has endpoints once the control API is actually up.
-func buildSandbox(name, namespace, language string, rc config.RunnerConfig) *unstructured.Unstructured {
+// Service only has endpoints once the control API is actually up. token, when
+// non-empty, is injected as VIBED_AGENT_TOKEN so the agent authenticates the
+// control API against the same secret the RunnerDeployer presents.
+func buildSandbox(name, namespace, language, token string, rc config.RunnerConfig) *unstructured.Unstructured {
 	container := map[string]interface{}{
 		"name":  "runner",
 		"image": rc.Image,
@@ -80,6 +82,11 @@ func buildSandbox(name, namespace, language string, rc config.RunnerConfig) *uns
 			},
 			"periodSeconds": int64(2),
 		},
+	}
+	if token != "" {
+		container["env"] = []interface{}{
+			map[string]interface{}{"name": "VIBED_AGENT_TOKEN", "value": token},
+		}
 	}
 
 	return &unstructured.Unstructured{Object: map[string]interface{}{

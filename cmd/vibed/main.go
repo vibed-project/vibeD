@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -229,6 +231,21 @@ func main() {
 	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, cfg.Deployment.ReadyTimeout, logger)
 	factory.Register(api.TargetKubernetes, k8sDeployer)
 
+	// Instant Preview fast path: warm runner pool + RunnerDeployer. The pool
+	// keeps idle runner Sandboxes topped up; the RunnerDeployer claims from it
+	// and injects source over the agent control API instead of building an
+	// image. The pool is started on the lifecycle context further below.
+	var runnerPool *pool.Pool
+	if cfg.FastPath.Enabled {
+		if cfg.FastPath.AgentToken == "" {
+			cfg.FastPath.AgentToken = randomToken()
+		}
+		runnerPool = pool.New(k8sClients.DynamicClient, cfg.FastPath, cfg.Deployment.Namespace, m, logger)
+		runnerDeployer := deployer.NewRunnerDeployer(runnerPool, stg, cfg.FastPath.AgentToken, logger)
+		factory.Register(api.TargetRunner, runnerDeployer)
+		logger.Info("instant preview fast path enabled", "languages", runnerPool.Languages())
+	}
+
 	// Create orchestrator
 	// Create event bus for SSE streaming
 	bus := events.NewEventBus()
@@ -261,13 +278,9 @@ func main() {
 		go collector.Run(lifeCtx)
 	}
 
-	// Start the warm runner pool for the Instant Preview fast path. The pool
-	// keeps idle runner Sandboxes topped up; the RunnerDeployer (Phase 2)
-	// claims from it. Lives on the lifecycle context so SIGTERM drains it.
-	if cfg.FastPath.Enabled {
-		runnerPool := pool.New(k8sClients.DynamicClient, cfg.FastPath, cfg.Deployment.Namespace, m, logger)
+	// Start the warm runner pool on the lifecycle context so SIGTERM drains it.
+	if runnerPool != nil {
 		go runnerPool.Run(lifeCtx)
-		logger.Info("instant preview fast path enabled", "languages", runnerPool.Languages())
 	}
 
 	// Create MCP server
@@ -447,6 +460,17 @@ func bootstrapAPIKeyUsers(keys []config.APIKeyConf, userStore store.UserStore, l
 			logger.Info("bootstrapped API key user", "name", key.Name, "role", role)
 		}
 	}
+}
+
+// randomToken returns a random hex token for the runner agent control API.
+func randomToken() string {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failure is catastrophic; fall back to a non-empty,
+		// non-predictable-enough value rather than disabling auth.
+		return fmt.Sprintf("vibed-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 // newLogger creates a slog.Logger based on the server configuration.

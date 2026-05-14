@@ -9,11 +9,15 @@ import (
 type DeploymentTarget string
 
 const (
-        TargetAuto       DeploymentTarget = "auto"
-        TargetKnative    DeploymentTarget = "knative"
-        TargetKubernetes DeploymentTarget = "kubernetes"
-        TargetSandbox    DeploymentTarget = "sandbox"
+	TargetAuto       DeploymentTarget = "auto"
+	TargetKnative    DeploymentTarget = "knative"
+	TargetKubernetes DeploymentTarget = "kubernetes"
+	TargetSandbox    DeploymentTarget = "sandbox"
+	// TargetRunner is the Instant Preview fast path: a warm pooled runner
+	// pod that user source is injected into, skipping the per-request build.
+	TargetRunner DeploymentTarget = "runner"
 )
+
 // ArtifactStatus represents the lifecycle state of a deployed artifact.
 type ArtifactStatus string
 
@@ -28,42 +32,43 @@ const (
 
 // Artifact is the central domain object representing a deployed workload.
 type Artifact struct {
-        ID          string            `json:"id"`
-        Name        string            `json:"name"`
-        OwnerID     string            `json:"owner_id,omitempty"`
-        Namespace   string            `json:"namespace,omitempty"`
-        Status      ArtifactStatus    `json:"status"`
-        Target      DeploymentTarget  `json:"target"`
-        ImageRef    string            `json:"image_ref,omitempty"`
-        URL         string            `json:"url,omitempty"`
-        Port        int               `json:"port,omitempty"`
-        EnvVars     map[string]string `json:"-"`
-        SecretRefs  map[string]string `json:"-"` // env var name → "secret-name:key"
-        Language    string            `json:"language,omitempty"`
-        StaticFiles string            `json:"static_files,omitempty"` // ConfigMap name for static content (skip build)
-        Error       string            `json:"error,omitempty"`
-        CreatedAt   time.Time         `json:"created_at"`
-        UpdatedAt   time.Time         `json:"updated_at"`
-        StorageRef  string            `json:"storage_ref,omitempty"`
-        Version     int               `json:"version"`               // Current version number (1-based, 0 = pre-versioning)
-        VersionID   string            `json:"version_id,omitempty"`  // Unique ID for this version snapshot
-        SharedWith  []string          `json:"shared_with,omitempty"` // UserIDs with read-only access
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	OwnerID     string            `json:"owner_id,omitempty"`
+	Namespace   string            `json:"namespace,omitempty"`
+	Status      ArtifactStatus    `json:"status"`
+	Target      DeploymentTarget  `json:"target"`
+	ImageRef    string            `json:"image_ref,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	Port        int               `json:"port,omitempty"`
+	EnvVars     map[string]string `json:"-"`
+	SecretRefs  map[string]string `json:"-"` // env var name → "secret-name:key"
+	Language    string            `json:"language,omitempty"`
+	StaticFiles string            `json:"static_files,omitempty"` // ConfigMap name for static content (skip build)
+	Error       string            `json:"error,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	StorageRef  string            `json:"storage_ref,omitempty"`
+	Version     int               `json:"version"`               // Current version number (1-based, 0 = pre-versioning)
+	VersionID   string            `json:"version_id,omitempty"`  // Unique ID for this version snapshot
+	SharedWith  []string          `json:"shared_with,omitempty"` // UserIDs with read-only access
 }
 
 // ArtifactSummary is a lightweight view of an artifact for list responses.
 type ArtifactSummary struct {
-        ID         string           `json:"id"`
-        Name       string           `json:"name"`
-        OwnerID    string           `json:"owner_id,omitempty"`
-        Namespace  string           `json:"namespace,omitempty"`
-        Status     ArtifactStatus   `json:"status"`
-        Target     DeploymentTarget `json:"target"`
-        URL        string           `json:"url,omitempty"`
-        CreatedAt  time.Time        `json:"created_at"`
-        UpdatedAt  time.Time        `json:"updated_at"`
-        Version    int              `json:"version"`
-        SharedWith []string         `json:"shared_with,omitempty"`
+	ID         string           `json:"id"`
+	Name       string           `json:"name"`
+	OwnerID    string           `json:"owner_id,omitempty"`
+	Namespace  string           `json:"namespace,omitempty"`
+	Status     ArtifactStatus   `json:"status"`
+	Target     DeploymentTarget `json:"target"`
+	URL        string           `json:"url,omitempty"`
+	CreatedAt  time.Time        `json:"created_at"`
+	UpdatedAt  time.Time        `json:"updated_at"`
+	Version    int              `json:"version"`
+	SharedWith []string         `json:"shared_with,omitempty"`
 }
+
 // ArtifactVersion represents a point-in-time snapshot of an artifact.
 type ArtifactVersion struct {
 	VersionID  string            `json:"version_id"`
@@ -102,12 +107,13 @@ type UserWithKey struct {
 
 // Department represents an organizational unit for grouping users.
 type Department struct {
-        ID        string    `json:"id"`
-        Name      string    `json:"name"`
-        Namespace string    `json:"namespace"`
-        CreatedAt time.Time `json:"created_at"`
-        UpdatedAt time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Namespace string    `json:"namespace"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
+
 // ShareLink represents a public shareable link to an artifact.
 type ShareLink struct {
 	Token       string     `json:"token"`
