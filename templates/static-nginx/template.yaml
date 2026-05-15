@@ -1,0 +1,71 @@
+# static-nginx — fast-lane warm pool serving rule-1 (pure static HTML)
+# deploys from the classifier. Pinned to extensions.agents.x-k8s.io/v1alpha1
+# (kubernetes-sigs/agent-sandbox v0.4.5+). See refactor.md §6.1.
+#
+# The image tag is intentionally a placeholder. The Helm chart in
+# deploy/helm/vibed templates the {{ .Values.templates.staticNginx.image }}
+# reference; CI publishes a real digest-pinned tag and Helm substitutes.
+---
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: static-nginx
+  namespace: vibed-pools
+  labels:
+    vibed.dev/template: static-nginx
+    vibed.dev/lane: fast
+spec:
+  envVarsInjectionPolicy: Allowed   # SandboxClaim can pass per-app env to the user process
+  podTemplate:
+    metadata:
+      labels:
+        vibed.dev/template: static-nginx
+    spec:
+      runtimeClassName: kata-qemu   # default per refactor-v031-decisions; switch to kata-fc on KVM nodes
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: runtime
+          image: localhost/vibed-template-static-nginx:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: control, containerPort: 9000 }
+            - { name: http,    containerPort: 8080 }
+          resources:
+            requests: { cpu: "50m",  memory: "32Mi"  }
+            limits:   { cpu: "200m", memory: "128Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: tmp,       mountPath: /tmp }
+            - { name: nginx-run, mountPath: /var/run }
+            - { name: nginx-cache, mountPath: /var/cache/nginx }
+      volumes:
+        - { name: workspace,   emptyDir: { sizeLimit: 50Mi } }
+        - { name: tmp,         emptyDir: { sizeLimit: 16Mi } }
+        - { name: nginx-run,   emptyDir: { sizeLimit:  4Mi } }
+        - { name: nginx-cache, emptyDir: { sizeLimit: 16Mi } }
+---
+# Warm pool — 30 idle replicas, refactor.md §6.1 default. Helm overrides via
+# .Values.templates.staticNginx.warmPool.
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxWarmPool
+metadata:
+  name: static-nginx
+  namespace: vibed-pools
+  labels:
+    vibed.dev/template: static-nginx
+    vibed.dev/lane: fast
+spec:
+  replicas: 30
+  sandboxTemplateRef:
+    name: static-nginx
+  updateStrategy:
+    type: OnReplenish   # roll new pods only when older ones get claimed
