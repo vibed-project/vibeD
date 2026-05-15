@@ -1,15 +1,16 @@
-# vibed-runner-node — a warm-pool runner image for the Instant Preview fast path.
+# vibed-template-node-24 — general-lane template for classifier rule 5
+# (Node app with deps). See refactor.md §6.
 #
-# It bundles the Node.js runtime, a curated set of pre-baked packages, and the
-# vibeD runner agent (PID-supervised by tini). It is built once and pushed to
-# the cluster registry — never per request. A pooled pod from this image sits
-# idle until vibeD injects a user's source over the agent's control API, at
-# which point the user process starts with no build step.
+# A pooled SandboxClaim binds this image to an app; vibed-agent then drops
+# the user's tarball into /workspace and exec's /etc/vibed/entrypoint.sh,
+# which autodetects how to start the Node process. Pre-baked common
+# packages live on NODE_PATH so simple Express/CORS apps run with no
+# per-deploy `npm install`.
 #
 # Build context MUST be the repo root:
-#   podman build -f runners/node/Dockerfile -t vibed-runner-node .
+#   podman build -f templates/node-24/Dockerfile -t vibed-template-node-24 .
 
-# Stage 1: build the runner agent (cross-compile natively, no QEMU).
+# Stage 1: build vibed-agent (cross-compile natively, no QEMU).
 FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS agent
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -17,14 +18,14 @@ ENV GOTOOLCHAIN=auto GO111MODULE=on
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-# Copy only the Go trees so the agent layer doesn't rebuild on web/docs changes.
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY pkg/ ./pkg/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -o /vibed-agent ./cmd/vibed-agent
 
-# Stage 2: Node runtime + pre-baked deps + agent.
-FROM node:22-bookworm-slim
+# Stage 2: Node 24 runtime + pre-baked deps + agent.
+FROM node:24-bookworm-slim
 
 # tini reaps zombies orphaned by the user process; the agent only supervises
 # its own direct child, so it must not run as literal PID 1.
@@ -46,6 +47,8 @@ ENV NODE_PATH=/opt/vibed/node_modules
 COPY internal/prebaked/manifests/nodejs.yaml /etc/vibed/prebaked.yaml
 
 COPY --from=agent /vibed-agent /usr/local/bin/vibed-agent
+COPY templates/node-24/entrypoint.sh /etc/vibed/entrypoint.sh
+RUN chmod +x /etc/vibed/entrypoint.sh
 
 # Non-root, UID 1000 — matches the runAsNonRoot podSecurityContext vibeD sets
 # on every workload. The node base image already ships a `node` user at UID

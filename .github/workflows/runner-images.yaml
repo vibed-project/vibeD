@@ -9,9 +9,11 @@ on:
     branches: [main]
     paths:
       - 'runners/**'
+      - 'templates/**'
       - 'cmd/vibed-agent/**'
       - 'internal/runneragent/**'
       - 'internal/appspec/**'
+      - 'pkg/vibedapi/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/runner-images.yaml'
@@ -32,8 +34,10 @@ jobs:
         runner:
           - name: python
             image: vibed-project/vibed-runner-python
+            dockerfile: runners/python/Dockerfile
           - name: node
             image: vibed-project/vibed-runner-node
+            dockerfile: templates/node-24/Dockerfile
     steps:
       - uses: actions/checkout@v5
 
@@ -65,7 +69,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: runners/${{ matrix.runner.name }}/Dockerfile
+          file: ${{ matrix.runner.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

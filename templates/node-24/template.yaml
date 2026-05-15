@@ -1,0 +1,65 @@
+# node-24 — general-lane warm pool for Node app deploys (classifier rule 5).
+# Pinned to extensions.agents.x-k8s.io/v1alpha1 (kubernetes-sigs/agent-sandbox
+# v0.4.5+). See refactor.md §6.1.
+---
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: node-24
+  namespace: vibed-pools
+  labels:
+    vibed.dev/template: node-24
+    vibed.dev/lane: general
+spec:
+  envVarsInjectionPolicy: Allowed
+  podTemplate:
+    metadata:
+      labels:
+        vibed.dev/template: node-24
+    spec:
+      runtimeClassName: kata-qemu
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: runtime
+          image: localhost/vibed-template-node-24:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: control, containerPort: 9000 }
+            - { name: http,    containerPort: 8080 }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: npm-cache, mountPath: /home/node/.npm }
+            - { name: tmp,       mountPath: /tmp }
+      volumes:
+        - { name: workspace, emptyDir: { sizeLimit: 100Mi } }
+        - { name: npm-cache, emptyDir: { sizeLimit: 200Mi } }
+        - { name: tmp,       emptyDir: { sizeLimit:  64Mi } }
+---
+# 50 idle replicas per refactor.md §6.1. Helm overrides via
+# .Values.templates.node24.warmPool.
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxWarmPool
+metadata:
+  name: node-24
+  namespace: vibed-pools
+  labels:
+    vibed.dev/template: node-24
+    vibed.dev/lane: general
+spec:
+  replicas: 50
+  sandboxTemplateRef:
+    name: node-24
+  updateStrategy:
+    type: OnReplenish

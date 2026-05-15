@@ -139,7 +139,7 @@ runner-image-python:
 	podman build -f runners/python/Dockerfile -t $(RUNNER_PYTHON_IMAGE) .
 
 runner-image-node:
-	podman build -f runners/node/Dockerfile -t $(RUNNER_NODE_IMAGE) .
+	podman build -f templates/node-24/Dockerfile -t $(RUNNER_NODE_IMAGE) .
 
 load-runner-images: runner-images
 	podman save $(RUNNER_PYTHON_IMAGE) -o /tmp/vibed-runner-python.tar
