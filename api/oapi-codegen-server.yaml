@@ -1,0 +1,12 @@
+# oapi-codegen config for the std-net/http server.
+# Generates a ServerInterface that implementers fill in; routes are wired via
+# HandlerFromMux on an existing *http.ServeMux. We import the types from the
+# same package, so output goes alongside types.gen.go.
+package: vibedhttp
+output: pkg/vibedapi/http/server.gen.go
+generate:
+  std-http-server: true
+  strict-server: true
+  embedded-spec: true
+output-options:
+  skip-prune: true

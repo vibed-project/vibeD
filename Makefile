@@ -9,6 +9,8 @@ RUNNER_NODE_IMAGE := localhost/vibed-runner-node:dev
 # Code generation
 CONTROLLER_GEN_VERSION := v0.18.0
 CONTROLLER_GEN := $(shell pwd)/bin/controller-gen
+OAPI_CODEGEN_VERSION := v2.4.1
+OAPI_CODEGEN := $(shell pwd)/bin/oapi-codegen
 
 # Testbed paths (cluster + shared-infra helm charts)
 TESTBED := testbed
@@ -21,7 +23,7 @@ TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
 
 .PHONY: build run run-http web-install web-build docs-install docs-build docs-dev build-all \
         test test-integration test-integration-short test-integration-setup test-cleanup lint \
-        generate manifests controller-gen \
+        generate manifests controller-gen openapi-gen oapi-codegen \
         image load-image \
         runner-images runner-image-python runner-image-node load-runner-images \
         setup-cluster install-registry install-knative install-observability install-keycloak \
@@ -102,6 +104,16 @@ generate: controller-gen
 # hand-edit crds/*.yaml — re-run `make manifests` instead.
 manifests: controller-gen
 	GOTOOLCHAIN=auto GO111MODULE=on $(CONTROLLER_GEN) crd paths="./pkg/vibedapi/..." output:crd:dir=crds
+
+# Installs oapi-codegen into ./bin if missing. Pinned via OAPI_CODEGEN_VERSION.
+oapi-codegen:
+	@test -x $(OAPI_CODEGEN) || GOBIN=$(shell pwd)/bin $(GO) install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION)
+
+# Regenerates Go types + std-http server stubs from api/openapi.yaml. Output
+# goes to pkg/vibedapi/http/*.gen.go. Generated; do not hand-edit.
+openapi-gen: oapi-codegen
+	GOTOOLCHAIN=auto GO111MODULE=on $(OAPI_CODEGEN) -config api/oapi-codegen-types.yaml  api/openapi.yaml
+	GOTOOLCHAIN=auto GO111MODULE=on $(OAPI_CODEGEN) -config api/oapi-codegen-server.yaml api/openapi.yaml
 
 ## Container
 

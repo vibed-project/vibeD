@@ -1,0 +1,380 @@
+openapi: 3.0.3
+info:
+  title: vibeD API
+  version: v1alpha1
+  description: |
+    HTTP API for vibeD, the workload orchestrator for GenAI-generated artifacts.
+
+    The deploy contract is the load-bearing one: `POST /v1/deploy` must return
+    within 10 s with either:
+      * `200 OK` + the final URL (happy path; warm pool absorbs the request), or
+      * `202 Accepted` + a `status_url` to poll when the classifier picked a
+        slow path (e.g., a runtime that requires an async template build).
+
+    Source of truth for this file is committed; Go server stubs are generated
+    by oapi-codegen via `make openapi-gen`. Do not edit
+    `pkg/vibedapi/http/*.gen.go` by hand.
+
+servers:
+  - url: https://vibed.example.com
+    description: Production
+  - url: http://localhost:8080
+    description: Local dev
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: deploy
+    description: Deploy + lifecycle endpoints.
+  - name: apps
+    description: Read + manage existing apps.
+  - name: templates
+    description: Available runtime templates.
+  - name: ops
+    description: Liveness, readiness, metrics.
+
+paths:
+  /v1/deploy:
+    post:
+      tags: [deploy]
+      operationId: deployApp
+      summary: Deploy a new app.
+      description: |
+        Multipart upload: a gzipped tarball of the source tree plus a JSON
+        `metadata` blob. The classifier picks the lane and template; an
+        explicit `runtime.lane` or `runtime.template` in metadata is an
+        override.
+
+        Latency contract: this endpoint MUST return within 10 s.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [source, metadata]
+              properties:
+                source:
+                  type: string
+                  format: binary
+                  description: gzipped tarball of the app source (≤ 50 MB).
+                metadata:
+                  $ref: '#/components/schemas/DeployMetadata'
+      responses:
+        '200':
+          description: Deployed; app is Ready and the URL is live.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployResponse'
+        '202':
+          description: |
+            Accepted onto a slow path. The app is not yet Ready; poll
+            `status_url` until `phase: Ready` or `phase: Failed`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413':
+          description: Tarball too large (limit 50 MB).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /v1/apps:
+    get:
+      tags: [apps]
+      operationId: listApps
+      summary: List apps owned by the authenticated user.
+      responses:
+        '200':
+          description: List of apps.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/App' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/apps/{app_id}:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    get:
+      tags: [apps]
+      operationId: getApp
+      summary: Get app status and URL.
+      responses:
+        '200':
+          description: App found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/App' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [apps]
+      operationId: deleteApp
+      summary: Tear down an app.
+      responses:
+        '204':
+          description: Deleted.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/apps/{app_id}/redeploy:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      tags: [apps]
+      operationId: redeployApp
+      summary: Redeploy with new source.
+      description: |
+        Uses snapshot-restore when `status.snapshot_ref` is populated and the
+        template hasn't changed; otherwise falls back to a fresh claim.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source:
+                  type: string
+                  format: binary
+                metadata:
+                  $ref: '#/components/schemas/DeployMetadata'
+      responses:
+        '200':
+          description: Redeployed; app is Ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeployResponse' }
+        '202':
+          description: Accepted; poll status_url.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeployResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/apps/{app_id}/suspend:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      tags: [apps]
+      operationId: suspendApp
+      summary: Suspend an app to snapshot, freeing compute.
+      responses:
+        '202':
+          description: Suspend initiated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/App' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/apps/{app_id}/logs:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    get:
+      tags: [apps]
+      operationId: streamAppLogs
+      summary: Stream logs from the app's runner via SSE.
+      responses:
+        '200':
+          description: Server-Sent Events stream of log lines.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/templates:
+    get:
+      tags: [templates]
+      operationId: listTemplates
+      summary: List available runtime templates.
+      responses:
+        '200':
+          description: List of templates.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Template' }
+
+  /healthz:
+    get:
+      tags: [ops]
+      operationId: healthz
+      summary: Liveness probe.
+      security: []
+      responses:
+        '200': { description: alive }
+        '503': { description: dead }
+
+  /readyz:
+    get:
+      tags: [ops]
+      operationId: readyz
+      summary: Readiness probe.
+      security: []
+      responses:
+        '200': { description: ready }
+        '503': { description: not ready }
+
+  /metrics:
+    get:
+      tags: [ops]
+      operationId: metrics
+      summary: Prometheus metrics.
+      security: []
+      responses:
+        '200':
+          description: Prometheus exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC bearer token issued by vibed-api after OIDC login.
+
+  parameters:
+    AppID:
+      name: app_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z0-9-]{1,63}$'
+
+  schemas:
+    DeployMetadata:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Human-readable name; URL-safe slug derived from it.
+          pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+          maxLength: 63
+        runtime:
+          $ref: '#/components/schemas/RuntimeOverride'
+        env:
+          type: array
+          items: { $ref: '#/components/schemas/EnvVar' }
+        ttl:
+          type: string
+          description: Idle TTL before suspend-to-snapshot (Go duration).
+          default: "30m"
+
+    RuntimeOverride:
+      type: object
+      description: |
+        Optional override for the classifier. Setting `lane` or `template`
+        bypasses lane/template selection; setting `entrypoint` overrides the
+        agent's autodetection.
+      properties:
+        lane:
+          type: string
+          enum: [fast, general]
+        template:
+          type: string
+        entrypoint:
+          type: string
+
+    EnvVar:
+      type: object
+      required: [name]
+      properties:
+        name:  { type: string }
+        value: { type: string }
+
+    DeployResponse:
+      type: object
+      required: [app_id]
+      properties:
+        app_id:     { type: string }
+        url:        { type: string, format: uri }
+        status_url: { type: string, format: uri }
+
+    Phase:
+      type: string
+      enum: [Pending, Claiming, Starting, Ready, Suspended, Failed]
+
+    App:
+      type: object
+      required: [app_id, phase]
+      properties:
+        app_id:           { type: string }
+        name:             { type: string }
+        owner:            { type: string }
+        phase:            { $ref: '#/components/schemas/Phase' }
+        url:              { type: string, format: uri }
+        runtime:
+          type: object
+          properties:
+            lane:       { type: string, enum: [fast, general] }
+            template:   { type: string }
+        last_deployed_at: { type: string, format: date-time }
+
+    Template:
+      type: object
+      required: [name, lane]
+      properties:
+        name:        { type: string }
+        lane:        { type: string, enum: [fast, general] }
+        description: { type: string }
+        warm_pool_size:
+          type: integer
+          description: Current warm pool size for this template.
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:    { type: string, description: stable machine-readable code }
+        message: { type: string, description: human-readable description }
+        details: { type: object, additionalProperties: true }
+
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid auth.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Internal:
+      description: Internal server error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

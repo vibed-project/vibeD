@@ -1,0 +1,8 @@
+# oapi-codegen config for component schemas → Go types.
+# Output is committed; regenerate with `make openapi-gen`.
+package: vibedhttp
+output: pkg/vibedapi/http/types.gen.go
+generate:
+  models: true
+output-options:
+  skip-prune: true

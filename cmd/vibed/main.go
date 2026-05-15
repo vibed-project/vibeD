@@ -35,6 +35,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/store"
 	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
 	"github.com/vibed-project/vibeD/pkg/api"
+	vibedhttp "github.com/vibed-project/vibeD/pkg/vibedapi/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -342,12 +343,18 @@ func main() {
 func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
 	mux := http.NewServeMux()
 
-	// Health check endpoints (always unauthenticated)
-	mux.HandleFunc("/healthz", checker.LivenessHandler())
-	mux.HandleFunc("/readyz", checker.ReadinessHandler())
-
-	// Prometheus metrics endpoint (always unauthenticated)
-	mux.Handle("/metrics", promhttp.Handler())
+	// /v1/* HTTP API + /healthz, /readyz, /metrics are mounted via
+	// oapi-codegen's HandlerFromMux so the OpenAPI spec is the single source
+	// of truth for routing. Stubs for the /v1/* business endpoints return
+	// 501 until later milestones wire them; ops endpoints delegate to the
+	// real handlers.
+	vibedAPI := vibedhttp.New(
+		http.HandlerFunc(checker.LivenessHandler()),
+		http.HandlerFunc(checker.ReadinessHandler()),
+		promhttp.Handler(),
+		logger,
+	)
+	vibedhttp.HandlerFromMux(vibedAPI, mux)
 
 	// MCP HTTP endpoint
 	mcpHandler := mcp.NewStreamableHTTPHandler(
