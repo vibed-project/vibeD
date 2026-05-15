@@ -20,7 +20,8 @@ TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
         image load-image \
         runner-images runner-image-python runner-image-node load-runner-images \
         setup-cluster install-registry install-knative install-observability install-keycloak \
-        install-agent-sandbox install-deps install-vibed dev dev-status run-latest teardown clean
+        install-agent-sandbox install-deps install-vibed install-vibed-fastpath \
+        dev dev-status run-latest teardown clean
 
 ## Build
 
@@ -155,6 +156,28 @@ install-vibed: load-image
 		--set config.store.sqlite.path=/data/vibed/vibed.db \
 		--set config.tracing.enabled=true \
 		--set config.tracing.endpoint=observability-opentelemetry-collector.monitoring:4317 \
+		--wait
+
+## install-vibed-fastpath: same as install-vibed, plus the Instant Preview fast
+## path enabled with locally built runner images (loaded into Kind), runners in
+## a dedicated `vibed-runners` namespace.
+install-vibed-fastpath: load-image load-runner-images
+	@kubectl create namespace vibed-runners --dry-run=client -o yaml | kubectl apply -f -
+	helm upgrade --install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		--set image.repository=localhost/vibed --set image.tag=dev --set image.pullPolicy=Never \
+		--set service.type=NodePort --set service.nodePort=31808 \
+		--set config.server.baseURL=http://localhost:31808 \
+		--set config.store.backend=sqlite \
+		--set config.store.sqlite.path=/data/vibed/vibed.db \
+		--set config.tracing.enabled=true \
+		--set config.tracing.endpoint=observability-opentelemetry-collector.monitoring:4317 \
+		--set config.fastPath.enabled=true \
+		--set config.fastPath.namespace=vibed-runners \
+		--set 'config.fastPath.runners.python.image=localhost/vibed-runner-python:dev' \
+		--set config.fastPath.runners.python.poolSize=2 \
+		--set 'config.fastPath.runners.nodejs.image=localhost/vibed-runner-node:dev' \
+		--set config.fastPath.runners.nodejs.poolSize=2 \
 		--wait
 
 dev: setup-cluster install-deps install-observability install-vibed

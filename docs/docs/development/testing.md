@@ -34,6 +34,13 @@ These run without a cluster and are included in CI.
 | **Event Bus** | `internal/events/bus_test.go` | 8 | Pub/sub, multiple subscribers, unsubscribe, context cancel, slow consumers, concurrency |
 | **Garbage Collector** | `internal/gc/collector_test.go` | 9 | Orphaned jobs/configmaps/deployments, active artifacts preserved, dry-run, context cancel |
 | **SQLite Store** | `internal/store/sqlite_test.go` | 12 | CRUD, list with filters, shared_with, versions, persistence across reopens |
+| **App Spec** | `internal/appspec/appspec_test.go` | 4 | Language detection, entrypoint resolution, run-command derivation |
+| **Pre-baked Manifests** | `internal/prebaked/{prebaked,gate}_test.go` | 8 | Manifest parse, normalized lookup, requirements.txt + package.json gate |
+| **Runner Agent** | `internal/runneragent/{agent,client,ringbuffer}_test.go` | ~12 | Inject / status / logs / stop, bearer-token auth, path-traversal rejection, log ring-buffer eviction, end-to-end client ↔ agent |
+| **Runner Pool** | `internal/pool/{pool,runner}_test.go` | ~12 | Claim warm/cold, Release recycle, replenish, sweep eviction, drain, resource spec rendering |
+| **Runner Deployer** | `internal/deployer/runner_test.go` | 7 | Deploy / Update / Delete / GetLogs, inject failure releases runner, crashed-process detection, language gate |
+| **Preview Proxy** | `internal/preview/handler_test.go` | 6 | Path parsing + redirect, ownership-scoped 404, non-runner rejection, header stripping, X-Forwarded-* hints, upstream 502 |
+| **Promote Guard** | `internal/orchestrator/promote_test.go` | 5 | `canPromote` accepts only `mode=preview, target=runner` |
 
 ### Fully Automated (Integration Tests)
 
@@ -44,6 +51,7 @@ These require a Kind cluster (`make dev` or `make test-integration-setup`). Tagg
 | **K8s Deployer** | `internal/deployer/kubernetes_integration_test.go` | 7 | Deploy, update, delete, logs, URL, full lifecycle |
 | **Knative Deployer** | `internal/deployer/knative_integration_test.go` | 5 | Deploy, update, delete, full lifecycle (skipped if no Knative CRDs) |
 | **Orchestrator** | `internal/orchestrator/orchestrator_integration_test.go` | 11 | Deploy, list, filter, update, delete, targets, invalid input, duplicates, build failures, logs |
+| **Promote (Fast Path)** | `internal/orchestrator/promote_integration_test.go` | 4 | Happy path swap (preview → built), reject non-preview, build-failure restores preview verbatim, 5 concurrent promotes |
 | **HTTP API** | `internal/frontend/handler_integration_test.go` | 3 | List artifacts, list targets, 404 for missing artifact |
 | **Authentication** | `internal/auth/auth_integration_test.go` | 8 | Valid/invalid keys, missing token, skip paths, env var keys |
 | **Health Checks** | `internal/health/health_integration_test.go` | 7 | Liveness, readiness, component details, not-ready state |

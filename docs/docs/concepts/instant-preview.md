@@ -55,6 +55,14 @@ hiding in it.
 An Instant Preview deploy is **ephemeral** — `mode: preview` on the artifact. It
 runs on a pooled pod, and the garbage collector reaps it after `previewTTL`.
 
+:::caution Previews don't survive a vibeD restart
+The runner-pod ↔ artifact mapping lives in vibeD's memory, and the warm pool
+drains all its pods on shutdown. If vibeD restarts, in-flight previews are
+gone — the artifact record stays in the store, but the next `update_artifact`
+call self-heals by claiming a fresh runner. **Promote** anything you want to
+keep running across restarts.
+:::
+
 To make it durable, **promote** it (see
 [`promote_artifact`](../mcp-tools/promote-artifact.md)): vibeD runs the real
 container build, deploys the digest-pinned image to a production backend
