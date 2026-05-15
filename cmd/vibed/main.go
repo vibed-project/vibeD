@@ -30,6 +30,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/middleware"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/pool"
+	"github.com/vibed-project/vibeD/internal/preview"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
@@ -363,6 +364,13 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 			resourceURL = "https://localhost" + cfg.Server.HTTPAddr
 		}
 		mux.HandleFunc("/.well-known/oauth-protected-resource", vibedauth.OAuthMetadataHandler(cfg.Auth.OIDC, resourceURL))
+	}
+
+	// Fast-path preview proxy: /preview/<artifact_id>/... → in-cluster runner.
+	// Auth flows through SkipAuthPaths (which routes /preview/ through authed),
+	// then the handler enforces per-artifact ownership via Orchestrator.Status.
+	if cfg.FastPath.Enabled {
+		mux.Handle(preview.PathPrefix, preview.New(orch, logger))
 	}
 
 	// Frontend + API

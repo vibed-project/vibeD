@@ -66,6 +66,38 @@ Set `fastPath.autoPromote: true` to promote every preview automatically in the
 background: you see the preview instantly, and the durable build materializes
 moments later.
 
+## Reaching a preview
+
+The runner pod itself only has an in-cluster URL
+(`http://<runner>.<ns>.svc.cluster.local:8080`), so vibeD exposes a reverse
+proxy on its own HTTP listener:
+
+```
+GET <server.baseURL>/preview/<artifact_id>/<path>
+  → vibeD proxies to the runner pod's app port
+```
+
+When `server.baseURL` is set, `artifact.url` is automatically populated with the
+proxy URL (e.g. `http://localhost:8080/preview/abc123/`) — paste it into a
+browser or share it. Auth flows through the standard middleware; the artifact
+owner (or share-grantee, or admin) can reach the preview, no one else.
+
+vibeD strips its own `Authorization` and `Cookie` headers before proxying, so
+the user app never sees them, and sets standard `X-Forwarded-Host`,
+`X-Forwarded-Proto`, and `X-Forwarded-Prefix` so frameworks that honour them
+(Werkzeug `ProxyFix`, FastAPI `root_path`, Express) reconstruct the correct
+external URL.
+
+:::caution Sub-path mounting
+The preview is mounted under `/preview/<artifact_id>/`, but the user app
+inside the runner serves at `/`. Apps that emit **absolute paths** (e.g. an
+`<img src="/logo.png">` or a `Location: /home` redirect) won't resolve under
+the preview prefix unless the app honours `X-Forwarded-Prefix` or is otherwise
+prefix-aware. The simple-app case (relative URLs, framework templates) works
+out of the box; for complex apps the right answer is usually to **promote**
+the preview to a real subdomain via Knative.
+:::
+
 ## Enabling it
 
 Instant Preview is **disabled by default** and requires the

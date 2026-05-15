@@ -319,10 +319,13 @@ size it against expected concurrency and your cluster's spare capacity. The
 
 :::caution
 Runner pods execute untrusted user code. Run them in a dedicated namespace with
-appropriate `NetworkPolicy` and PodSecurity `restricted` enforcement. Note that
-the runner's URL is in-cluster (`*.svc.cluster.local`) — previews are not
-externally reachable without an ingress/route in front of them.
+appropriate `NetworkPolicy` and PodSecurity `restricted` enforcement.
 :::
+
+External access to previews flows through vibeD's own HTTP listener: the
+`/preview/<artifact_id>/` reverse-proxy mounts each preview under vibeD's
+`server.baseURL`. Set `baseURL` correctly so the artifact's `url` field is
+externally usable — see [Instant Preview](../concepts/instant-preview.md).
 
 ## Scaling Considerations
 

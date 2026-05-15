@@ -208,11 +208,22 @@ Surprises / decisions:
   `agentClient`, `PreviewReaper`) so each layer unit-tests with stubs.
 
 Deferred / follow-ups:
-- **External reachability of previews** — the RunnerDeployer returns an
-  in-cluster `*.svc.cluster.local` URL (same as the SandboxDeployer). A user
-  outside the cluster can't reach a preview without an ingress/route or
-  port-forward. Pre-existing gap, but it blunts the "instant preview" value.
 - **Load test (5.6)** — needs the full stack on a live cluster; not run here.
 - **Promote integration test** — `canPromote` is unit-tested; the full
   build→swap→release path wants an integration test alongside the cluster-gated
   `orchestrator_integration_test.go`.
+
+**2026-05-15:** Two production gaps closed.
+- **Per-runner pod resource limits** — `RunnerConfig.Resources` (limits +
+  requests, cpu + memory) plumbed through the pool and Helm; conservative
+  defaults applied when unset.
+- **External preview reachability** — new `internal/preview` reverse-proxy
+  mounted at `/preview/<artifact_id>/`, registered in `main.go` when the fast
+  path is enabled. Auth flows through the standard middleware (`/preview/`
+  added to `SkipAuthPaths`'s authed-required set); the handler enforces
+  per-artifact ownership via `Orchestrator.Status` before proxying. vibeD's
+  `Authorization` / `Cookie` headers are stripped before forwarding;
+  `X-Forwarded-Host`/`-Proto`/`-Prefix` are set so prefix-aware frameworks
+  reconstruct correct URLs. When `server.baseURL` is set, the orchestrator
+  rewrites `artifact.url` to the proxy URL so the dashboard link "just works".
+  Documented sub-path caveat for apps emitting absolute paths.

@@ -151,10 +151,19 @@ kubectl logs -n vibed-system deploy/vibed | grep -iE "runner|pool"
   climbs. Verify the `runners.<lang>.image` ref and registry credentials.
 - **Pool exhausted** — every claim is `cold` in `vibed_pool_claims_total`; raise
   `poolSize` or check why runners aren't replenishing.
-- **Preview URL not reachable from outside the cluster** — runner URLs are
-  in-cluster (`*.svc.cluster.local`). This is expected; promote the artifact for
-  a durable, externally-routed deployment, or port-forward to the runner's
-  Service to view the preview.
+- **Preview URL points at `*.svc.cluster.local`** — `server.baseURL` is unset,
+  so vibeD couldn't construct an external proxy URL. Set
+  `config.server.baseURL` to the externally reachable vibeD URL (e.g.
+  `http://localhost:31808`) and redeploy / restart vibeD; subsequent previews'
+  `artifact.url` will be `<baseURL>/preview/<id>/`.
+- **`/preview/<id>/` returns 502 Bad Gateway** — vibeD reached the proxy but
+  the runner agent isn't responding. Check the runner pod is `Ready` and the
+  agent's `/healthz` is up: `kubectl exec` into the pod and curl
+  `http://localhost:9000/healthz`.
+- **Preview asset 404s under the proxy** (e.g. `<img src="/logo.png">`) — the
+  app is emitting absolute paths that don't resolve under `/preview/<id>/`.
+  See the sub-path caveat in [Instant Preview](../concepts/instant-preview.md);
+  the long-term answer is to promote the preview to its own subdomain.
 
 ## Authentication Issues
 

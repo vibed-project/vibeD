@@ -1177,6 +1177,16 @@ func pinnedImageRef(r *builder.BuildResult) string {
 	return ref + "@" + r.Digest
 }
 
+// previewProxyURL builds the externally reachable URL for a fast-path preview
+// served through vibeD's /preview/ proxy. Returns "" when baseURL is unset, in
+// which case callers fall back to the in-cluster runner address (and warn).
+func previewProxyURL(baseURL, artifactID string) string {
+	if baseURL == "" || artifactID == "" {
+		return ""
+	}
+	return strings.TrimRight(baseURL, "/") + "/preview/" + artifactID + "/"
+}
+
 const staticNginxConf = `server {
     listen 8080;
     server_name _;
@@ -1348,6 +1358,16 @@ func (o *Orchestrator) deployRunner(ctx context.Context, artifact *api.Artifact)
 	o.metrics.DeployDuration.WithLabelValues("success", string(api.TargetRunner)).Observe(deployDur)
 	o.metrics.ArtifactsActive.WithLabelValues(string(api.TargetRunner)).Inc()
 
+	// Replace the in-cluster runner URL with the externally reachable preview
+	// proxy URL when server.baseURL is set, so artifact.URL is something a user
+	// can actually open in a browser.
+	if proxyURL := previewProxyURL(o.cfg.Server.BaseURL, artifact.ID); proxyURL != "" {
+		deployResult.URL = proxyURL
+	} else {
+		o.logger.Warn("preview deployed but server.baseURL is unset — artifact.URL is the in-cluster runner address",
+			"artifact_id", artifact.ID)
+	}
+
 	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
 
 	o.logger.Info("artifact deployed via instant preview (no build)",
@@ -1398,6 +1418,10 @@ func (o *Orchestrator) updateRunner(ctx context.Context, artifact *api.Artifact)
 
 	o.metrics.DeploysTotal.WithLabelValues("success", string(api.TargetRunner)).Inc()
 	o.metrics.DeployDuration.WithLabelValues("success", string(api.TargetRunner)).Observe(deployDur)
+
+	if proxyURL := previewProxyURL(o.cfg.Server.BaseURL, artifact.ID); proxyURL != "" {
+		deployResult.URL = proxyURL
+	}
 
 	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
 
