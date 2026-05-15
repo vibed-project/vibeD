@@ -6,6 +6,10 @@ GHCR_IMAGE := ghcr.io/vibed-project/vibed
 RUNNER_PYTHON_IMAGE := localhost/vibed-runner-python:dev
 RUNNER_NODE_IMAGE := localhost/vibed-runner-node:dev
 
+# Code generation
+CONTROLLER_GEN_VERSION := v0.18.0
+CONTROLLER_GEN := $(shell pwd)/bin/controller-gen
+
 # Testbed paths (cluster + shared-infra helm charts)
 TESTBED := testbed
 TB_KIND := $(TESTBED)/kind-cluster
@@ -17,6 +21,7 @@ TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
 
 .PHONY: build run run-http web-install web-build docs-install docs-build docs-dev build-all \
         test test-integration test-integration-short test-integration-setup test-cleanup lint \
+        generate manifests controller-gen \
         image load-image \
         runner-images runner-image-python runner-image-node load-runner-images \
         setup-cluster install-registry install-knative install-observability install-keycloak \
@@ -80,6 +85,23 @@ test-cleanup:
 
 lint:
 	golangci-lint run ./...
+
+## Code generation (CRDs + DeepCopy)
+
+# Installs controller-gen into ./bin if missing. Pinned via CONTROLLER_GEN_VERSION.
+controller-gen:
+	@test -x $(CONTROLLER_GEN) || GOBIN=$(shell pwd)/bin $(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
+# Regenerates DeepCopy methods for all kubebuilder-annotated API packages.
+# GO111MODULE=on + GOTOOLCHAIN=auto propagate to the go invocation controller-gen
+# does internally when it loads packages.
+generate: controller-gen
+	GOTOOLCHAIN=auto GO111MODULE=on $(CONTROLLER_GEN) object paths="./pkg/vibedapi/..."
+
+# Regenerates CRD YAML from kubebuilder markers. Output is committed; do not
+# hand-edit crds/*.yaml — re-run `make manifests` instead.
+manifests: controller-gen
+	GOTOOLCHAIN=auto GO111MODULE=on $(CONTROLLER_GEN) crd paths="./pkg/vibedapi/..." output:crd:dir=crds
 
 ## Container
 
