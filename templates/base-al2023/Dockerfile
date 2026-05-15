@@ -1,0 +1,75 @@
+# vibed-template-base-al2023 — kitchen-sink general-lane template for the
+# classifier's "I don't know what this is" cases (rule 8: Dockerfile at
+# root, treated as a runtime hint not a build; rule 9: unknown fallback).
+# See refactor.md §6 / §6.1.
+#
+# Bundles Node 24, Python 3.13, Go 1.23, plus sudo + dnf so an in-pod
+# user can `sudo dnf install` if they truly need something the classifier
+# couldn't predict. Targets ≤1.5 GB compressed per refactor.md §6.2 — the
+# largest template by design; keep the kitchen-sink instinct in check
+# when expanding this list.
+#
+# Build context MUST be the repo root:
+#   podman build -f templates/base-al2023/Dockerfile -t vibed-template-base-al2023 .
+
+# Stage 1: build vibed-agent (cross-compile natively, no QEMU).
+FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS agent
+ARG TARGETOS=linux
+ARG TARGETARCH
+ENV GOTOOLCHAIN=auto GO111MODULE=on
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY pkg/ ./pkg/
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -o /vibed-agent ./cmd/vibed-agent
+
+# Stage 2: Amazon Linux 2023 with the major runtimes.
+FROM amazonlinux:2023
+
+# Single dnf transaction so the image has one big layer instead of many.
+# --setopt=install_weak_deps=False trims a few hundred MB. AL2023 ships
+# tini in `tini`, sudo in `sudo`, nodejs 20 + python3.11 + golang in the
+# default repos as of this manifest.
+RUN dnf install -y --setopt=install_weak_deps=False \
+      tini \
+      sudo \
+      ca-certificates \
+      shadow-utils \
+      tar gzip \
+      nodejs npm \
+      python3 python3-pip \
+      golang \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf
+
+# Common Python + Node packages so the most-asked-for stacks need no
+# install. Lists are deliberately short — base-al2023's job is "works for
+# anything weird", not "works for every framework"; the language-specific
+# templates absorb the framework-bake load.
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+      flask fastapi "uvicorn[standard]" requests \
+ && mkdir -p /opt/vibed \
+ && cd /opt/vibed && npm install --no-audit --no-fund express
+ENV NODE_PATH=/opt/vibed/node_modules
+
+COPY --from=agent /vibed-agent /usr/local/bin/vibed-agent
+COPY templates/base-al2023/entrypoint.sh /etc/vibed/entrypoint.sh
+RUN chmod +x /etc/vibed/entrypoint.sh
+
+# Non-root, UID 1000.
+RUN useradd --uid 1000 --create-home --home-dir /home/runner runner \
+ && mkdir -p /workspace \
+ && chown runner:runner /workspace
+USER 1000
+WORKDIR /workspace
+
+ENV VIBED_AGENT_WORKDIR=/workspace \
+    VIBED_AGENT_CONTROL_ADDR=:9000 \
+    VIBED_AGENT_APP_PORT=8080
+
+EXPOSE 9000 8080
+
+ENTRYPOINT ["tini", "--", "vibed-agent"]

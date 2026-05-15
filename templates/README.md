@@ -15,15 +15,15 @@ Each subdirectory is one runtime template referenced by the classifier
 
 The v1 set (refactor.md §6.1):
 
-| Template       | Lane    | Status        |
-|----------------|---------|---------------|
-| `static-nginx` | fast    | landed (C2.2) |
-| `node-24`      | general | pending (C2.x — migrated from `runners/node`) |
-| `python-313`   | general | pending (C2.x — migrated from `runners/python`) |
-| `go-123`       | general | pending |
-| `base-al2023`  | general | pending |
-| `workerd`      | fast    | pending (milestone E1) |
-| `spin`         | fast    | pending (milestone E2) |
+| Template       | Lane    | Pool size | Status        |
+|----------------|---------|-----------|---------------|
+| `static-nginx` | fast    | 30        | landed (C2.2) |
+| `node-24`      | general | 50        | landed (C2.3) |
+| `python-313`   | general | 50        | landed (C2.4) |
+| `go-123`       | general | 20        | landed (C2.5) |
+| `base-al2023`  | general | 30        | landed (C2.6) |
+| `workerd`      | fast    | n/a       | pending (milestone E1) |
+| `spin`         | fast    | n/a       | pending (milestone E2) |
 
 Every image **must** embed `vibed-agent` at `/usr/local/bin/vibed-agent`
 and run it as the process the container's `ENTRYPOINT` resolves to
