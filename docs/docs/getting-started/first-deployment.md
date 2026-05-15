@@ -57,7 +57,28 @@ Ask Claude to deploy a simple website:
 
 > "Create a simple portfolio website with my name and deploy it using vibeD"
 
-Claude will use the `deploy_artifact` tool automatically. Static HTML/CSS/JS files deploy instantly via ConfigMap (no container build needed). More complex apps (Node.js, Python, Go) are built via Buildah.
+Claude will use the `deploy_artifact` tool automatically. How the deploy runs depends on the source:
+
+- **Static HTML/CSS/JS** — deploys instantly via ConfigMap + nginx, no container build.
+- **Python/Node with pre-baked dependencies** — if the [Instant Preview](../concepts/instant-preview.md) fast path is enabled, the source is injected into a warm pooled runner pod, also with no build. The artifact comes back with `mode: preview`; promote it with `promote_artifact` for a durable build.
+- **Anything else** — built into a container image by a Buildah Kubernetes Job.
+
+## Try an Instant Preview
+
+If the fast path is enabled (`fastPath.enabled` in the vibeD config), deploy a tiny Python app and watch it come up without a build:
+
+```json
+{
+  "name": "hello-flask",
+  "files": {
+    "app.py": "import os\nfrom flask import Flask\napp = Flask(__name__)\n\n@app.route('/')\ndef home():\n    return 'Hello from an Instant Preview!'\n\napp.run(host='0.0.0.0', port=int(os.environ['PORT']))\n"
+  }
+}
+```
+
+`flask` is pre-baked into the runner image, so this skips the build entirely and
+returns `mode: preview`. Call `promote_artifact` with the returned `artifact_id`
+when you want a durable, digest-pinned build.
 
 ## Using MCP Inspector
 

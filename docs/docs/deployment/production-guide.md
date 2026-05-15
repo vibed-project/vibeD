@@ -284,6 +284,46 @@ Alternatively, mount a Docker config as a volume in the pod.
 
 See [Container Registry](../configuration/registry.md) for full details.
 
+## Optional: Instant Preview Fast Path
+
+The [Instant Preview](../concepts/instant-preview.md) fast path lets Python/Node
+apps with pre-baked dependencies deploy with no container build. It is
+**disabled by default**. To enable it in production:
+
+1. **Install the agent-sandbox CRD** — the fast path runs on `Sandbox` resources
+   (the same CRD as the Sandbox deployment target). See Step 2.
+2. **Build and push the runner images** — `make runner-images` builds
+   `vibed-runner-python` / `vibed-runner-node` and CI pushes them to GHCR; or
+   build and push to your own registry. They are built once, not per request.
+3. **Enable it in your values file** under `config.fastPath`:
+
+   ```yaml
+   config:
+     fastPath:
+       enabled: true
+       namespace: vibed-runners          # dedicated namespace recommended
+       previewTTL: "1h"                  # GC reaps previews after this
+       autoPromote: false                # or true to auto-build every preview
+       runners:
+         python:
+           image: ghcr.io/vibed-project/vibed-runner-python:latest
+           poolSize: 2
+         nodejs:
+           image: ghcr.io/vibed-project/vibed-runner-node:latest
+           poolSize: 2
+   ```
+
+The warm pool keeps `poolSize` idle pods per language running at all times —
+size it against expected concurrency and your cluster's spare capacity. The
+`agentToken` is generated at startup if left unset.
+
+:::caution
+Runner pods execute untrusted user code. Run them in a dedicated namespace with
+appropriate `NetworkPolicy` and PodSecurity `restricted` enforcement. Note that
+the runner's URL is in-cluster (`*.svc.cluster.local`) — previews are not
+externally reachable without an ingress/route in front of them.
+:::
+
 ## Scaling Considerations
 
 vibeD defaults to a single replica. Before scaling, consider:
@@ -324,3 +364,4 @@ Before going to production, verify:
 - [ ] **Metrics endpoint** (`/metrics`) not publicly exposed (use NetworkPolicy or firewall)
 - [ ] **Store backend** set to `sqlite` (default) or `configmap` (not `memory`)
 - [ ] **Knative domain** uses a real domain (not `localhost`)
+- [ ] **Fast-path runners** (if `fastPath.enabled`) run in a dedicated namespace with NetworkPolicy — they execute untrusted user code

@@ -114,6 +114,48 @@ kubectl logs -n kourier-system deploy/3scale-kourier-control
 - Check NodePort allocation: `kubectl get svc -n <artifact-namespace>`
 - Verify firewall rules allow traffic to the NodePort range (30000-32767)
 
+### Instant Preview Not Used (deploy went through Buildah instead)
+
+A deploy you expected to be a fast-path preview (`mode: preview`) instead built
+a container image. The [dependency gate](../concepts/instant-preview.md#the-dependency-gate)
+silently falls back to the build path when an app isn't eligible. Check:
+
+- **Fast path enabled?** `config.fastPath.enabled: true` and a `runners` entry
+  for the language.
+- **Dependency not pre-baked?** Every dependency in `requirements.txt` /
+  `package.json` must be in the runner image's manifest
+  (`internal/prebaked/manifests/*.yaml`). One unknown dependency → full build.
+- **Un-analyzable `requirements.txt`?** Lines like `-r other.txt`, VCS installs
+  (`git+https://…`), or local paths make the file un-analyzable → full build.
+- To force the fast path and get a clear error instead of a silent fallback,
+  pass `target: "runner"` explicitly to `deploy_artifact`.
+
+### Instant Preview Stuck or Failing
+
+```bash
+# The runner pool runs on Sandbox CRs — confirm the CRD is installed
+kubectl get crd sandboxes.agents.x-k8s.io
+
+# Inspect the warm pool (idle + claimed runner pods)
+kubectl get sandboxes -n <fastPath.namespace> -l app.kubernetes.io/component=runner-pool
+
+# vibeD logs show pool churn, claims, and warmup failures
+kubectl logs -n vibed-system deploy/vibed | grep -iE "runner|pool"
+```
+
+**Common causes:**
+- **agent-sandbox CRD missing** — without it the pool can't create runners; the
+  RunnerDeployer isn't registered and deploys fall back to the build path.
+- **Runner image not pullable** — pooled pods stay un-Ready; vibeD discards them
+  after `fastPath.readyTimeout` and `vibed_pool_runners_created_total{status="failed"}`
+  climbs. Verify the `runners.<lang>.image` ref and registry credentials.
+- **Pool exhausted** — every claim is `cold` in `vibed_pool_claims_total`; raise
+  `poolSize` or check why runners aren't replenishing.
+- **Preview URL not reachable from outside the cluster** — runner URLs are
+  in-cluster (`*.svc.cluster.local`). This is expected; promote the artifact for
+  a durable, externally-routed deployment, or port-forward to the runner's
+  Service to view the preview.
+
 ## Authentication Issues
 
 ### 401 Unauthorized
