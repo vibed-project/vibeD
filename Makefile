@@ -1,5 +1,6 @@
 GO := GOTOOLCHAIN=auto GO111MODULE=on go
 BINARY := bin/vibed
+CONTROLLER_BINARY := bin/vibed-controller
 KIND_CLUSTER := vibed-dev
 KIND_RUNTIME := podman
 GHCR_IMAGE := ghcr.io/vibed-project/vibed
@@ -21,7 +22,7 @@ TB_OBS := $(TESTBED)/observability
 TB_KEYCLOAK := $(TESTBED)/keycloak
 TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
 
-.PHONY: build run run-http web-install web-build docs-install docs-build docs-dev build-all \
+.PHONY: build build-controller run run-http web-install web-build docs-install docs-build docs-dev build-all \
         test test-integration test-integration-short test-integration-setup test-cleanup lint \
         generate manifests controller-gen openapi-gen oapi-codegen \
         image load-image \
@@ -34,6 +35,9 @@ TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
 
 build:
 	$(GO) build -o $(BINARY) ./cmd/vibed
+
+build-controller:
+	$(GO) build -o $(CONTROLLER_BINARY) ./cmd/vibed-controller
 
 run: build
 	./$(BINARY) --config vibed.yaml
