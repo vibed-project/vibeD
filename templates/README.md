@@ -29,3 +29,31 @@ Every image **must** embed `vibed-agent` at `/usr/local/bin/vibed-agent`
 and run it as the process the container's `ENTRYPOINT` resolves to
 (supervised by `tini` for zombie reaping — the agent supervises its own
 direct child only, see `internal/runneragent/agent.go`).
+
+## Building
+
+The build context **must be the repo root** — the Dockerfiles compile
+`vibed-agent` from the Go source tree:
+
+```sh
+make runner-images        # build node-24 + python-313 locally
+make load-runner-images   # build + load into the Kind dev cluster
+```
+
+CI builds and pushes multi-arch images to GHCR on changes under
+`templates/**`, the agent source, or `pkg/vibedapi/**` — see
+`.github/workflows/runner-images.yaml`. The build artifacts in
+`bin/vibed-controller` and friends are produced by separate `make` targets.
+
+## Adding a pre-baked dependency to a language template
+
+The manifest in `internal/prebaked/manifests/` and the install step in the
+template's `Dockerfile` **must stay in sync** — vibeD's dependency gate
+trusts the embedded manifest to reflect what the image actually contains.
+To add a package:
+
+1. Add it to the `pip install` / `npm install` line in the template's
+   `Dockerfile`.
+2. Add its normalized name to `packages:` in the matching
+   `internal/prebaked/manifests/*.yaml`.
+3. Rebuild and push the image.

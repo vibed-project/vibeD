@@ -8,7 +8,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'runners/**'
       - 'templates/**'
       - 'cmd/vibed-agent/**'
       - 'internal/runneragent/**'
@@ -34,7 +33,7 @@ jobs:
         runner:
           - name: python
             image: vibed-project/vibed-runner-python
-            dockerfile: runners/python/Dockerfile
+            dockerfile: templates/python-313/Dockerfile
           - name: node
             image: vibed-project/vibed-runner-node
             dockerfile: templates/node-24/Dockerfile

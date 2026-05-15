@@ -136,7 +136,7 @@ load-image: image
 runner-images: runner-image-python runner-image-node
 
 runner-image-python:
-	podman build -f runners/python/Dockerfile -t $(RUNNER_PYTHON_IMAGE) .
+	podman build -f templates/python-313/Dockerfile -t $(RUNNER_PYTHON_IMAGE) .
 
 runner-image-node:
 	podman build -f templates/node-24/Dockerfile -t $(RUNNER_NODE_IMAGE) .

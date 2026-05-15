@@ -1,15 +1,16 @@
-# vibed-runner-python — a warm-pool runner image for the Instant Preview fast path.
+# vibed-template-python-313 — general-lane template for classifier rule 6
+# (Python app). See refactor.md §6.
 #
-# It bundles a Python interpreter, a curated set of pre-baked web frameworks,
-# and the vibeD runner agent (PID-supervised by tini). It is built once and
-# pushed to the cluster registry — never per request. A pooled pod from this
-# image sits idle until vibeD injects a user's source over the agent's control
-# API, at which point the user process starts with no build step.
+# A pooled SandboxClaim binds this image to an app; vibed-agent then drops
+# the user's tarball into /workspace and exec's /etc/vibed/entrypoint.sh,
+# which autodetects how to start the Python process. Pre-baked web
+# frameworks live as site-packages so common Flask/FastAPI/Uvicorn apps
+# run with no per-deploy `pip install`.
 #
 # Build context MUST be the repo root:
-#   podman build -f runners/python/Dockerfile -t vibed-runner-python .
+#   podman build -f templates/python-313/Dockerfile -t vibed-template-python-313 .
 
-# Stage 1: build the runner agent (cross-compile natively, no QEMU).
+# Stage 1: build vibed-agent (cross-compile natively, no QEMU).
 FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS agent
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -17,14 +18,14 @@ ENV GOTOOLCHAIN=auto GO111MODULE=on
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-# Copy only the Go trees so the agent layer doesn't rebuild on web/docs changes.
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY pkg/ ./pkg/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -o /vibed-agent ./cmd/vibed-agent
 
-# Stage 2: Python runtime + pre-baked deps + agent.
-FROM python:3.12-slim
+# Stage 2: Python 3.13 runtime + pre-baked deps + agent.
+FROM python:3.13-slim
 
 # tini reaps zombies orphaned by the user process; the agent only supervises
 # its own direct child, so it must not run as literal PID 1.
@@ -48,6 +49,8 @@ RUN pip install --no-cache-dir --root-user-action=ignore \
 COPY internal/prebaked/manifests/python.yaml /etc/vibed/prebaked.yaml
 
 COPY --from=agent /vibed-agent /usr/local/bin/vibed-agent
+COPY templates/python-313/entrypoint.sh /etc/vibed/entrypoint.sh
+RUN chmod +x /etc/vibed/entrypoint.sh
 
 # Non-root, UID 1000 — matches the runAsNonRoot podSecurityContext vibeD sets
 # on every workload. /workspace is where the agent writes injected source.
