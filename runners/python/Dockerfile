@@ -21,7 +21,7 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -o /vibed-runner-agent ./cmd/vibed-runner-agent
+    go build -o /vibed-agent ./cmd/vibed-agent
 
 # Stage 2: Python runtime + pre-baked deps + agent.
 FROM python:3.12-slim
@@ -47,7 +47,7 @@ RUN pip install --no-cache-dir --root-user-action=ignore \
 # Ship that same manifest in the image for reference / introspection.
 COPY internal/prebaked/manifests/python.yaml /etc/vibed/prebaked.yaml
 
-COPY --from=agent /vibed-runner-agent /usr/local/bin/vibed-runner-agent
+COPY --from=agent /vibed-agent /usr/local/bin/vibed-agent
 
 # Non-root, UID 1000 — matches the runAsNonRoot podSecurityContext vibeD sets
 # on every workload. /workspace is where the agent writes injected source.
@@ -64,4 +64,4 @@ ENV VIBED_AGENT_WORKDIR=/workspace \
 # 9000: in-cluster control API (never exposed publicly). 8080: the user app.
 EXPOSE 9000 8080
 
-ENTRYPOINT ["tini", "--", "vibed-runner-agent"]
+ENTRYPOINT ["tini", "--", "vibed-agent"]

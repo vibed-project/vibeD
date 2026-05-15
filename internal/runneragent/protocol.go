@@ -23,15 +23,25 @@ const (
 )
 
 // InjectRequest is the body of POST /inject. vibeD sends the user's source
-// files plus how to run them; the agent writes the files into its workdir and
+// — as inline Files or as a SourceURL pointing at a gzipped tarball — plus
+// how to run them; the agent writes the source into its workdir and
 // (re)starts the user process. A second inject replaces the first.
+//
+// Exactly one of Files or SourceURL must be set. SourceURL is the
+// refactor.md §5.4 contract (S3 pre-signed URL); Files is the legacy inline
+// path that vibeD's in-process pool code still uses pre-milestone-C.
 type InjectRequest struct {
 	// Language is the detected language (see internal/appspec). When Command
 	// is empty the agent derives the run command from Language + Files.
 	Language string `json:"language"`
 	// Files maps relative path → file content. Paths are sanitised by the
 	// agent: absolute paths and parent-directory escapes are rejected.
-	Files map[string]string `json:"files"`
+	Files map[string]string `json:"files,omitempty"`
+	// SourceURL points at a gzipped tarball the agent fetches and extracts
+	// into the workdir. Use this for any source that exceeds a comfortable
+	// JSON payload (~ a few MB) — the agent enforces a 50 MB tarball cap to
+	// match the refactor.md §5.1 limit.
+	SourceURL string `json:"source_url,omitempty"`
 	// Command, when set, is the explicit run command + args and overrides the
 	// language-derived default.
 	Command []string `json:"command,omitempty"`

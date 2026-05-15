@@ -85,12 +85,12 @@ func TestClientRejectsBadToken(t *testing.T) {
 
 func TestClientSurfacesAgentError(t *testing.T) {
 	c := newClientAgainstAgent(t, "")
-	// Empty Files → the agent rejects the inject with a 400.
+	// Empty Files + no SourceURL → the agent rejects the inject with a 400.
 	_, err := c.Inject(context.Background(), InjectRequest{Language: "python"})
 	if err == nil {
-		t.Fatal("Inject with no files should error")
+		t.Fatal("Inject with no files or source_url should error")
 	}
-	if !strings.Contains(err.Error(), "file is required") {
+	if !strings.Contains(err.Error(), "files or source_url") {
 		t.Errorf("error %q should surface the agent's message", err)
 	}
 }

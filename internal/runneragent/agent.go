@@ -74,6 +74,10 @@ type Agent struct {
 	cfg  Config
 	logs *ringBuffer
 
+	// Fetcher pulls SourceURL-based inject payloads. Pluggable so tests can
+	// swap in an in-process httptest server.
+	Fetcher *SourceFetcher
+
 	mu       sync.Mutex
 	gen      uint64        // bumped on every inject; lets stale supervisors no-op
 	cmd      *exec.Cmd     // current user process, nil when idle
@@ -89,9 +93,10 @@ type Agent struct {
 func New(cfg Config) *Agent {
 	cfg.applyDefaults()
 	return &Agent{
-		cfg:   cfg,
-		logs:  newRingBuffer(cfg.LogLines),
-		state: StateIdle,
+		cfg:     cfg,
+		logs:    newRingBuffer(cfg.LogLines),
+		state:   StateIdle,
+		Fetcher: NewSourceFetcher(),
 	}
 }
 
@@ -169,12 +174,18 @@ func (a *Agent) handleInject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	if len(req.Files) == 0 {
-		writeError(w, http.StatusBadRequest, "at least one file is required")
+	hasFiles := len(req.Files) > 0
+	hasURL := req.SourceURL != ""
+	switch {
+	case !hasFiles && !hasURL:
+		writeError(w, http.StatusBadRequest, "either files or source_url is required")
+		return
+	case hasFiles && hasURL:
+		writeError(w, http.StatusBadRequest, "files and source_url are mutually exclusive")
 		return
 	}
 
-	status, err := a.inject(req)
+	status, err := a.inject(r.Context(), req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -203,10 +214,19 @@ func (a *Agent) handleStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.status())
 }
 
-// inject writes the source files and (re)starts the user process. Any process
-// from a previous inject is stopped first.
-func (a *Agent) inject(req InjectRequest) (StatusResponse, error) {
-	// Resolve the run command outside the lock — pure computation.
+// inject writes the source (inline files or tarball pulled from SourceURL)
+// and (re)starts the user process. Any process from a previous inject is
+// stopped first.
+//
+// We don't hold a.mu across the tarball fetch — that's a network round-trip
+// and would block /status and /healthz for the duration. Source is staged
+// into a temp directory first, then swapped into the workdir under the lock.
+func (a *Agent) inject(ctx context.Context, req InjectRequest) (StatusResponse, error) {
+	// Resolve the run command. When SourceURL is used we don't know the file
+	// list at this point, so for the autodetect path the caller must pass
+	// Command explicitly (or set Language so RunCommand returns a fixed
+	// language-default). This keeps the agent off the file-system before
+	// taking the lock.
 	command := req.Command
 	if len(command) == 0 {
 		command = appspec.RunCommand(req.Language, req.Files)
@@ -220,6 +240,25 @@ func (a *Agent) inject(req InjectRequest) (StatusResponse, error) {
 		appPort = a.cfg.AppPort
 	}
 
+	// Tarball pull happens outside the lock. The data lands in a fresh temp
+	// dir so a partial fetch never corrupts the workdir.
+	var stagedDir string
+	if req.SourceURL != "" {
+		dir, err := os.MkdirTemp("", "vibed-inject-*")
+		if err != nil {
+			return StatusResponse{}, fmt.Errorf("staging dir: %w", err)
+		}
+		defer os.RemoveAll(dir)
+		fetcher := a.Fetcher
+		if fetcher == nil {
+			fetcher = NewSourceFetcher()
+		}
+		if err := fetcher.Fetch(ctx, req.SourceURL, dir); err != nil {
+			return StatusResponse{}, err
+		}
+		stagedDir = dir
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -229,7 +268,11 @@ func (a *Agent) inject(req InjectRequest) (StatusResponse, error) {
 	if err := a.resetWorkdirLocked(); err != nil {
 		return StatusResponse{}, err
 	}
-	if err := writeFiles(a.cfg.Workdir, req.Files); err != nil {
+	if stagedDir != "" {
+		if err := moveDirContents(stagedDir, a.cfg.Workdir); err != nil {
+			return StatusResponse{}, err
+		}
+	} else if err := writeFiles(a.cfg.Workdir, req.Files); err != nil {
 		return StatusResponse{}, err
 	}
 	a.logs.reset()
@@ -240,6 +283,23 @@ func (a *Agent) inject(req InjectRequest) (StatusResponse, error) {
 		return a.statusLocked(), err
 	}
 	return a.statusLocked(), nil
+}
+
+// moveDirContents moves every entry under src into dst. dst is expected to
+// be empty (resetWorkdirLocked guarantees this for the inject path).
+func moveDirContents(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("staged dir: %w", err)
+	}
+	for _, e := range entries {
+		from := filepath.Join(src, e.Name())
+		to := filepath.Join(dst, e.Name())
+		if err := os.Rename(from, to); err != nil {
+			return fmt.Errorf("move %s → %s: %w", from, to, err)
+		}
+	}
+	return nil
 }
 
 // startProcessLocked launches the user process. Caller holds a.mu.

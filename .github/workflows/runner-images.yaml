@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths:
       - 'runners/**'
-      - 'cmd/vibed-runner-agent/**'
+      - 'cmd/vibed-agent/**'
       - 'internal/runneragent/**'
       - 'internal/appspec/**'
       - 'go.mod'
