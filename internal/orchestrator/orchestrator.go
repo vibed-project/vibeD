@@ -1543,11 +1543,16 @@ func (o *Orchestrator) doPromote(ctx context.Context, artifactID string) (*Deplo
 	}
 
 	// Snapshot the preview state so a failed promote can restore it verbatim.
+	// Note: we deliberately do NOT capture Status — by the time doPromote runs,
+	// AsyncPromote has already set Status=building synchronously, so the live
+	// Status is no longer the pre-promote value. A preview we're restoring to is
+	// by definition the running serving state.
 	prevTarget, prevMode := artifact.Target, artifact.Mode
-	prevImageRef, prevURL, prevStatus := artifact.ImageRef, artifact.URL, artifact.Status
+	prevImageRef, prevURL := artifact.ImageRef, artifact.URL
 	restorePreview := func() {
 		artifact.Target, artifact.Mode = prevTarget, prevMode
-		artifact.ImageRef, artifact.URL, artifact.Status = prevImageRef, prevURL, prevStatus
+		artifact.ImageRef, artifact.URL = prevImageRef, prevURL
+		artifact.Status = api.StatusRunning
 		artifact.Error = ""
 		artifact.UpdatedAt = time.Now()
 		if uerr := o.store.Update(o.lifeCtx, artifact); uerr != nil {

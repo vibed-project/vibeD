@@ -65,6 +65,8 @@ test-integration-setup:
 	@echo "Loading test images into Kind cluster..."
 	podman pull docker.io/library/nginx:1.27-alpine 2>/dev/null || true
 	kind load docker-image docker.io/library/nginx:1.27-alpine --name $(KIND_CLUSTER) 2>/dev/null || true
+	podman pull docker.io/nginxinc/nginx-unprivileged:alpine 2>/dev/null || true
+	kind load docker-image docker.io/nginxinc/nginx-unprivileged:alpine --name $(KIND_CLUSTER) 2>/dev/null || true
 
 test-integration: test-integration-setup
 	$(GO) test -tags=integration -timeout 10m -count=1 -v ./...

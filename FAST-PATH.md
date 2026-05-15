@@ -209,9 +209,6 @@ Surprises / decisions:
 
 Deferred / follow-ups:
 - **Load test (5.6)** — needs the full stack on a live cluster; not run here.
-- **Promote integration test** — `canPromote` is unit-tested; the full
-  build→swap→release path wants an integration test alongside the cluster-gated
-  `orchestrator_integration_test.go`.
 
 **2026-05-15:** Two production gaps closed.
 - **Per-runner pod resource limits** — `RunnerConfig.Resources` (limits +
@@ -227,3 +224,19 @@ Deferred / follow-ups:
   reconstruct correct URLs. When `server.baseURL` is set, the orchestrator
   rewrites `artifact.url` to the proxy URL so the dashboard link "just works".
   Documented sub-path caveat for apps emitting absolute paths.
+
+**2026-05-15:** Promote integration test (`promote_integration_test.go`) —
+three cases against the live Kind cluster, using a stub `RunnerDeployer` (the
+real one needs a warm pool + agent-sandbox CRD) and the real
+`KubernetesDeployer`. Caught two real bugs in the fast path's persistence /
+restore logic:
+
+- **SQLite store dropped the `Mode` field silently** — Phase 3.3 added `Mode`
+  to `api.Artifact` but never extended the SQLite schema. With the default
+  store backend, every fast-path artifact's `Mode` was lost on write, so
+  `canPromote` rejected even genuine previews. Added the `mode` column +
+  migration + statement updates in `internal/store/sqlite.go`.
+- **`doPromote` snapshotted `Status` after AsyncPromote had already mutated
+  it** — `restorePreview` on a failed promote put the artifact back to
+  `building` instead of `running`, leaving the preview stuck. Fixed by
+  hardcoding the restored status to `StatusRunning`.

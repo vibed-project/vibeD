@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
         namespace    TEXT NOT NULL DEFAULT '',
         status       TEXT NOT NULL,
         target       TEXT NOT NULL DEFAULT '',
+        mode         TEXT NOT NULL DEFAULT '',
         image_ref    TEXT NOT NULL DEFAULT '',
         url          TEXT NOT NULL DEFAULT '',
         port         INTEGER NOT NULL DEFAULT 0,
@@ -137,6 +138,9 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if _, err := db.Exec(`ALTER TABLE artifacts ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`); err != nil {
 	        // Ignore duplicate column error
 	}
+	if _, err := db.Exec(`ALTER TABLE artifacts ADD COLUMN mode TEXT NOT NULL DEFAULT ''`); err != nil {
+	        // Ignore duplicate column error — added for the Instant Preview fast path
+	}
 	if _, err := db.Exec(`ALTER TABLE departments ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`); err != nil {
 	        // Ignore duplicate column error
 	}
@@ -171,20 +175,20 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 func (s *SQLiteStore) prepareStatements() error {
 	var err error
 
-	s.stmtGetArtifact, err = s.db.Prepare(`SELECT id, name, owner_id, namespace, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE id = ?`)
+	s.stmtGetArtifact, err = s.db.Prepare(`SELECT id, name, owner_id, namespace, status, target, mode, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE id = ?`)
 	if err != nil {
 	        return err
 	}
 
-	s.stmtGetArtifactByName, err = s.db.Prepare(`SELECT id, name, owner_id, namespace, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE name = ?`)
+	s.stmtGetArtifactByName, err = s.db.Prepare(`SELECT id, name, owner_id, namespace, status, target, mode, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE name = ?`)
 	if err != nil {
 	        return err
 	}
 
 	s.stmtCreateArtifact, err = s.db.Prepare(`
 	        INSERT INTO artifacts (
-	                id, name, owner_id, namespace, status, target, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with
-	        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	                id, name, owner_id, namespace, status, target, mode, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with
+	        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 	        return err
@@ -192,7 +196,7 @@ func (s *SQLiteStore) prepareStatements() error {
 
 	s.stmtUpdateArtifact, err = s.db.Prepare(`
 	        UPDATE artifacts SET
-	                name = ?, owner_id = ?, namespace = ?, status = ?, target = ?, image_ref = ?, url = ?, port = ?,
+	                name = ?, owner_id = ?, namespace = ?, status = ?, target = ?, mode = ?, image_ref = ?, url = ?, port = ?,
 	                env_vars = ?, secret_refs = ?, language = ?, static_files = ?, error = ?, created_at = ?, updated_at = ?,
 	                storage_ref = ?, version = ?, version_id = ?, shared_with = ?
 	        WHERE id = ?
@@ -286,7 +290,7 @@ func (s *SQLiteStore) Create(ctx context.Context, artifact *api.Artifact) error 
 
 	_, err = s.stmtCreateArtifact.ExecContext(ctx,
 	        artifact.ID, artifact.Name, artifact.OwnerID, artifact.Namespace, string(artifact.Status),
-	        string(artifact.Target), artifact.ImageRef, artifact.URL, artifact.Port,
+	        string(artifact.Target), string(artifact.Mode), artifact.ImageRef, artifact.URL, artifact.Port,
 	        string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
 	        artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
 	        artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
@@ -353,7 +357,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) (*ListResult, 
 	}
 
 	// Fetch rows with ordering and optional pagination
-	query := `SELECT id, name, owner_id, namespace, status, target, url, created_at, updated_at, version, shared_with FROM artifacts` + whereClause + ` ORDER BY created_at DESC`
+	query := `SELECT id, name, owner_id, namespace, status, target, mode, url, created_at, updated_at, version, shared_with FROM artifacts` + whereClause + ` ORDER BY created_at DESC`
 	queryArgs := append([]interface{}{}, args...)
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
@@ -374,19 +378,20 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) (*ListResult, 
 	for rows.Next() {
 		var (
 			summary              api.ArtifactSummary
-			status, target       string
+			status, target, mode string
 			createdAt, updatedAt string
 			sharedWithJSON       string
 		)
 		if err := rows.Scan(
 		        &summary.ID, &summary.Name, &summary.OwnerID, &summary.Namespace,
-		        &status, &target, &summary.URL,
+		        &status, &target, &mode, &summary.URL,
 		        &createdAt, &updatedAt, &summary.Version, &sharedWithJSON,
 		); err != nil {			return nil, fmt.Errorf("scanning artifact summary: %w", err)
 		}
 
 		summary.Status = api.ArtifactStatus(status)
 		summary.Target = api.DeploymentTarget(target)
+		summary.Mode = api.DeployMode(mode)
 		summary.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		summary.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 		if err := json.Unmarshal([]byte(sharedWithJSON), &summary.SharedWith); err != nil && sharedWithJSON != "" && sharedWithJSON != "null" {
@@ -422,7 +427,7 @@ func (s *SQLiteStore) Update(ctx context.Context, artifact *api.Artifact) error 
 
 	res, err := s.stmtUpdateArtifact.ExecContext(ctx,
 	        artifact.Name, artifact.OwnerID, artifact.Namespace, string(artifact.Status),
-	        string(artifact.Target), artifact.ImageRef, artifact.URL, artifact.Port,
+	        string(artifact.Target), string(artifact.Mode), artifact.ImageRef, artifact.URL, artifact.Port,
 	        string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
 	        artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
 	        artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
@@ -528,6 +533,7 @@ func scanArtifact(row scanner) (*api.Artifact, error) {
 	var (
 		a              api.Artifact
 		status, target string
+		mode           string
 		envVarsJSON    string
 		secretRefsJSON string
 		sharedWithJSON string
@@ -536,7 +542,7 @@ func scanArtifact(row scanner) (*api.Artifact, error) {
 	)
 
 	err := row.Scan(
-	        &a.ID, &a.Name, &a.OwnerID, &a.Namespace, &status, &target,
+	        &a.ID, &a.Name, &a.OwnerID, &a.Namespace, &status, &target, &mode,
 	        &a.ImageRef, &a.URL, &a.Port, &envVarsJSON, &secretRefsJSON,
 	        &a.Language, &a.StaticFiles, &a.Error,
 	        &createdAt, &updatedAt, &a.StorageRef,
@@ -548,6 +554,7 @@ func scanArtifact(row scanner) (*api.Artifact, error) {
 
 	a.Status = api.ArtifactStatus(status)
 	a.Target = api.DeploymentTarget(target)
+	a.Mode = api.DeployMode(mode)
 	a.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	a.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 
