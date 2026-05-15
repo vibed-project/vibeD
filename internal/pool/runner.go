@@ -83,6 +83,9 @@ func buildSandbox(name, namespace, language, token string, rc config.RunnerConfi
 			"periodSeconds": int64(2),
 		},
 	}
+	if res := resourcesSpec(rc.Resources); res != nil {
+		container["resources"] = res
+	}
 	if token != "" {
 		container["env"] = []interface{}{
 			map[string]interface{}{"name": "VIBED_AGENT_TOKEN", "value": token},
@@ -115,6 +118,39 @@ func buildSandbox(name, namespace, language, token string, rc config.RunnerConfi
 			},
 		},
 	}}
+}
+
+// resourcesSpec renders RunnerResources into the K8s container `resources`
+// block, omitting CPU/memory entries left empty. Returns nil when nothing is
+// set so the field is left out of the spec entirely.
+func resourcesSpec(r config.RunnerResources) map[string]interface{} {
+	limits := resourceList(r.Limits)
+	requests := resourceList(r.Requests)
+	if limits == nil && requests == nil {
+		return nil
+	}
+	out := map[string]interface{}{}
+	if limits != nil {
+		out["limits"] = limits
+	}
+	if requests != nil {
+		out["requests"] = requests
+	}
+	return out
+}
+
+func resourceList(rl config.ResourceList) map[string]interface{} {
+	if rl.CPU == "" && rl.Memory == "" {
+		return nil
+	}
+	out := map[string]interface{}{}
+	if rl.CPU != "" {
+		out["cpu"] = rl.CPU
+	}
+	if rl.Memory != "" {
+		out["memory"] = rl.Memory
+	}
+	return out
 }
 
 // httpProbe is the default readiness probe: a GET on the agent's /healthz.

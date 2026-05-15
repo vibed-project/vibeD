@@ -119,6 +119,15 @@ fastPath:
       poolSize: 2             # Warm idle pods to maintain
       controlPort: 9000       # Agent control API port
       appPort: 8080           # User app port
+      # Resource defaults: requests cpu=100m / memory=128Mi,
+      # limits cpu=500m / memory=512Mi. Override per language as needed.
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
     nodejs:
       image: "ghcr.io/vibed-project/vibed-runner-node:latest"
       poolSize: 2

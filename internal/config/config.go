@@ -257,10 +257,27 @@ type FastPathConfig struct {
 
 // RunnerConfig describes one language's warm runner pool.
 type RunnerConfig struct {
-	Image       string `yaml:"image"`       // runner image ref (required when fastPath.enabled)
-	PoolSize    int    `yaml:"poolSize"`    // warm idle pods to maintain (default: 2)
-	ControlPort int    `yaml:"controlPort"` // agent control API port (default: 9000)
-	AppPort     int    `yaml:"appPort"`     // user app port (default: 8080)
+	Image       string          `yaml:"image"`       // runner image ref (required when fastPath.enabled)
+	PoolSize    int             `yaml:"poolSize"`    // warm idle pods to maintain (default: 2)
+	ControlPort int             `yaml:"controlPort"` // agent control API port (default: 9000)
+	AppPort     int             `yaml:"appPort"`     // user app port (default: 8080)
+	Resources   RunnerResources `yaml:"resources"`   // pod resources (defaults applied when zero)
+}
+
+// RunnerResources are the K8s resource requests + limits applied to each
+// runner pod. Runner pods execute untrusted user code, so safe defaults are
+// applied when the operator leaves these unset; explicit values override.
+type RunnerResources struct {
+	Limits   ResourceList `yaml:"limits"`
+	Requests ResourceList `yaml:"requests"`
+}
+
+// ResourceList is a minimal CPU + memory resource map. Strings carry K8s
+// quantity syntax ("100m", "256Mi") and are passed through verbatim to the
+// pod spec, so any valid quantity works.
+type ResourceList struct {
+	CPU    string `yaml:"cpu,omitempty"`
+	Memory string `yaml:"memory,omitempty"`
 }
 
 // Default returns a Config with sensible defaults.
@@ -346,6 +363,9 @@ func Default() *Config {
 }
 
 // runnerDefaults fills in per-runner defaults left unset in the config.
+// Resource defaults are conservative — runner pods run untrusted code, so we
+// cap them rather than letting a busy app starve the node — but sized for a
+// hello-world web app to start cleanly.
 func runnerDefaults(r RunnerConfig) RunnerConfig {
 	if r.PoolSize == 0 {
 		r.PoolSize = 2
@@ -355,6 +375,20 @@ func runnerDefaults(r RunnerConfig) RunnerConfig {
 	}
 	if r.AppPort == 0 {
 		r.AppPort = 8080
+	}
+	// Apply per-field defaults so an operator can override only the fields
+	// they care about (e.g. just a memory limit) without losing the rest.
+	if r.Resources.Requests.CPU == "" {
+		r.Resources.Requests.CPU = "100m"
+	}
+	if r.Resources.Requests.Memory == "" {
+		r.Resources.Requests.Memory = "128Mi"
+	}
+	if r.Resources.Limits.CPU == "" {
+		r.Resources.Limits.CPU = "500m"
+	}
+	if r.Resources.Limits.Memory == "" {
+		r.Resources.Limits.Memory = "512Mi"
 	}
 	return r
 }

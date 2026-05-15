@@ -156,12 +156,23 @@ config:
     #     pool drains on shutdown, so fresh runners get the fresh token).
     agentToken: ""
     # -- Per-language runner pools, keyed by language ("python", "nodejs").
+    #     Conservative resource defaults are applied per runner pod when not
+    #     overridden: requests cpu=100m / memory=128Mi, limits cpu=500m /
+    #     memory=512Mi. Override per language as needed; runner pods run
+    #     untrusted user code so cap them rather than leaving them unbounded.
     runners: {}
     #   python:
     #     image: ghcr.io/vibed-project/vibed-runner-python:latest
     #     poolSize: 2
     #     controlPort: 9000
     #     appPort: 8080
+    #     resources:
+    #       limits:
+    #         cpu: 1
+    #         memory: 1Gi
+    #       requests:
+    #         cpu: 200m
+    #         memory: 256Mi
     #   nodejs:
     #     image: ghcr.io/vibed-project/vibed-runner-node:latest
     #     poolSize: 2

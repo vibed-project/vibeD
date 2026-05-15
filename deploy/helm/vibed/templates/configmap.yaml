@@ -119,6 +119,27 @@ data:
           poolSize: {{ int ($r.poolSize | default 2) }}
           controlPort: {{ int ($r.controlPort | default 9000) }}
           appPort: {{ int ($r.appPort | default 8080) }}
+          {{- with $r.resources }}
+          resources:
+            {{- with .limits }}
+            limits:
+              {{- if .cpu }}
+              cpu: {{ .cpu | quote }}
+              {{- end }}
+              {{- if .memory }}
+              memory: {{ .memory | quote }}
+              {{- end }}
+            {{- end }}
+            {{- with .requests }}
+            requests:
+              {{- if .cpu }}
+              cpu: {{ .cpu | quote }}
+              {{- end }}
+              {{- if .memory }}
+              memory: {{ .memory | quote }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
         {{- end }}
       {{- end }}
     {{- end }}

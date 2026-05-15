@@ -154,7 +154,7 @@ stable.
 | # | Status | What | Where |
 |---|--------|------|-------|
 | 5.1 | ☑ | GC: short max-age for `Mode==preview`; recycle pooled runners on collection | `internal/gc/collector.go` — `cleanStalePreviews` reaps `Mode==preview` artifacts older than `previewTTL` via a `PreviewReaper` (the orchestrator's new `ReapArtifact`, which routes through `RunnerDeployer.Delete` → `pool.Release`). `Delete` refactored into a shared `deleteArtifact`. |
-| 5.2 | ☑ | `FastPath` config block | `internal/config/config.go` — full block landed across Phases 1–5: enabled, namespace, replenish/ready/idle timings, per-language runner (image, pool size, ports), `agentToken`, `autoPromote`, `previewTTL`. (Per-runner pod resource limits deferred — noted in risks.) |
+| 5.2 | ☑ | `FastPath` config block | `internal/config/config.go` — full block landed across Phases 1–5: enabled, namespace, replenish/ready/idle timings, per-language runner (image, pool size, ports, resources), `agentToken`, `autoPromote`, `previewTTL`. |
 | 5.3 | ☑ | Helm `values.yaml` + `configmap.yaml` for `FastPath` | `deploy/helm/vibed/` — full `config.fastPath` block in `values.yaml` (disabled by default) rendered into `configmap.yaml`, including the per-language `runners` map. `helm template` verified for both off and on. |
 | 5.4 | ☑ | Verify `agents.x-k8s.io` RBAC sufficient for pool churn | Verified — the existing `agents.x-k8s.io/sandboxes` rule already grants `get/list/watch/create/update/delete`, which covers pool churn (create/delete), the GC sweep (list/delete), and the SandboxDeployer. Comment in `rbac.yaml` updated to note the pool. |
 | 5.5 | ☑ | Docs: instant preview, promote, runner images | `docs/docs/concepts/instant-preview.md` + `mcp-tools/promote-artifact.md` (new), `config-reference.md` `fastPath` block + env vars, `mcp-tools/overview.md` table, `sidebars.js`. |
@@ -212,8 +212,6 @@ Deferred / follow-ups:
   in-cluster `*.svc.cluster.local` URL (same as the SandboxDeployer). A user
   outside the cluster can't reach a preview without an ingress/route or
   port-forward. Pre-existing gap, but it blunts the "instant preview" value.
-- **Per-runner pod resource limits** — `RunnerConfig` has no resources field;
-  runner pods inherit no limits. Worth adding for pods running untrusted code.
 - **Load test (5.6)** — needs the full stack on a live cluster; not run here.
 - **Promote integration test** — `canPromote` is unit-tested; the full
   build→swap→release path wants an integration test alongside the cluster-gated
