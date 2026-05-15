@@ -5,9 +5,11 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -198,6 +200,68 @@ func TestOrchestrator_PromoteRejectsNonPreview(t *testing.T) {
 	require.Error(t, err, "promoting a built artifact must error synchronously")
 	var invErr *api.ErrInvalidInput
 	assert.True(t, errors.As(err, &invErr), "error type should be *api.ErrInvalidInput, got %T", err)
+}
+
+// TestOrchestrator_PromoteConcurrent fires N promotes in parallel and waits
+// for all of them to swap to mode=built / status=running. The aim is to catch
+// concurrency bugs in doPromote (deadlocks, store-update races, metric races,
+// double-release of the same runner) — not to benchmark the warm pool itself,
+// which needs the real fast-path stack on a live cluster.
+func TestOrchestrator_PromoteConcurrent(t *testing.T) {
+	testutil.SkipIfNoCluster(t)
+	rig := newPromoteRig(t)
+	ctx := context.Background()
+
+	const n = 5
+	previews := make([]*api.Artifact, n)
+	for i := 0; i < n; i++ {
+		previews[i] = rig.stagePreview(t, ctx)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	start := time.Now()
+	for _, p := range previews {
+		wg.Add(1)
+		go func(p *api.Artifact) {
+			defer wg.Done()
+			if _, err := rig.orch.AsyncPromote(ctx, p.ID); err != nil {
+				errs <- fmt.Errorf("AsyncPromote(%s): %w", p.ID, err)
+			}
+		}(p)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	// All N artifacts must reach built/running. Generous timeout because each
+	// promote spins up a real K8s Deployment + Service.
+	testutil.WaitForCondition(t, 3*time.Minute, 2*time.Second, func() bool {
+		for _, p := range previews {
+			a, err := rig.orch.Status(ctx, p.ID)
+			if err != nil || a.Mode != api.ModeBuilt || a.Status != api.StatusRunning {
+				return false
+			}
+		}
+		return true
+	}, fmt.Sprintf("all %d previews promoted to mode=built / status=running", n))
+
+	elapsed := time.Since(start)
+	t.Logf("promoted %d previews concurrently in %s (avg %s/promote)", n, elapsed.Round(time.Millisecond), (elapsed / n).Round(time.Millisecond))
+
+	assert.GreaterOrEqual(t, rig.builder.BuildCalls(), n, "MockBuilder should have been called at least once per promote")
+	assert.Equal(t, int32(n), rig.runnerStub.deleteCalls.Load(), "each promote should release its runner exactly once")
+
+	// Per-artifact final state.
+	for _, p := range previews {
+		a, err := rig.orch.Status(ctx, p.ID)
+		require.NoError(t, err)
+		assert.Equal(t, api.ModeBuilt, a.Mode, "%s should be built", p.ID)
+		assert.Equal(t, api.TargetKubernetes, a.Target, "%s should be on kubernetes", p.ID)
+		assert.NotEmpty(t, a.URL, "%s should have a URL", p.ID)
+	}
 }
 
 func TestOrchestrator_PromoteFailureRestoresPreview(t *testing.T) {
