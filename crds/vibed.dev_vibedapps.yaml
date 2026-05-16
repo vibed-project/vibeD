@@ -210,6 +210,13 @@ spec:
                 - Suspended
                 - Failed
                 type: string
+              podIP:
+                description: |-
+                  PodIP is the in-cluster IP of the bound Sandbox pod, populated once a
+                  SandboxClaim has been bound. The controller uses this to reach
+                  vibed-agent's control API (port 9000) and the router uses it to wire
+                  the user-facing route. Cleared on Suspended.
+                type: string
               sandboxRef:
                 description: SandboxRef references the agent-sandbox Sandbox CR backing
                   this app.

@@ -106,13 +106,16 @@ func TestHappyPath(t *testing.T) {
 		t.Fatalf("after first reconcile, phase=%q want Claiming", got.Status.Phase)
 	}
 
-	// Reconcile 2: Claiming → Starting; SandboxRef populated.
+	// Reconcile 2: Claiming → Starting; SandboxRef + PodIP populated.
 	got, _ = runOnce(t, r, app)
 	if got.Status.Phase != vibedv1.PhaseStarting {
 		t.Fatalf("after second reconcile, phase=%q want Starting", got.Status.Phase)
 	}
 	if got.Status.SandboxRef == "" {
 		t.Error("expected SandboxRef to be populated after Claiming")
+	}
+	if got.Status.PodIP == "" {
+		t.Error("expected PodIP to be populated after Claiming")
 	}
 
 	// Reconcile 3: Starting → Ready; URL + LastDeployedAt populated.
@@ -192,10 +195,38 @@ func TestClaimErrorRequeues(t *testing.T) {
 	}
 }
 
+// TestClaimPendingStaysInClaiming asserts that bound=false (claim created
+// but agent-sandbox hasn't bound a pod yet) is a normal first-class
+// outcome: phase stays Claiming, no SandboxRef gets written prematurely,
+// the reconciler requeues. This is the path the real Claimer takes most
+// of the time during a deploy.
+func TestClaimPendingStaysInClaiming(t *testing.T) {
+	app := validApp("still-claiming")
+	app.Status.Phase = vibedv1.PhaseClaiming
+	r := newReconciler(t, app, func(r *Reconciler) {
+		r.Claimer = pendingClaimer{}
+	})
+
+	got, res := runOnce(t, r, app)
+	if got.Status.Phase != vibedv1.PhaseClaiming {
+		t.Errorf("phase should stay Claiming while claim is unbound, got %q", got.Status.Phase)
+	}
+	if got.Status.SandboxRef != "" {
+		t.Errorf("SandboxRef should remain empty on unbound claim, got %q", got.Status.SandboxRef)
+	}
+	if got.Status.PodIP != "" {
+		t.Errorf("PodIP should remain empty on unbound claim, got %q", got.Status.PodIP)
+	}
+	if res.RequeueAfter == 0 {
+		t.Error("expected RequeueAfter while waiting on warm pool binding")
+	}
+}
+
 func TestAgentNotReadyRequeues(t *testing.T) {
 	app := validApp("agent-pending")
 	app.Status.Phase = vibedv1.PhaseStarting
 	app.Status.SandboxRef = "sb-xyz"
+	app.Status.PodIP = "10.0.0.42"
 	r := newReconciler(t, app, func(r *Reconciler) {
 		r.Probe = staticProbe{ready: false}
 	})
@@ -231,8 +262,17 @@ func hasConditionWithReason(app *vibedv1.VibedApp, condType string, status metav
 
 type failingClaimer struct{ err error }
 
-func (f failingClaimer) Claim(_ context.Context, _ *vibedv1.VibedApp) (string, error) {
-	return "", f.err
+func (f failingClaimer) EnsureClaim(_ context.Context, _ *vibedv1.VibedApp) (bool, string, string, error) {
+	return false, "", "", f.err
+}
+
+// pendingClaimer mimics agent-sandbox not having bound a pod yet: returns
+// no error, but bound=false. The reconciler should stay in Claiming and
+// requeue without writing a sandboxRef.
+type pendingClaimer struct{}
+
+func (pendingClaimer) EnsureClaim(_ context.Context, _ *vibedv1.VibedApp) (bool, string, string, error) {
+	return false, "", "", nil
 }
 
 type staticProbe struct {

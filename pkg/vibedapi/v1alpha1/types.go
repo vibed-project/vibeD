@@ -116,6 +116,12 @@ type VibedAppStatus struct {
 	// SandboxRef references the agent-sandbox Sandbox CR backing this app.
 	SandboxRef string `json:"sandboxRef,omitempty"`
 
+	// PodIP is the in-cluster IP of the bound Sandbox pod, populated once a
+	// SandboxClaim has been bound. The controller uses this to reach
+	// vibed-agent's control API (port 9000) and the router uses it to wire
+	// the user-facing route. Cleared on Suspended.
+	PodIP string `json:"podIP,omitempty"`
+
 	// LastDeployedAt is when the app last transitioned to Ready.
 	LastDeployedAt *metav1.Time `json:"lastDeployedAt,omitempty"`
 

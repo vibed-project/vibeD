@@ -44,6 +44,8 @@ func main() {
 		probeAddr            string
 		enableLeaderElection bool
 		domain               string
+		poolNamespace        string
+		agentToken           string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081", "Address the metrics endpoint binds to.")
@@ -52,6 +54,10 @@ func main() {
 		"Enable leader election for controller manager. Required for HA.")
 	flag.StringVar(&domain, "vibed-domain", "vibed.example.com",
 		"DNS suffix used to build app URLs in the stub Router.")
+	flag.StringVar(&poolNamespace, "pool-namespace", "vibed-pools",
+		"Namespace where SandboxWarmPool / SandboxTemplate live (matches templates/*/template.yaml).")
+	flag.StringVar(&agentToken, "agent-token", "",
+		"Bearer token vibed-agent expects on /healthz. Empty = no auth header sent.")
 	zapOpts := zap.Options{Development: false}
 	zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -74,6 +80,11 @@ func main() {
 	if err := (&controller.Reconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Claimer: &controller.SandboxClaimer{
+			Client:        mgr.GetClient(),
+			PoolNamespace: poolNamespace,
+		},
+		Probe:  controller.NewHTTPAgentProbe(agentToken),
 		Router: controller.DummyRouter{Domain: domain},
 	}).SetupWithManager(mgr); err != nil {
 		fatal(logger, "reconciler setup", err)

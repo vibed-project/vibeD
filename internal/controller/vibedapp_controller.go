@@ -22,10 +22,13 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -55,22 +58,25 @@ const (
 	ReasonAgentUnreachable = "AgentUnreachable"
 )
 
-// Claimer obtains a Sandbox for a VibedApp. Milestone C plugs in the warm
-// pool implementation; for B1 the default DummyClaimer immediately returns a
-// fixed sandboxRef so the state machine progresses.
+// Claimer obtains a Sandbox for a VibedApp by creating (or reading) a
+// SandboxClaim against the configured warm pool. EnsureClaim is the only
+// method and is expected to be idempotent: calling it repeatedly for the
+// same app returns the same claim and surfaces the current binding state.
+//
+// The bound==false return value is a normal first-class outcome — it means
+// agent-sandbox hasn't bound a pod yet, not that anything went wrong. The
+// reconciler requeues and tries again. err is reserved for real failures
+// (transient API errors, etc.).
 type Claimer interface {
-	// Claim returns a stable reference (e.g. agents.x-k8s.io Sandbox name)
-	// for the given app. Implementations are expected to be idempotent: if
-	// a claim already exists for app, return its ref.
-	Claim(ctx context.Context, app *vibedv1.VibedApp) (sandboxRef string, err error)
+	EnsureClaim(ctx context.Context, app *vibedv1.VibedApp) (bound bool, sandboxRef string, podIP string, err error)
 }
 
-// AgentProbe checks whether vibed-agent inside sandboxRef has finished
-// preparing the workspace and reports the user process is listening.
-// Milestone B2 swaps in the real HTTP probe; the default DummyAgentProbe
-// always returns ready=true.
+// AgentProbe checks whether vibed-agent at target ("host:port") has
+// finished preparing the workspace and reports the user process is
+// listening. Milestone C3 swaps in the real HTTP probe; the default
+// DummyAgentProbe always returns ready=true.
 type AgentProbe interface {
-	IsReady(ctx context.Context, sandboxRef string) (ready bool, err error)
+	IsReady(ctx context.Context, target string) (ready bool, err error)
 }
 
 // Router publishes a route for a Ready app and returns the externally
@@ -94,27 +100,37 @@ type Reconciler struct {
 	RequeueDelay time.Duration
 }
 
-// SetupWithManager registers the reconciler with the manager. Watching the
-// Sandbox CR (so claims/probes can trigger reconciles without polling) lands
-// in milestone C — for now we own only VibedApp.
+// SetupWithManager registers the reconciler with the manager. The
+// SandboxClaim watch ensures status changes on the claim
+// (agent-sandbox binding a pod, the pod becoming Ready) wake the
+// VibedApp reconciler immediately instead of relying on RequeueAfter
+// polling. The mapping is name-based: SandboxClaim and its owning
+// VibedApp share namespace/name by convention (see SandboxClaimer).
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if r.Claimer == nil {
-		r.Claimer = DummyClaimer{}
-	}
-	if r.Probe == nil {
-		r.Probe = DummyAgentProbe{}
-	}
-	if r.Router == nil {
-		r.Router = DummyRouter{Domain: "vibed.example.com"}
-	}
-	if r.RequeueDelay == 0 {
-		r.RequeueDelay = 2 * time.Second
-	}
+	r.applyDefaults()
+
+	claimGVKType := &unstructured.Unstructured{}
+	claimGVKType.SetGroupVersionKind(SandboxClaimGVK)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&vibedv1.VibedApp{}, builder.WithPredicates()).
+		Watches(
+			claimGVKType,
+			handler.EnqueueRequestsFromMapFunc(claimToVibedApp),
+		).
 		Named("vibedapp").
 		Complete(r)
+}
+
+// claimToVibedApp maps a SandboxClaim event to the same-name VibedApp
+// in the same namespace. SandboxClaimer enforces this naming on creation.
+func claimToVibedApp(_ context.Context, obj client.Object) []reconcile.Request {
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{
+			Name:      obj.GetName(),
+			Namespace: obj.GetNamespace(),
+		}},
+	}
 }
 
 // applyDefaults lazily fills in stub Claimer/Probe/Router and a non-zero
@@ -179,7 +195,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return r.finish(ctx, &app, before, true)
 
 	case vibedv1.PhaseClaiming:
-		sandboxRef, err := r.Claimer.Claim(ctx, &app)
+		bound, sandboxRef, podIP, err := r.Claimer.EnsureClaim(ctx, &app)
 		if err != nil {
 			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonClaimFailed, err.Error())
 			logger.Info("claim failed; will retry", "error", err)
@@ -188,13 +204,34 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			}
 			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
 		}
+		if !bound {
+			// SandboxClaim exists but agent-sandbox hasn't bound a pod yet.
+			// Stay in Claiming; the Watches() on SandboxClaim wakes us when
+			// it does, and the periodic requeue is a backstop.
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonClaiming, "waiting on warm pool")
+			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
+				return reconcile.Result{}, perr
+			}
+			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		}
 		app.Status.SandboxRef = sandboxRef
+		app.Status.PodIP = podIP
 		app.Status.Phase = vibedv1.PhaseStarting
 		setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonStarting, "waiting for agent")
 		return r.finish(ctx, &app, before, true)
 
 	case vibedv1.PhaseStarting:
-		ready, err := r.Probe.IsReady(ctx, app.Status.SandboxRef)
+		target := app.Status.PodIP
+		if target == "" {
+			// Should not happen — Claiming → Starting only on bound claim.
+			// Drop back to Claiming and let the next loop figure it out.
+			app.Status.Phase = vibedv1.PhaseClaiming
+			return r.finish(ctx, &app, before, true)
+		}
+		// vibed-agent's control API listens on :9000 inside the pod
+		// (see templates/*/Dockerfile VIBED_AGENT_CONTROL_ADDR).
+		target = target + ":9000"
+		ready, err := r.Probe.IsReady(ctx, target)
 		if err != nil {
 			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonAgentUnreachable, err.Error())
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
@@ -265,6 +302,7 @@ func statusEqual(a, b *vibedv1.VibedAppStatus) bool {
 		return a == b
 	}
 	if a.Phase != b.Phase || a.URL != b.URL || a.SandboxRef != b.SandboxRef ||
+		a.PodIP != b.PodIP ||
 		a.SnapshotRef != b.SnapshotRef || !timePtrEqual(a.LastDeployedAt, b.LastDeployedAt) {
 		return false
 	}
@@ -344,16 +382,17 @@ func setCondition(app *vibedv1.VibedApp, condType string, status metav1.Conditio
 
 // ---- Default stub implementations (replaced in later milestones) ----
 
-// DummyClaimer immediately returns a fake sandbox ref. Milestone C plugs in
-// the real warm-pool-backed implementation.
+// DummyClaimer immediately returns a fake bound claim. Used in tests and as
+// a stand-in until the real SandboxClaim-backed implementation is wired in
+// vibed-controller main.
 type DummyClaimer struct{}
 
-func (DummyClaimer) Claim(_ context.Context, app *vibedv1.VibedApp) (string, error) {
-	return fmt.Sprintf("dummy-sandbox-%s", app.UID), nil
+func (DummyClaimer) EnsureClaim(_ context.Context, app *vibedv1.VibedApp) (bool, string, string, error) {
+	return true, fmt.Sprintf("dummy-sandbox-%s", app.UID), "10.0.0.1", nil
 }
 
-// DummyAgentProbe always reports ready. Milestone B2 swaps in an HTTP probe
-// against vibed-agent's /ready endpoint.
+// DummyAgentProbe always reports ready. The real HTTP probe lives in
+// internal/controller/probe.go.
 type DummyAgentProbe struct{}
 
 func (DummyAgentProbe) IsReady(_ context.Context, _ string) (bool, error) { return true, nil }
