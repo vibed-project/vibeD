@@ -16,6 +16,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"strings"
@@ -79,9 +81,12 @@ type AgentProbe interface {
 	IsReady(ctx context.Context, target string) (ready bool, err error)
 }
 
-// Router publishes a route for a Ready app and returns the externally
-// resolvable URL. Milestone D wires Caddy via vibed-router; the default
-// DummyRouter synthesizes a URL from app ID + domain.
+// Router returns the externally resolvable URL for a Ready app. The
+// default DeterministicRouter computes it from a stable hash of
+// namespace/name with no side effects — vibed-router is the separate
+// component that observes VibedApp.status.url and reconciles the actual
+// Caddy route, so the controller's job here is to publish what the URL
+// *will be*, not to make it routable.
 type Router interface {
 	Publish(ctx context.Context, app *vibedv1.VibedApp, sandboxRef string) (url string, err error)
 }
@@ -144,7 +149,7 @@ func (r *Reconciler) applyDefaults() {
 		r.Probe = DummyAgentProbe{}
 	}
 	if r.Router == nil {
-		r.Router = DummyRouter{Domain: "vibed.example.com"}
+		r.Router = DeterministicRouter{Domain: "vibed.example.com"}
 	}
 	if r.RequeueDelay == 0 {
 		r.RequeueDelay = 2 * time.Second
@@ -397,18 +402,32 @@ type DummyAgentProbe struct{}
 
 func (DummyAgentProbe) IsReady(_ context.Context, _ string) (bool, error) { return true, nil }
 
-// DummyRouter synthesizes a URL of the form
-// `https://<name>-<short-uid>.<domain>`. Milestone D wires Caddy.
-type DummyRouter struct{ Domain string }
+// DeterministicRouter computes the user-facing URL for a VibedApp from a
+// stable hash of namespace/name, with no side effects. The actual Caddy
+// route is set up out-of-band by vibed-router watching VibedApp status —
+// keeping this side-effect-free means the controller's reconcile stays
+// fast (no waiting on Caddy admin API) and the same app always gets the
+// same URL across restarts.
+//
+// Label shape: 12 lowercase alphanumeric characters, matching the
+// refactor.md §5.5 Caddyfile regex `^[a-z0-9]{12}$`. The collision
+// probability across 36^12 values is negligible at any plausible app count.
+type DeterministicRouter struct{ Domain string }
 
-func (d DummyRouter) Publish(_ context.Context, app *vibedv1.VibedApp, _ string) (string, error) {
+func (d DeterministicRouter) Publish(_ context.Context, app *vibedv1.VibedApp, _ string) (string, error) {
 	domain := d.Domain
 	if domain == "" {
 		domain = "vibed.example.com"
 	}
-	shortUID := string(app.UID)
-	if len(shortUID) > 8 {
-		shortUID = shortUID[:8]
-	}
-	return fmt.Sprintf("https://%s-%s.%s", app.Name, shortUID, domain), nil
+	return fmt.Sprintf("https://%s.%s", AppLabel(app), domain), nil
+}
+
+// AppLabel is the 12-char DNS label vibed-router uses to identify the app
+// in the Caddy route table. Exposed so the router can derive the same
+// label from a VibedApp it observes — both sides must agree.
+func AppLabel(app *vibedv1.VibedApp) string {
+	sum := sha256.Sum256([]byte(app.Namespace + "/" + app.Name))
+	// base32 hex (no padding) → 64-bit prefix → 13 chars, trim to 12.
+	enc := base32.HexEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:8])
+	return strings.ToLower(enc[:12])
 }

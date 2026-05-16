@@ -85,7 +85,7 @@ func main() {
 			PoolNamespace: poolNamespace,
 		},
 		Probe:  controller.NewHTTPAgentProbe(agentToken),
-		Router: controller.DummyRouter{Domain: domain},
+		Router: controller.DeterministicRouter{Domain: domain},
 	}).SetupWithManager(mgr); err != nil {
 		fatal(logger, "reconciler setup", err)
 	}

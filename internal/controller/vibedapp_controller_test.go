@@ -74,7 +74,7 @@ func newReconciler(t *testing.T, app *vibedv1.VibedApp, overrides ...func(*Recon
 		Scheme:  s,
 		Claimer: DummyClaimer{},
 		Probe:   DummyAgentProbe{},
-		Router:  DummyRouter{Domain: "test.example.com"},
+		Router:  DeterministicRouter{Domain: "test.example.com"},
 	}
 	for _, o := range overrides {
 		o(r)
