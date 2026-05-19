@@ -1161,7 +1161,7 @@ func generateID() string {
 
 // pinnedImageRef returns image@sha256:... when the builder captured a digest,
 // or the original ImageRef tag otherwise. Pinning by digest avoids registry
-// caching surprises and makes Knative revisions reproducibly distinct.
+// caching surprises and makes Sandbox revisions reproducibly distinct.
 func pinnedImageRef(r *builder.BuildResult) string {
 	if r == nil {
 		return ""

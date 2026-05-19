@@ -14,8 +14,8 @@ func TestCanPromote(t *testing.T) {
 		wantErr  bool
 	}{
 		{"running preview on a runner", &api.Artifact{Mode: api.ModePreview, Target: api.TargetRunner}, false},
-		{"already a built artifact", &api.Artifact{Mode: api.ModeBuilt, Target: api.TargetKnative}, true},
-		{"preview mode but non-runner target", &api.Artifact{Mode: api.ModePreview, Target: api.TargetKnative}, true},
+		{"already a built artifact", &api.Artifact{Mode: api.ModeBuilt, Target: api.TargetKubernetes}, true},
+		{"preview mode but non-runner target", &api.Artifact{Mode: api.ModePreview, Target: api.TargetKubernetes}, true},
 		{"runner target but built mode", &api.Artifact{Mode: api.ModeBuilt, Target: api.TargetRunner}, true},
 		{"empty mode and target", &api.Artifact{}, true},
 	}

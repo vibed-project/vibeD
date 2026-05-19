@@ -150,10 +150,6 @@ func TestConfig(ns, tmpDir string) *config.Config {
 		Store: config.StoreConfig{
 			Backend: "memory",
 		},
-		Knative: config.KnativeConfig{
-			DomainSuffix: "localhost",
-			IngressClass: "kourier.ingress.networking.knative.dev",
-		},
 	}
 }
 

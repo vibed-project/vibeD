@@ -27,7 +27,7 @@ func testArtifact(id, name string) *api.Artifact {
 		Name:       name,
 		OwnerID:    "user-1",
 		Status:     api.StatusRunning,
-		Target:     api.TargetKnative,
+		Target:     api.TargetKubernetes,
 		ImageRef:   "nginx:latest",
 		URL:        "https://example.com",
 		Port:       8080,
@@ -53,7 +53,7 @@ func TestSQLiteStore_CreateAndGet(t *testing.T) {
 	assert.Equal(t, "my-app", got.Name)
 	assert.Equal(t, "user-1", got.OwnerID)
 	assert.Equal(t, api.StatusRunning, got.Status)
-	assert.Equal(t, api.TargetKnative, got.Target)
+	assert.Equal(t, api.TargetKubernetes, got.Target)
 	assert.Equal(t, "nginx:latest", got.ImageRef)
 	assert.Equal(t, 8080, got.Port)
 	assert.Equal(t, "bar", got.EnvVars["FOO"])

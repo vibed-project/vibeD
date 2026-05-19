@@ -40,7 +40,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	knversioned "knative.dev/serving/pkg/client/clientset/versioned"
 )
 
 func main() {
@@ -212,18 +211,11 @@ func main() {
 		bootstrapAPIKeyUsers(cfg.Auth.APIKeys, userStore, logger)
 	}
 
-	// Initialize deployers
-	factory := deployer.NewFactory()
+	// Initialize deployers. Knative was removed in v0.3.1 (refactor.md §1.4
+	// "Not a Knative replacement"); the Sandbox + Kubernetes deployers cover
+	// every supported target.
 
-	// Register Knative deployer
-	knClient, err := knversioned.NewForConfig(k8sClients.RestConfig)
-	if err != nil {
-		logger.Warn("failed to create Knative client (Knative may not be installed)", "error", err)
-		knClient = nil // explicit so GC can detect "no Knative" via nil check
-	} else {
-		knDeployer := deployer.NewKnativeDeployer(knClient, k8sClients.Clientset, cfg.Knative, cfg.Deployment.ReadyTimeout, logger)
-		factory.Register(api.TargetKnative, knDeployer)
-	}
+	factory := deployer.NewFactory()
 
 	// Register Sandbox deployer
 	sbDeployer := deployer.NewSandboxDeployer(k8sClients.DynamicClient, k8sClients.Clientset, logger)
@@ -276,7 +268,7 @@ func main() {
 			previewMaxAge = cfg.FastPath.PreviewTTL
 		}
 		collector, err := gc.NewGarbageCollector(
-			k8sClients.Clientset, knClient, k8sClients.DynamicClient,
+			k8sClients.Clientset, k8sClients.DynamicClient,
 			st, cfg.Deployment.Namespace,
 			cfg.GC, previewReaper, previewMaxAge, m, logger,
 		)

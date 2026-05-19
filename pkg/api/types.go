@@ -10,7 +10,6 @@ type DeploymentTarget string
 
 const (
 	TargetAuto       DeploymentTarget = "auto"
-	TargetKnative    DeploymentTarget = "knative"
 	TargetKubernetes DeploymentTarget = "kubernetes"
 	TargetSandbox    DeploymentTarget = "sandbox"
 	// TargetRunner is the Instant Preview fast path: a warm pooled runner

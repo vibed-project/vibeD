@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	knversioned "knative.dev/serving/pkg/client/clientset/versioned"
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/metrics"
@@ -43,8 +42,7 @@ type PreviewReaper interface {
 // GarbageCollector periodically scans for orphaned K8s resources and removes them.
 type GarbageCollector struct {
 	clientset     kubernetes.Interface
-	knClient      knversioned.Interface // optional; nil if Knative not installed
-	dynamicClient dynamic.Interface     // optional; nil if not provided
+	dynamicClient dynamic.Interface // optional; nil if not provided
 	store         store.ArtifactStore
 	namespace     string
 	interval      time.Duration
@@ -61,13 +59,12 @@ type GarbageCollector struct {
 }
 
 // NewGarbageCollector creates a new GarbageCollector from the given config.
-// knClient and dynamicClient are optional — pass nil to skip the corresponding
-// GC passes (e.g. nil knClient when Knative is not installed). previewReaper
-// is optional — pass nil (or previewMaxAge <= 0) to skip the stale-preview
-// pass when the fast path is disabled.
+// dynamicClient is optional — pass nil to skip the Sandbox sweep (cluster
+// doesn't have agent-sandbox installed). previewReaper is optional — pass
+// nil (or previewMaxAge <= 0) to skip the stale-preview pass when the fast
+// path is disabled.
 func NewGarbageCollector(
 	clientset kubernetes.Interface,
-	knClient knversioned.Interface,
 	dynamicClient dynamic.Interface,
 	st store.ArtifactStore,
 	namespace string,
@@ -88,7 +85,6 @@ func NewGarbageCollector(
 
 	return &GarbageCollector{
 		clientset:     clientset,
-		knClient:      knClient,
 		dynamicClient: dynamicClient,
 		store:         st,
 		namespace:     namespace,
@@ -142,7 +138,6 @@ func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.cleanOrphanedJobs(ctx, activeArtifacts)
 	gc.cleanOrphanedConfigMaps(ctx, activeArtifacts)
 	gc.cleanOrphanedDeployments(ctx, activeArtifacts)
-	gc.cleanOrphanedKnativeServices(ctx, activeArtifacts)
 	gc.cleanOrphanedSandboxes(ctx, activeArtifacts)
 	gc.cleanStalePreviews(ctx, res.Artifacts)
 	gc.logger.Info("GC cycle complete")
@@ -173,51 +168,6 @@ func (gc *GarbageCollector) cleanStalePreviews(ctx context.Context, artifacts []
 		}
 		gc.metrics.GCResourcesCleaned.WithLabelValues("preview").Inc()
 		gc.logger.Info("reaped stale preview", "artifact", a.Name, "id", a.ID, "age", age)
-	}
-}
-
-// cleanOrphanedKnativeServices deletes Knative Services whose artifact no
-// longer exists in the store. Skipped silently when no Knative client was
-// supplied (e.g. cluster doesn't have Knative installed).
-func (gc *GarbageCollector) cleanOrphanedKnativeServices(ctx context.Context, activeArtifacts map[string]bool) {
-	if gc.knClient == nil {
-		return
-	}
-	services, err := gc.knClient.ServingV1().Services(gc.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labelManagedBy,
-	})
-	if err != nil {
-		// CRD not installed: silent skip.
-		if k8serrors.IsNotFound(err) {
-			return
-		}
-		gc.logger.Warn("failed to list knative services for GC", "error", err)
-		return
-	}
-
-	for _, svc := range services.Items {
-		artifactID := svc.Labels[labelArtifactID]
-		if artifactID == "" {
-			continue
-		}
-		if activeArtifacts[artifactID] {
-			continue
-		}
-
-		if gc.dryRun {
-			gc.logger.Info("dry-run: would delete orphaned knative service", "service", svc.Name, "artifactID", artifactID)
-			continue
-		}
-
-		if err := gc.knClient.ServingV1().Services(gc.namespace).Delete(ctx, svc.Name, metav1.DeleteOptions{}); err != nil {
-			if k8serrors.IsNotFound(err) {
-				continue
-			}
-			gc.logger.Warn("failed to delete orphaned knative service", "service", svc.Name, "error", err)
-			continue
-		}
-		gc.metrics.GCResourcesCleaned.WithLabelValues("knative_service").Inc()
-		gc.logger.Info("deleted orphaned knative service", "service", svc.Name, "artifactID", artifactID)
 	}
 }
 

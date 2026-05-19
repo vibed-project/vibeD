@@ -156,7 +156,7 @@ func TestHandlerNotFoundForUnknownArtifact(t *testing.T) {
 
 func TestHandlerRejectsNonRunnerArtifact(t *testing.T) {
 	src := &stubSource{
-		artifact: &api.Artifact{ID: "abc", Status: api.StatusRunning, Mode: api.ModeBuilt, Target: api.TargetKnative, URL: "http://x"},
+		artifact: &api.Artifact{ID: "abc", Status: api.StatusRunning, Mode: api.ModeBuilt, Target: api.TargetKubernetes, URL: "http://x"},
 	}
 	h := newTestHandler(t, src)
 

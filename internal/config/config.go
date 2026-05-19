@@ -21,7 +21,6 @@ type Config struct {
 	Registry     RegistryConfig     `yaml:"registry"`
 	Store        StoreConfig        `yaml:"store"`
 	Kubernetes   KubernetesConfig   `yaml:"kubernetes"`
-	Knative      KnativeConfig      `yaml:"knative"`
 	Limits       LimitsConfig       `yaml:"limits"`
 	GC           GCConfig           `yaml:"gc"`
 	Tracing      TracingConfig      `yaml:"tracing"`
@@ -202,12 +201,6 @@ type KubernetesConfig struct {
 	Context    string `yaml:"context"`
 }
 
-type KnativeConfig struct {
-	DomainSuffix string `yaml:"domainSuffix"`
-	IngressClass string `yaml:"ingressClass"`
-	GatewayPort  int    `yaml:"gatewayPort"` // External port for the ingress gateway (e.g. 31080 for NodePort); 0 or 80 = omitted from URLs
-}
-
 // GCConfig configures the resource garbage collector.
 type GCConfig struct {
 	Enabled  bool   `yaml:"enabled"`  // Enable garbage collection (default: true)
@@ -296,7 +289,7 @@ func Default() *Config {
 		Deployment: DeploymentConfig{
 			PreferredTarget: "auto",
 			Namespace:       "default",
-			ReadyTimeout:    10 * time.Minute, // generous; cold image pulls + Knative reconcile can be slow
+			ReadyTimeout:    10 * time.Minute, // generous; cold image pulls + Sandbox reconcile can be slow
 		},
 		Builder: BuilderConfig{
 			Engine:           "buildah",
@@ -333,10 +326,6 @@ func Default() *Config {
 			SQLite: SQLiteConfig{
 				Path: "/data/vibed.db",
 			},
-		},
-		Knative: KnativeConfig{
-			DomainSuffix: "localhost",
-			IngressClass: "kourier.ingress.networking.knative.dev",
 		},
 		Limits: LimitsConfig{
 			MaxTotalFileSize: 50 * 1024 * 1024, // 50 MB
@@ -492,14 +481,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("KUBECONFIG"); v != "" && cfg.Kubernetes.Kubeconfig == "" {
 		cfg.Kubernetes.Kubeconfig = v
-	}
-	if v := os.Getenv("VIBED_KNATIVE_DOMAIN_SUFFIX"); v != "" {
-		cfg.Knative.DomainSuffix = v
-	}
-	if v := os.Getenv("VIBED_KNATIVE_GATEWAY_PORT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Knative.GatewayPort = n
-		}
 	}
 	// Auth overrides
 	if v := os.Getenv("VIBED_AUTH_ENABLED"); v != "" {

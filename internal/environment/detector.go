@@ -26,8 +26,7 @@ func NewDetector(clients *k8s.Clients, logger *slog.Logger) *Detector {
 
 // DetectResult holds the availability of each deployment target.
 type DetectResult struct {
-	Knative    bool
-	Sandbox    bool
+	Sandbox bool
 	// Kubernetes is always available if we can talk to the cluster.
 	Kubernetes bool
 }
@@ -38,12 +37,6 @@ func (d *Detector) Detect() *DetectResult {
 		Kubernetes: true, // Always available if we have a client.
 	}
 
-	knative, err := k8s.HasCRD(d.discovery, "serving.knative.dev", "v1", "services")
-	if err != nil {
-		d.logger.Warn("failed to check for Knative CRDs", "error", err)
-	}
-	result.Knative = knative
-
 	sandbox, err := k8s.HasCRD(d.discovery, "agents.x-k8s.io", "v1alpha1", "sandboxes")
 	if err != nil {
 		d.logger.Warn("failed to check for Sandbox CRDs", "error", err)
@@ -51,7 +44,6 @@ func (d *Detector) Detect() *DetectResult {
 	result.Sandbox = sandbox
 
 	d.logger.Debug("detected deployment targets",
-		"knative", result.Knative,
 		"sandbox", result.Sandbox,
 		"kubernetes", result.Kubernetes,
 	)
@@ -64,11 +56,6 @@ func (d *Detector) SelectTarget(preferred api.DeploymentTarget) (api.DeploymentT
 	result := d.Detect()
 
 	switch preferred {
-	case api.TargetKnative:
-		if !result.Knative {
-			return "", &api.ErrTargetUnavailable{Target: api.TargetKnative}
-		}
-		return api.TargetKnative, nil
 	case api.TargetSandbox:
 		if !result.Sandbox {
 			return "", &api.ErrTargetUnavailable{Target: api.TargetSandbox}
@@ -78,9 +65,6 @@ func (d *Detector) SelectTarget(preferred api.DeploymentTarget) (api.DeploymentT
 		return api.TargetKubernetes, nil
 
 	default: // "auto"
-		if result.Knative {
-			return api.TargetKnative, nil
-		}
 		if result.Sandbox {
 			return api.TargetSandbox, nil
 		}
@@ -94,16 +78,10 @@ func (d *Detector) ListTargets() []api.TargetInfo {
 
 	return []api.TargetInfo{
 		{
-			Name:        api.TargetKnative,
-			Available:   result.Knative,
-			Preferred:   true,
-			Description: "Knative Serving - serverless deployment with auto-scaling and clean URLs",
-		},
-		{
 			Name:        api.TargetSandbox,
 			Available:   result.Sandbox,
-			Preferred:   false,
-			Description: "Agent Sandbox - stateful, singleton workload environment",
+			Preferred:   true,
+			Description: "Agent Sandbox - stateful, isolated workload environment",
 		},
 		{
 			Name:        api.TargetKubernetes,
