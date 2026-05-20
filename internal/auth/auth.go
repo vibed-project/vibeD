@@ -116,10 +116,11 @@ func SkipAuthPaths(authMiddleware func(http.Handler) http.Handler) func(http.Han
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Protect MCP, internal /api/ endpoints, and /v1/* (the OpenAPI
-			// HTTP surface).
+			// Protect MCP, internal /api/ endpoints, /v1/* (the OpenAPI HTTP
+			// surface), and /internal/sources/ (source blobs the in-cluster
+			// agent pulls with the shared token).
 			if strings.HasPrefix(path, "/mcp") || strings.HasPrefix(path, "/api/") ||
-				strings.HasPrefix(path, "/v1/") {
+				strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/internal/sources/") {
 				authed.ServeHTTP(w, r)
 				return
 			}

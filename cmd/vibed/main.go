@@ -15,7 +15,9 @@ import (
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/builder"
+	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/internal/deployer"
 	"github.com/vibed-project/vibeD/internal/environment"
 	"github.com/vibed-project/vibeD/internal/events"
@@ -29,13 +31,18 @@ import (
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
+	"github.com/vibed-project/vibeD/internal/tarball"
 	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
 	"github.com/vibed-project/vibeD/pkg/api"
 	vibedhttp "github.com/vibed-project/vibeD/pkg/vibedapi/http"
+	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func main() {
@@ -319,6 +326,21 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 		promhttp.Handler(),
 		logger,
 	)
+	// Wire the VibedApp deploy path (POST /v1/deploy + /v1/apps). When the
+	// tarball store or K8s client can't be built (e.g. storage.tarball not
+	// configured), the endpoints stay 501 and the rest of vibeD still boots.
+	if dsvc, err := buildDeployService(cfg, k8sClients, logger); err != nil {
+		logger.Warn("/v1 deploy path disabled", "error", err)
+	} else {
+		vibedAPI.Deploy = dsvc
+		// Served tarball backend: vibeD serves the source blobs the agent pulls.
+		if blob, berr := tarball.NewBlobHandler(cfg.Storage.Tarball); berr != nil {
+			logger.Warn("blob handler init failed", "error", berr)
+		} else if blob != nil {
+			mux.Handle(tarball.BlobPathPrefix, blob)
+			logger.Info("serving source blobs", "prefix", tarball.BlobPathPrefix)
+		}
+	}
 	vibedhttp.HandlerFromMux(vibedAPI, mux)
 
 	// MCP HTTP endpoint
@@ -444,6 +466,36 @@ func bootstrapAPIKeyUsers(keys []config.APIKeyConf, userStore store.UserStore, l
 			logger.Info("bootstrapped API key user", "name", key.Name, "role", role)
 		}
 	}
+}
+
+// buildDeployService assembles the /v1/deploy service: a controller-runtime
+// client for VibedApp CRs, the configured tarball store, and the classifier.
+// Returns an error (leaving the /v1 endpoints as 501) when prerequisites
+// aren't configured, so vibeD still boots in ops-only or MCP-only mode.
+func buildDeployService(cfg *config.Config, k8sClients *k8s.Clients, logger *slog.Logger) (*deploy.Service, error) {
+	store, err := tarball.New(cfg.Storage.Tarball)
+	if err != nil {
+		return nil, fmt.Errorf("tarball store: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("scheme: %w", err)
+	}
+	if err := vibedv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("scheme: %w", err)
+	}
+	c, err := ctrlclient.New(k8sClients.RestConfig, ctrlclient.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("k8s client: %w", err)
+	}
+
+	return &deploy.Service{
+		Client:     c,
+		Store:      store,
+		Classifier: classifier.Classifier{},
+		Namespace:  cfg.Deployment.Namespace,
+	}, nil
 }
 
 // newLogger creates a slog.Logger based on the server configuration.
