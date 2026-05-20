@@ -151,6 +151,38 @@ type StorageConfig struct {
 	Local   LocalStorageConfig `yaml:"local"`
 	GitHub  GitHubConfig       `yaml:"github"`
 	GitLab  GitLabConfig       `yaml:"gitlab"`
+	// Tarball configures the source-blob store for the /v1/deploy path
+	// (separate from the file-tree Storage above, which serves the legacy
+	// MCP build path).
+	Tarball TarballConfig `yaml:"tarball"`
+}
+
+// TarballConfig selects how /v1/deploy persists the uploaded source tarball
+// so vibed-agent can pull it. "served" (default) keeps the blob on vibeD's
+// own volume and serves it over an authenticated in-cluster URL — no extra
+// infra. "s3" streams to S3/MinIO and hands the agent a pre-signed URL.
+type TarballConfig struct {
+	Backend string              `yaml:"backend"` // "served" (default) | "s3"
+	Served  ServedTarballConfig `yaml:"served"`
+	S3      S3TarballConfig     `yaml:"s3"`
+}
+
+type ServedTarballConfig struct {
+	// BasePath is the directory tarballs are written to (should be a PVC).
+	BasePath string `yaml:"basePath"`
+	// PublicBaseURL is the in-cluster base the agent dials, e.g.
+	// "http://vibed.vibed-system.svc.cluster.local:8080". The store appends
+	// /internal/sources/<id>.tar.gz.
+	PublicBaseURL string `yaml:"publicBaseURL"`
+}
+
+type S3TarballConfig struct {
+	Endpoint   string `yaml:"endpoint"` // empty for AWS; set for MinIO
+	Bucket     string `yaml:"bucket"`
+	Region     string `yaml:"region"`
+	AccessKey  string `yaml:"accessKey"`
+	SecretKey  string `yaml:"secretKey"`
+	PresignTTL string `yaml:"presignTTL"` // GET URL validity (default "15m")
 }
 
 type LocalStorageConfig struct {
@@ -246,6 +278,15 @@ func Default() *Config {
 			GitLab: GitLabConfig{
 				URL:    "https://gitlab.com",
 				Branch: "main",
+			},
+			Tarball: TarballConfig{
+				Backend: "served",
+				Served: ServedTarballConfig{
+					BasePath: "/data/vibed/sources",
+				},
+				S3: S3TarballConfig{
+					PresignTTL: "15m",
+				},
 			},
 		},
 		Registry: RegistryConfig{
