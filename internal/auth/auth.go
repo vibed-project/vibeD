@@ -116,10 +116,10 @@ func SkipAuthPaths(authMiddleware func(http.Handler) http.Handler) func(http.Han
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Protect MCP, internal /api/ endpoints, /v1/* (the OpenAPI HTTP
-			// surface), and the fast-path preview proxy.
+			// Protect MCP, internal /api/ endpoints, and /v1/* (the OpenAPI
+			// HTTP surface).
 			if strings.HasPrefix(path, "/mcp") || strings.HasPrefix(path, "/api/") ||
-				strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/preview/") {
+				strings.HasPrefix(path, "/v1/") {
 				authed.ServeHTTP(w, r)
 				return
 			}

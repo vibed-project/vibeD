@@ -30,7 +30,6 @@ import (
 	"github.com/vibed-project/vibeD/internal/middleware"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/pool"
-	"github.com/vibed-project/vibeD/internal/preview"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
@@ -365,12 +364,9 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 		mux.HandleFunc("/.well-known/oauth-protected-resource", vibedauth.OAuthMetadataHandler(cfg.Auth.OIDC, resourceURL))
 	}
 
-	// Fast-path preview proxy: /preview/<artifact_id>/... → in-cluster runner.
-	// Auth flows through SkipAuthPaths (which routes /preview/ through authed),
-	// then the handler enforces per-artifact ownership via Orchestrator.Status.
-	if cfg.FastPath.Enabled {
-		mux.Handle(preview.PathPrefix, preview.New(orch, logger))
-	}
+	// (The /preview/* reverse-proxy was removed in v0.3.1 — fast-path
+	// previews now flow through vibed-router + Caddy like every other
+	// app, so there's no longer a per-process proxy living here.)
 
 	// Frontend + API
 	frontendHandler := frontend.NewHandler(orch, cfg, bus, m, userStore, k8sClients)
