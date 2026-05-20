@@ -9,7 +9,7 @@ containerdConfigPatches:
 nodes:
   - role: control-plane
     extraPortMappings:
-      # Kourier ingress (testbed/knative)
+      # Caddy ingress for deployed apps (vibed-router maintains its routes)
       - containerPort: 31080
         hostPort: 80
         protocol: TCP

@@ -30,7 +30,7 @@ helm install kind-registry testbed/kind-registry/ \
   --set persistence.size=10Gi \
   --set 'aliases[0].namespace=vibed-system' \
   --set 'aliases[0].createNamespace=true' \
-  --set 'aliases[1].namespace=knative-serving'
+  --set 'aliases[1].namespace=vibed-pools'
 ```
 
 ## Prerequisites

@@ -54,7 +54,6 @@ echo
 echo "Cluster ready. Suggested next steps:"
 echo "  helm install kind-registry  testbed/kind-registry/"
 echo "  testbed/kind-registry/scripts/configure-containerd.sh --cluster ${CLUSTER} --runtime ${RUNTIME}"
-echo "  helm install knative        testbed/knative/        -n knative-system   --create-namespace"
 echo "  helm install observability  testbed/observability/  -n monitoring       --create-namespace"
 echo "  helm install keycloak       testbed/keycloak/       -n vibed-system     --create-namespace"
 echo "  helm install agent-sandbox  testbed/agent-sandbox/  -n agent-sandbox-system --create-namespace"

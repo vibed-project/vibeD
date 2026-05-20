@@ -13,7 +13,7 @@ rules:
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
 
-  # --- Events: surfacing pod/Knative failure reasons (ImagePullBackOff,
+  # --- Events: surfacing pod failure reasons (ImagePullBackOff,
   #     PSA admission, etc.) when fetching pod logs returns nothing.
   - apiGroups: [""]
     resources: ["events"]
@@ -43,17 +43,6 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
-
-  # --- Knative Serving: serverless deployment target.
-  #     Services for CRUD; revisions/routes/configurations read-only so
-  #     waitForReady can surface the underlying revision failure reason
-  #     instead of just the rolled-up Service condition.
-  - apiGroups: ["serving.knative.dev"]
-    resources: ["services"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
-  - apiGroups: ["serving.knative.dev"]
-    resources: ["revisions", "routes", "configurations"]
-    verbs: ["get", "list", "watch"]
 
   # --- agent-sandbox: BYOC + Sandbox CR target, and the Instant Preview
   #     fast-path warm runner pool. Without these the SandboxDeployer 403s

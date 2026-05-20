@@ -27,8 +27,8 @@ just a kind config file plus thin shell wrappers around `kind create cluster` /
 
   | Host port | Node port | Used by |
   |-----------|-----------|---------|
-  | 80        | 31080     | Kourier ingress (`testbed/knative`) |
-  | 443       | 31443     | Kourier TLS |
+  | 80        | 31080     | Caddy ingress for deployed apps (vibed-router) |
+  | 443       | 31443     | Caddy TLS |
   | 3000      | 31300     | Grafana (`testbed/observability`) |
   | 9090      | 31900     | Prometheus (`testbed/observability`) |
   | 8080      | 31808     | vibeD API + Dashboard |
@@ -42,7 +42,6 @@ After bootstrap, install the layered charts top-to-bottom:
 ./bootstrap.sh
 helm install kind-registry  testbed/kind-registry/
 testbed/kind-registry/scripts/configure-containerd.sh --cluster vibed-dev --runtime podman
-helm install knative        testbed/knative/        -n knative-system        --create-namespace
 helm install observability  testbed/observability/  -n monitoring            --create-namespace
 helm install keycloak       testbed/keycloak/       -n vibed-system          --create-namespace
 helm install agent-sandbox  testbed/agent-sandbox/  -n agent-sandbox-system  --create-namespace

@@ -18,7 +18,6 @@ OAPI_CODEGEN := $(shell pwd)/bin/oapi-codegen
 TESTBED := testbed
 TB_KIND := $(TESTBED)/kind-cluster
 TB_REGISTRY := $(TESTBED)/kind-registry
-TB_KNATIVE := $(TESTBED)/knative
 TB_OBS := $(TESTBED)/observability
 TB_KEYCLOAK := $(TESTBED)/keycloak
 TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
@@ -28,7 +27,7 @@ TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
         generate manifests controller-gen openapi-gen oapi-codegen \
         image load-image \
         runner-images runner-image-python runner-image-node load-runner-images \
-        setup-cluster install-registry install-knative install-observability install-keycloak \
+        setup-cluster install-registry install-observability install-keycloak \
         install-agent-sandbox install-deps install-vibed install-vibed-fastpath \
         dev dev-status run-latest teardown clean
 
@@ -165,11 +164,6 @@ install-registry:
 	$(TB_REGISTRY)/scripts/configure-containerd.sh \
 		--cluster $(KIND_CLUSTER) --runtime $(KIND_RUNTIME)
 
-install-knative:
-	helm upgrade --install knative $(TB_KNATIVE)/ \
-		--namespace knative-system --create-namespace \
-		--wait --timeout 10m
-
 install-observability:
 	helm dependency build $(TB_OBS)/
 	helm upgrade --install observability $(TB_OBS)/ \
@@ -186,7 +180,7 @@ install-agent-sandbox:
 		--namespace agent-sandbox-system --create-namespace \
 		--wait --timeout 5m
 
-install-deps: install-registry install-knative install-keycloak install-agent-sandbox
+install-deps: install-registry install-keycloak install-agent-sandbox
 
 install-vibed: load-image
 	helm upgrade --install vibed deploy/helm/vibed/ \
@@ -234,14 +228,14 @@ dev-status:
 	@echo "=== Pods ==="
 	@kubectl get pods -n vibed-system 2>/dev/null || true
 	@kubectl get pods -n monitoring 2>/dev/null || true
-	@kubectl get pods -n knative-serving 2>/dev/null || true
+	@kubectl get pods -n vibed-pools 2>/dev/null || true
 	@kubectl get pods -n agent-sandbox-system 2>/dev/null || true
 	@echo ""
 	@echo "=== URLs ==="
 	@echo "  vibeD Dashboard:  http://localhost:8080"
 	@echo "  vibeD API:        http://localhost:8080/api/artifacts"
 	@echo "  Swagger UI:       http://localhost:8080/api/docs/"
-	@echo "  Knative Apps:     http://<app>.localhost (port 80)"
+	@echo "  Deployed Apps:    http://<app>.localhost (port 80)"
 	@echo "  Keycloak:         http://localhost:31888  (admin / admin)"
 	@echo "  Grafana:          http://localhost:3000  (admin / admin)"
 	@echo "  Prometheus:       http://localhost:9090"

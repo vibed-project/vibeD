@@ -9,6 +9,6 @@ keywords:
   - genai
   - vibe-coding
   - kubernetes
-  - knative
+  - agent-sandbox
 maintainers:
   - name: Max Korbacher
