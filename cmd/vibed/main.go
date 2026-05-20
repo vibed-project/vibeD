@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -29,7 +27,6 @@ import (
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/middleware"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
-	"github.com/vibed-project/vibeD/internal/pool"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
@@ -224,20 +221,9 @@ func main() {
 	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, cfg.Deployment.ReadyTimeout, logger)
 	factory.Register(api.TargetKubernetes, k8sDeployer)
 
-	// Instant Preview fast path: warm runner pool + RunnerDeployer. The pool
-	// keeps idle runner Sandboxes topped up; the RunnerDeployer claims from it
-	// and injects source over the agent control API instead of building an
-	// image. The pool is started on the lifecycle context further below.
-	var runnerPool *pool.Pool
-	if cfg.FastPath.Enabled {
-		if cfg.FastPath.AgentToken == "" {
-			cfg.FastPath.AgentToken = randomToken()
-		}
-		runnerPool = pool.New(k8sClients.DynamicClient, cfg.FastPath, cfg.Deployment.Namespace, m, logger)
-		runnerDeployer := deployer.NewRunnerDeployer(runnerPool, stg, cfg.FastPath.AgentToken, logger)
-		factory.Register(api.TargetRunner, runnerDeployer)
-		logger.Info("instant preview fast path enabled", "languages", runnerPool.Languages())
-	}
+	// The legacy in-process "Instant Preview" warm pool was removed in
+	// v0.3.1. Warm-pool management is now the job of vibed-controller +
+	// agent-sandbox (SandboxWarmPool / SandboxClaim); see internal/controller.
 
 	// Create orchestrator
 	// Create event bus for SSE streaming
@@ -257,30 +243,18 @@ func main() {
 	defer lifeCancel()
 	orch.SetLifecycleContext(lifeCtx)
 
-	// Start garbage collector. When the fast path is on, the GC also reaps
-	// stale previews (deleting the artifact + recycling its pooled runner).
+	// Start garbage collector.
 	if cfg.GC.Enabled {
-		var previewReaper gc.PreviewReaper
-		var previewMaxAge time.Duration
-		if cfg.FastPath.Enabled {
-			previewReaper = orch
-			previewMaxAge = cfg.FastPath.PreviewTTL
-		}
 		collector, err := gc.NewGarbageCollector(
 			k8sClients.Clientset, k8sClients.DynamicClient,
 			st, cfg.Deployment.Namespace,
-			cfg.GC, previewReaper, previewMaxAge, m, logger,
+			cfg.GC, m, logger,
 		)
 		if err != nil {
 			logger.Error("failed to create garbage collector", "error", err)
 			os.Exit(1)
 		}
 		go collector.Run(lifeCtx)
-	}
-
-	// Start the warm runner pool on the lifecycle context so SIGTERM drains it.
-	if runnerPool != nil {
-		go runnerPool.Run(lifeCtx)
 	}
 
 	// Create MCP server
@@ -470,17 +444,6 @@ func bootstrapAPIKeyUsers(keys []config.APIKeyConf, userStore store.UserStore, l
 			logger.Info("bootstrapped API key user", "name", key.Name, "role", role)
 		}
 	}
-}
-
-// randomToken returns a random hex token for the runner agent control API.
-func randomToken() string {
-	b := make([]byte, 24)
-	if _, err := rand.Read(b); err != nil {
-		// crypto/rand failure is catastrophic; fall back to a non-empty,
-		// non-predictable-enough value rather than disabling auth.
-		return fmt.Sprintf("vibed-%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b)
 }
 
 // newLogger creates a slog.Logger based on the server configuration.

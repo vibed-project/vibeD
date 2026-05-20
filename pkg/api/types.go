@@ -12,9 +12,6 @@ const (
 	TargetAuto       DeploymentTarget = "auto"
 	TargetKubernetes DeploymentTarget = "kubernetes"
 	TargetSandbox    DeploymentTarget = "sandbox"
-	// TargetRunner is the Instant Preview fast path: a warm pooled runner
-	// pod that user source is injected into, skipping the per-request build.
-	TargetRunner DeploymentTarget = "runner"
 )
 
 // ArtifactStatus represents the lifecycle state of a deployed artifact.
@@ -29,14 +26,13 @@ const (
 	StatusDeleted   ArtifactStatus = "deleted"
 )
 
-// DeployMode distinguishes an ephemeral fast-path preview from a durable built
-// artifact.
+// DeployMode is retained as a persisted artifact attribute. With the legacy
+// Instant-Preview path removed in v0.3.1 every artifact is ModeBuilt; the type
+// stays so the store schema (and any historical "preview" rows) round-trip
+// cleanly, and so a future mode distinction can slot in without a migration.
 type DeployMode string
 
 const (
-	// ModePreview is an Instant Preview running on a pooled runner pod — no
-	// container build, ephemeral, promotable to a durable built artifact.
-	ModePreview DeployMode = "preview"
 	// ModeBuilt is a durable artifact backed by a built or static image.
 	ModeBuilt DeployMode = "built"
 )
