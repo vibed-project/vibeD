@@ -15,7 +15,7 @@ apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxTemplate
 metadata:
   name: {{ $name }}
-  namespace: {{ $root.Values.namespaces.pools }}
+  namespace: {{ $root.Values.namespaces.apps }}
   labels:
     {{- include "vibed.labels" $root | nindent 4 }}
     vibed.dev/template: {{ $name }}
@@ -69,7 +69,7 @@ apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxWarmPool
 metadata:
   name: {{ $name }}
-  namespace: {{ $root.Values.namespaces.pools }}
+  namespace: {{ $root.Values.namespaces.apps }}
   labels:
     {{- include "vibed.labels" $root | nindent 4 }}
     vibed.dev/template: {{ $name }}

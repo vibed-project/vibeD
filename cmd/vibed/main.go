@@ -498,11 +498,15 @@ func buildDeployService(cfg *config.Config, k8sClients *k8s.Clients, logger *slo
 		return nil, fmt.Errorf("k8s client: %w", err)
 	}
 
+	appsNS := cfg.Deployment.AppsNamespace
+	if appsNS == "" {
+		appsNS = cfg.Deployment.Namespace
+	}
 	return &deploy.Service{
 		Client:     c,
 		Store:      store,
 		Classifier: classifier.Classifier{},
-		Namespace:  cfg.Deployment.Namespace,
+		Namespace:  appsNS,
 	}, nil
 }
 

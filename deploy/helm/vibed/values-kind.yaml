@@ -24,13 +24,8 @@ runtime:
   # can pull source from the in-cluster blob store, and Caddy can proxy.
   sandboxNetworkPolicy: Unmanaged
 
-# agent-sandbox requires a SandboxClaim to be co-located with its
-# SandboxTemplate, so VibedApps/claims and the warm pools must share a
-# namespace. Converge everything into vibed-apps for this dev install.
-namespaces:
-  create: true
-  pools: vibed-apps
-  apps: vibed-apps
+# (Single workloads namespace is now the chart default — vibed-apps — so no
+# namespace override is needed here.)
 
 controller:
   image: { repository: localhost/vibed-controller, tag: dev, pullPolicy: Never }
@@ -62,10 +57,6 @@ config:
   server:
     transport: "http"
     baseURL: "http://localhost:31808"
-  deployment:
-    # deploy.Service creates VibedApps here; must match namespaces.pools so
-    # the controller's SandboxClaim finds its SandboxTemplate.
-    namespace: "vibed-apps"
   store:
     backend: "sqlite"
     sqlite:

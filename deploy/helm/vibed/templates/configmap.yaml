@@ -47,6 +47,9 @@ data:
     deployment:
       preferredTarget: {{ .Values.config.deployment.preferredTarget | quote }}
       namespace: {{ .Values.config.deployment.namespace | quote }}
+      # /v1 creates VibedApps here; must equal namespaces.apps (where the warm
+      # pools live) so the controller's SandboxClaim finds its SandboxTemplate.
+      appsNamespace: {{ .Values.config.deployment.appsNamespace | default .Values.namespaces.apps | quote }}
       readyTimeout: {{ .Values.config.deployment.readyTimeout | default "10m" | quote }}
     builder:
       engine: {{ .Values.config.builder.engine | quote }}

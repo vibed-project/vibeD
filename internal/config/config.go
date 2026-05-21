@@ -123,9 +123,14 @@ type RateLimitConfig struct {
 }
 
 type DeploymentConfig struct {
-	PreferredTarget string        `yaml:"preferredTarget"` // "auto", "knative", "kubernetes"
-	Namespace       string        `yaml:"namespace"`
-	ReadyTimeout    time.Duration `yaml:"readyTimeout"` // how long deployers wait for a workload to become Ready before failing the deploy
+	PreferredTarget string `yaml:"preferredTarget"` // "auto", "knative", "kubernetes"
+	Namespace       string `yaml:"namespace"`
+	// AppsNamespace is where the /v1 path creates VibedApp CRs. It must match
+	// the namespace the warm pools (SandboxTemplate/SandboxWarmPool) live in,
+	// because agent-sandbox requires a SandboxClaim to be co-located with its
+	// SandboxTemplate. Defaults to "vibed-apps".
+	AppsNamespace string        `yaml:"appsNamespace"`
+	ReadyTimeout  time.Duration `yaml:"readyTimeout"` // how long deployers wait for a workload to become Ready before failing the deploy
 }
 
 type BuilderConfig struct {
@@ -255,6 +260,7 @@ func Default() *Config {
 		Deployment: DeploymentConfig{
 			PreferredTarget: "auto",
 			Namespace:       "default",
+			AppsNamespace:   "vibed-apps",
 			ReadyTimeout:    10 * time.Minute, // generous; cold image pulls + Sandbox reconcile can be slow
 		},
 		Builder: BuilderConfig{

@@ -1,12 +1,13 @@
 {{- /*
-The v0.3.1 data plane lives in two namespaces (refactor.md §7.1):
-  vibed-pools — SandboxWarmPool / SandboxTemplate resources + warm sandboxes
-  vibed-apps  — claimed sandboxes serving traffic + VibedApp CRs
-The control plane (this release) stays in .Release.Namespace.
-Disable with namespaces.create=false if you manage them out of band.
+The v0.3.1 data plane lives in one workloads namespace (namespaces.apps):
+VibedApps + SandboxClaims + SandboxTemplates + warm pools, since
+agent-sandbox binds a claim only within its template's namespace. pools is a
+back-compat alias and normally equals apps. The control plane (this release)
+stays in .Release.Namespace. Disable with namespaces.create=false to manage
+them out of band.
 */ -}}
 {{- if .Values.namespaces.create }}
-{{- range $ns := list .Values.namespaces.pools .Values.namespaces.apps }}
+{{- range $ns := (list .Values.namespaces.apps .Values.namespaces.pools | uniq) }}
 ---
 apiVersion: v1
 kind: Namespace

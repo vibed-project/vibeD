@@ -62,12 +62,18 @@ serviceAccount:
 
 # === v0.3.1 data-plane topology =============================================
 
-# -- The two data-plane namespaces (refactor.md §7.1). The control plane
-#    (vibed server / controller / router) runs in .Release.Namespace.
+# -- Data-plane namespace. refactor.md §7.1 split this into vibed-pools (warm
+#    pools) + vibed-apps (claimed sandboxes), but agent-sandbox binds a
+#    SandboxClaim only within the namespace its SandboxTemplate lives in (no
+#    cross-namespace pod move), so VibedApps, claims, templates, and warm
+#    pools must all share one namespace. `apps` is that workloads namespace;
+#    `pools` defaults to the same value and exists only for back-compat.
+#    The control plane (server / controller / router / caddy) runs in
+#    .Release.Namespace.
 namespaces:
   create: true
-  pools: vibed-pools   # SandboxWarmPool / SandboxTemplate + warm sandboxes
-  apps: vibed-apps     # claimed sandboxes + VibedApp CRs
+  apps: vibed-apps     # VibedApps + SandboxClaims + SandboxTemplates + warm pools
+  pools: vibed-apps    # back-compat alias; keep equal to apps
 
 # -- Kata RuntimeClass for the general lane. Off by default — most clusters
 #    install it via their Kata operator. Set installRuntimeClass=true to let
