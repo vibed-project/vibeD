@@ -22,8 +22,18 @@ The v1 set (refactor.md §6.1):
 | `python-313`   | general | 50        | landed (C2.4) |
 | `go-123`       | general | 20        | landed (C2.5) |
 | `base-al2023`  | general | 30        | landed (C2.6) |
-| `workerd`      | fast    | n/a       | pending (milestone E1) |
+| `workerd`      | fast    | n/a       | landed (E1) — not a SandboxTemplate; see below |
 | `spin`         | fast    | n/a       | pending (milestone E2) |
+
+**`workerd` is not a Sandbox template.** The classifier emits template
+`workerd` for fast-lane worker scripts (rule 3), but it does not map to a
+`SandboxTemplate`/`SandboxWarmPool` like the rows above — there's no warm
+pod pool. Instead it routes to the always-running `vibed-workerd`
+StatefulSet (`deploy/workerd/statefulset.yaml`): `vibed-controller` pushes
+the worker script to the loader sidecar (`cmd/vibed-workerd-loader`,
+`internal/workerd`), which injects it into a workerd isolate. So this
+directory holds only the Sandbox-backed templates; workerd's manifest lives
+under `deploy/workerd/`.
 
 Every image **must** embed `vibed-agent` at `/usr/local/bin/vibed-agent`
 and run it as the process the container's `ENTRYPOINT` resolves to

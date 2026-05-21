@@ -76,14 +76,20 @@ func New(opts Options) (*Loader, error) {
 	if reload == nil {
 		reload = func() error { return nil }
 	}
-	return &Loader{
+	l := &Loader{
 		baseDir:    opts.BaseDir,
 		compatDate: opts.CompatDate,
 		portBase:   opts.PortBase,
 		reload:     reload,
 		apps:       map[string]int{},
 		ports:      map[int]string{},
-	}, nil
+	}
+	// Render an initial (empty) config so `workerd serve` has a valid file to
+	// start from before any app is deployed. No reload — workerd isn't up yet.
+	if err := l.renderLocked(); err != nil {
+		return nil, err
+	}
+	return l, nil
 }
 
 // Put writes (or replaces) the worker script for app id, re-renders the
