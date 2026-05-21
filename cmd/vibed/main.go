@@ -264,8 +264,18 @@ func main() {
 		go collector.Run(lifeCtx)
 	}
 
+	// Build the VibedApp deploy service (POST /v1/deploy + the MCP core
+	// lifecycle). When prerequisites aren't configured (no K8s/tarball
+	// store) this is nil and both the HTTP endpoints and the MCP tools fall
+	// back: HTTP returns 501, MCP uses the orchestrator build path.
+	deploySvc, derr := buildDeployService(cfg, k8sClients, logger)
+	if derr != nil {
+		logger.Warn("VibedApp deploy path disabled; falling back to orchestrator", "error", derr)
+		deploySvc = nil
+	}
+
 	// Create MCP server
-	mcpServer := mcppkg.NewServer(orch, cfg.Limits, userStore)
+	mcpServer := mcppkg.NewServer(orch, deploySvc, cfg.Limits, userStore)
 
 	// Initialize authentication middleware
 	authMiddleware, err := vibedauth.Middleware(cfg.Auth, userStore, logger)
@@ -297,9 +307,9 @@ func main() {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
+		runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -312,7 +322,7 @@ func main() {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
 	mux := http.NewServeMux()
 
 	// /v1/* HTTP API + /healthz, /readyz, /metrics are mounted via
@@ -326,13 +336,11 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 		promhttp.Handler(),
 		logger,
 	)
-	// Wire the VibedApp deploy path (POST /v1/deploy + /v1/apps). When the
-	// tarball store or K8s client can't be built (e.g. storage.tarball not
-	// configured), the endpoints stay 501 and the rest of vibeD still boots.
-	if dsvc, err := buildDeployService(cfg, k8sClients, logger); err != nil {
-		logger.Warn("/v1 deploy path disabled", "error", err)
-	} else {
-		vibedAPI.Deploy = dsvc
+	// Wire the VibedApp deploy path (POST /v1/deploy + /v1/apps), built once
+	// in main() and shared with the MCP server. nil = prerequisites absent;
+	// the endpoints stay 501 and the rest of vibeD still boots.
+	if deploySvc != nil {
+		vibedAPI.Deploy = deploySvc
 		// Served tarball backend: vibeD serves the source blobs the agent pulls.
 		if blob, berr := tarball.NewBlobHandler(cfg.Storage.Tarball); berr != nil {
 			logger.Warn("blob handler init failed", "error", berr)

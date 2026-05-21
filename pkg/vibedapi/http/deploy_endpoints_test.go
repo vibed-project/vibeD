@@ -20,9 +20,9 @@ import (
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/classifier"
+	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/internal/tarball"
-	"github.com/vibed-project/vibeD/internal/config"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 

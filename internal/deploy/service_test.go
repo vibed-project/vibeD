@@ -23,10 +23,10 @@ import (
 
 // fakeStore is an in-memory tarball.Store for tests.
 type fakeStore struct {
-	mu        sync.Mutex
-	blobs     map[string][]byte
-	putCount  int
-	delCount  int
+	mu       sync.Mutex
+	blobs    map[string][]byte
+	putCount int
+	delCount int
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{blobs: map[string][]byte{}} }

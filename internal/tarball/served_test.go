@@ -129,7 +129,7 @@ func TestNewFactory(t *testing.T) {
 
 // compile-time: stores satisfy the interface.
 var (
-	_ Store          = (*servedStore)(nil)
-	_ Store          = (*s3Store)(nil)
-	_ io.Reader      = (*bytes.Reader)(nil)
+	_ Store     = (*servedStore)(nil)
+	_ Store     = (*s3Store)(nil)
+	_ io.Reader = (*bytes.Reader)(nil)
 )

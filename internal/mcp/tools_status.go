@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 
+	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/pkg/api"
 
@@ -13,15 +14,23 @@ type getArtifactStatusInput struct {
 	ArtifactID string `json:"artifact_id" jsonschema:"ID of the artifact to check"`
 }
 
-func registerStatusTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
+func registerStatusTool(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_artifact_status",
-		Description: "Get detailed status information for a specific deployed artifact, including URL, deployment target, image reference, and any errors.",
+		Description: "Get detailed status information for a specific deployed artifact, including URL, runtime, and lifecycle phase.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input getArtifactStatusInput) (*mcp.CallToolResult, *api.Artifact, error) {
-		artifact, err := orch.Status(ctx, input.ArtifactID)
+		if deploySvc == nil {
+			artifact, err := orch.Status(ctx, input.ArtifactID)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, artifact, nil
+		}
+
+		app, err := deploySvc.Get(ctx, ownerFromContext(ctx), input.ArtifactID)
 		if err != nil {
 			return nil, nil, err
 		}
-		return nil, artifact, nil
+		return nil, appToArtifact(app), nil
 	})
 }
