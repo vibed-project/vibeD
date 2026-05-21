@@ -1,0 +1,73 @@
+{{- /*
+One SandboxTemplate + SandboxWarmPool per enabled language template
+(refactor.md §6.1), rendered into namespaces.pools. The controller claims
+from these by name (= the classifier's template pick). Images must embed
+vibed-agent at /usr/local/bin/vibed-agent (see templates/<name>/Dockerfile).
+
+These mirror templates/<name>/template.yaml but are values-driven so image
+refs / pool sizes / the RuntimeClass are environment-configurable.
+*/ -}}
+{{- $root := . }}
+{{- range $name, $cfg := .Values.warmPools }}
+{{- if $cfg.enabled }}
+---
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Values.namespaces.pools }}
+  labels:
+    {{- include "vibed.labels" $root | nindent 4 }}
+    vibed.dev/template: {{ $name }}
+    vibed.dev/lane: {{ $cfg.lane }}
+spec:
+  envVarsInjectionPolicy: Allowed
+  podTemplate:
+    metadata:
+      labels:
+        vibed.dev/template: {{ $name }}
+    spec:
+      runtimeClassName: {{ $root.Values.runtime.defaultClass }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: runtime
+          image: {{ $cfg.image | quote }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: control, containerPort: 9000 }
+            - { name: http,    containerPort: 8080 }
+          resources:
+            {{- toYaml $cfg.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: tmp,       mountPath: /tmp }
+      volumes:
+        - { name: workspace, emptyDir: { sizeLimit: 200Mi } }
+        - { name: tmp,       emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxWarmPool
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Values.namespaces.pools }}
+  labels:
+    {{- include "vibed.labels" $root | nindent 4 }}
+    vibed.dev/template: {{ $name }}
+    vibed.dev/lane: {{ $cfg.lane }}
+spec:
+  replicas: {{ $cfg.replicas }}
+  sandboxTemplateRef:
+    name: {{ $name }}
+  updateStrategy:
+    type: OnReplenish
+{{- end }}
+{{- end }}
