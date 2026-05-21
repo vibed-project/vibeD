@@ -28,6 +28,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/vibed-project/vibeD/internal/controller"
+	"github.com/vibed-project/vibeD/internal/workerd"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -46,6 +47,10 @@ func main() {
 		domain               string
 		poolNamespace        string
 		agentToken           string
+		workerdReplicas      int
+		workerdControlPort   int
+		workerdService       string
+		workerdNamespace     string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081", "Address the metrics endpoint binds to.")
@@ -58,6 +63,14 @@ func main() {
 		"Namespace where SandboxWarmPool / SandboxTemplate live (matches templates/*/template.yaml).")
 	flag.StringVar(&agentToken, "agent-token", "",
 		"Bearer token vibed-agent expects on /healthz. Empty = no auth header sent.")
+	flag.IntVar(&workerdReplicas, "workerd-replicas", 0,
+		"workerd StatefulSet size. 0 disables the fast lane (workerd apps fail to deploy).")
+	flag.IntVar(&workerdControlPort, "workerd-control-port", 9200,
+		"Loader control-API port on each workerd replica.")
+	flag.StringVar(&workerdService, "workerd-service", "vibed-workerd",
+		"Headless Service / StatefulSet name for workerd (used to build per-replica DNS).")
+	flag.StringVar(&workerdNamespace, "workerd-namespace", "vibed-system",
+		"Namespace the workerd StatefulSet runs in.")
 	zapOpts := zap.Options{Development: false}
 	zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -77,7 +90,7 @@ func main() {
 		fatal(logger, "manager init", err)
 	}
 
-	if err := (&controller.Reconciler{
+	reconciler := &controller.Reconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Claimer: &controller.SandboxClaimer{
@@ -86,7 +99,27 @@ func main() {
 		},
 		Probe:  controller.NewHTTPAgentProbe(agentToken),
 		Router: controller.DeterministicRouter{Domain: domain},
-	}).SetupWithManager(mgr); err != nil {
+	}
+	// Fast lane: wire the workerd loader client only when replicas are
+	// configured. Otherwise the default DummyFastLaneDeployer rejects
+	// workerd apps with a clear "not configured" error.
+	if workerdReplicas > 0 {
+		svc, ns := workerdService, workerdNamespace
+		reconciler.FastLane = controller.WorkerdFastLane{
+			Client: &workerd.Client{
+				Replicas:    workerdReplicas,
+				ControlPort: workerdControlPort,
+				Token:       agentToken,
+				ReplicaHost: func(idx int) string {
+					// StatefulSet stable per-pod DNS:
+					// <svc>-<idx>.<svc>.<ns>.svc.cluster.local
+					return fmt.Sprintf("%s-%d.%s.%s.svc.cluster.local", svc, idx, svc, ns)
+				},
+			},
+		}
+		logger.Info("workerd fast lane enabled", "replicas", workerdReplicas, "service", svc)
+	}
+	if err := reconciler.SetupWithManager(mgr); err != nil {
 		fatal(logger, "reconciler setup", err)
 	}
 

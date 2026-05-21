@@ -86,10 +86,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	host = strings.TrimPrefix(host, "http://")
 	host = strings.SplitN(host, "/", 2)[0] // drop any path
 
+	// PodIP carries the routable upstream. General-lane apps store a bare
+	// pod IP and the user app listens on AppPort; fast-lane (workerd) apps
+	// store a full host:port (the loader's assigned socket), so we use it
+	// verbatim when a port is already present.
+	upstream := app.Status.PodIP
+	if !strings.Contains(upstream, ":") {
+		upstream = fmt.Sprintf("%s:%d", upstream, r.AppPort)
+	}
+
 	route := Route{
 		ID:       id,
 		Host:     host,
-		Upstream: fmt.Sprintf("%s:%d", app.Status.PodIP, r.AppPort),
+		Upstream: upstream,
 	}
 	if err := r.Caddy.EnsureRoute(ctx, route); err != nil {
 		return reconcile.Result{}, fmt.Errorf("ensure route %s: %w", id, err)

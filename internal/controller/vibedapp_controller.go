@@ -81,6 +81,17 @@ type AgentProbe interface {
 	IsReady(ctx context.Context, target string) (ready bool, err error)
 }
 
+// FastLaneDeployer deploys a workerd fast-lane app: it pushes the worker
+// script to the loader (no warm-pool claim, no microVM) and returns the
+// in-cluster target ("host:port") the worker is reachable at. Remove tears
+// it back down. The default DummyFastLaneDeployer errors, since the fast
+// lane must be explicitly wired (cmd/vibed-controller supplies the real
+// workerd-backed implementation).
+type FastLaneDeployer interface {
+	Deploy(ctx context.Context, app *vibedv1.VibedApp) (target string, err error)
+	Remove(ctx context.Context, app *vibedv1.VibedApp) error
+}
+
 // Router returns the externally resolvable URL for a Ready app. The
 // default DeterministicRouter computes it from a stable hash of
 // namespace/name with no side effects — vibed-router is the separate
@@ -96,9 +107,10 @@ type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	Claimer Claimer
-	Probe   AgentProbe
-	Router  Router
+	Claimer  Claimer
+	Probe    AgentProbe
+	Router   Router
+	FastLane FastLaneDeployer
 
 	// RequeueDelay is how often to re-check transitional phases when no
 	// external signal triggers a reconcile. Defaults to 2s.
@@ -151,6 +163,9 @@ func (r *Reconciler) applyDefaults() {
 	if r.Router == nil {
 		r.Router = DeterministicRouter{Domain: "vibed.example.com"}
 	}
+	if r.FastLane == nil {
+		r.FastLane = DummyFastLaneDeployer{}
+	}
 	if r.RequeueDelay == 0 {
 		r.RequeueDelay = 2 * time.Second
 	}
@@ -190,6 +205,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, nil
 	}
 	setCondition(&app, ConditionSourceValid, metav1.ConditionTrue, "Valid", "")
+
+	// Fast lane (workerd): there's no warm-pool claim or agent — the loader
+	// injects the worker script directly — so the whole lifecycle collapses
+	// into one deploy step handled separately from the general-lane state
+	// machine below.
+	if isWorkerdFastLane(&app) {
+		return r.reconcileFastLane(ctx, &app, before)
+	}
 
 	// Phase transitions. Each case is a single hop; we requeue rather than
 	// loop here so each step is observable in status before the next runs.
@@ -273,6 +296,60 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	logger.Info("unknown phase; treating as Pending", "phase", app.Status.Phase)
 	app.Status.Phase = vibedv1.PhasePending
 	return r.finish(ctx, &app, before, true)
+}
+
+// WorkerdTemplate is the template name the classifier emits for fast-lane
+// worker scripts (worker.js / wrangler.toml). Kept in sync with
+// internal/classifier.TemplateWorkerd.
+const WorkerdTemplate = "workerd"
+
+// isWorkerdFastLane reports whether the app takes the workerd fast lane
+// (not the static-nginx fast lane, which still runs on a Sandbox pod).
+func isWorkerdFastLane(app *vibedv1.VibedApp) bool {
+	return app.Spec.Runtime.Lane == vibedv1.LaneFast && app.Spec.Runtime.Template == WorkerdTemplate
+}
+
+// reconcileFastLane drives a workerd app to Ready in a single step: push the
+// script to the loader, record the returned target, publish the route. There's
+// no Claiming/Starting — workerd is always running, so a successful deploy is
+// immediately Ready.
+func (r *Reconciler) reconcileFastLane(ctx context.Context, app *vibedv1.VibedApp, before *vibedv1.VibedAppStatus) (reconcile.Result, error) {
+	// Steady state: nothing to do once Ready (a spec change bumps generation
+	// and the loader Deploy below is idempotent, so re-running is harmless,
+	// but we avoid the work when already serving).
+	if app.Status.Phase == vibedv1.PhaseReady {
+		return reconcile.Result{}, nil
+	}
+
+	target, err := r.FastLane.Deploy(ctx, app)
+	if err != nil {
+		app.Status.Phase = vibedv1.PhaseClaiming
+		setCondition(app, ConditionReady, metav1.ConditionFalse, ReasonClaimFailed, err.Error())
+		if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
+			return reconcile.Result{}, perr
+		}
+		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+	}
+
+	url, err := r.Router.Publish(ctx, app, target)
+	if err != nil {
+		setCondition(app, ConditionReady, metav1.ConditionFalse, "RouterFailed", err.Error())
+		if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
+			return reconcile.Result{}, perr
+		}
+		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+	}
+
+	// PodIP carries the routable upstream. For the fast lane it's a
+	// host:port (the workerd replica + assigned socket), so vibed-router
+	// uses it verbatim instead of appending the default app port.
+	app.Status.PodIP = target
+	app.Status.URL = url
+	app.Status.Phase = vibedv1.PhaseReady
+	now := metav1.Now()
+	app.Status.LastDeployedAt = &now
+	setCondition(app, ConditionReady, metav1.ConditionTrue, ReasonRunning, "worker deployed")
+	return r.finish(ctx, app, before, false)
 }
 
 // finish patches the status if anything changed and decides whether to
@@ -401,6 +478,18 @@ func (DummyClaimer) EnsureClaim(_ context.Context, app *vibedv1.VibedApp) (bool,
 type DummyAgentProbe struct{}
 
 func (DummyAgentProbe) IsReady(_ context.Context, _ string) (bool, error) { return true, nil }
+
+// DummyFastLaneDeployer errors on use — the fast lane must be wired
+// explicitly (cmd/vibed-controller supplies the workerd-backed impl). This
+// default exists so a Reconciler constructed without one doesn't nil-panic;
+// a workerd VibedApp simply fails to deploy with a clear message.
+type DummyFastLaneDeployer struct{}
+
+func (DummyFastLaneDeployer) Deploy(_ context.Context, _ *vibedv1.VibedApp) (string, error) {
+	return "", errors.New("fast lane (workerd) is not configured on this controller")
+}
+
+func (DummyFastLaneDeployer) Remove(_ context.Context, _ *vibedv1.VibedApp) error { return nil }
 
 // DeterministicRouter computes the user-facing URL for a VibedApp from a
 // stable hash of namespace/name, with no side effects. The actual Caddy
