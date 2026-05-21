@@ -65,6 +65,20 @@ data:
       backend: {{ .Values.config.storage.backend | quote }}
       local:
         basePath: {{ .Values.config.storage.local.basePath | quote }}
+      {{- with .Values.config.storage.tarball }}
+      tarball:
+        backend: {{ .backend | default "served" | quote }}
+        served:
+          basePath: {{ .served.basePath | default "/data/vibed/sources" | quote }}
+          # publicBaseURL defaults to the in-cluster Service URL so the agent
+          # can pull blobs vibeD serves at /internal/sources/.
+          publicBaseURL: {{ .served.publicBaseURL | default (printf "http://%s.%s.svc.cluster.local:%d" (include "vibed.fullname" $) $.Release.Namespace (int $.Values.service.port)) | quote }}
+        s3:
+          endpoint: {{ .s3.endpoint | default "" | quote }}
+          bucket: {{ .s3.bucket | default "" | quote }}
+          region: {{ .s3.region | default "" | quote }}
+          presignTTL: {{ .s3.presignTTL | default "15m" | quote }}
+      {{- end }}
     registry:
       enabled: {{ .Values.config.registry.enabled }}
       {{- if .Values.config.registry.url }}
