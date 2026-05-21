@@ -84,12 +84,24 @@ runtime:
   handler: ""                  # defaults to defaultClass
   nodeSelector: {}             # e.g. { vibed.dev/sandbox-node: "true" }
   # agent-sandbox NetworkPolicy mode for warm-pool sandboxes:
-  #   Managed  — agent-sandbox locks them down (ingress only from its router,
-  #              no cluster-internal egress). Secure, but currently blocks
-  #              vibeD's controller probe + in-cluster source pull + Caddy.
-  #   Unmanaged — open networking; required for the current vibeD traffic model
-  #              (use on dev / until the prod network model is reconciled).
+  #   Managed   — agent-sandbox owns the policy: ingress only from an
+  #               `app: sandbox-router` pod (which it doesn't ship) and NO
+  #               cluster-internal egress. That blocks vibeD's controller
+  #               probe, Caddy proxy, and the in-cluster "served" source pull.
+  #   Unmanaged — agent-sandbox leaves networking to you. Use this with
+  #               networkPolicy.enabled below so vibeD owns a policy that
+  #               permits exactly its traffic. (Dev/Kind: Unmanaged + no
+  #               policy = fully open.)
   sandboxNetworkPolicy: Managed
+
+# -- vibeD-owned sandbox NetworkPolicy (the production posture). Default-deny,
+#    then allow the control plane -> sandbox (:8080/:9000) and DNS + public
+#    egress (for the agent's pre-signed S3 source pull) while blocking
+#    cluster-internal egress. Pair with runtime.sandboxNetworkPolicy=Unmanaged
+#    and config.storage.tarball.backend=s3. Off by default.
+networkPolicy:
+  enabled: false
+  extraEgress: []   # additional egress rules (e.g. an in-cluster MinIO CIDR)
 
 # -- vibed-controller: reconciles VibedApp -> SandboxClaim / workerd.
 controller:
@@ -195,10 +207,16 @@ config:
     backend: "local"
     local:
       basePath: "/data/vibed/artifacts"
-    # -- Source-blob store for the /v1/deploy path. "served" (default) keeps
-    #    the tarball on vibeD's PVC and serves it at an in-cluster URL the
-    #    agent pulls; "s3" streams to S3/MinIO. publicBaseURL defaults to the
-    #    in-cluster Service URL (templated when left empty).
+    # -- Source-blob store for the /v1/deploy path.
+    #    "served" keeps the tarball on vibeD's PVC and serves it at an
+    #      in-cluster URL — DEV ONLY. Once a restrictive sandbox NetworkPolicy
+    #      is in place (networkPolicy.enabled, or agent-sandbox Managed),
+    #      sandboxes can't reach in-cluster services or resolve cluster DNS,
+    #      so the agent can't pull from it.
+    #    "s3" streams to S3/MinIO and hands the agent a pre-signed URL the
+    #      sandbox reaches over its allowed public egress — REQUIRED IN
+    #      PRODUCTION.
+    #    publicBaseURL (served) defaults to the in-cluster Service URL.
     tarball:
       backend: "served"
       served:

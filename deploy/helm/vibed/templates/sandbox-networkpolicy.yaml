@@ -1,0 +1,61 @@
+{{- /*
+vibeD-owned sandbox NetworkPolicy — the production network posture.
+
+agent-sandbox's own "Managed" policy locks sandboxes to ingress from an
+`app: sandbox-router` pod (which agent-sandbox doesn't even ship) and blocks
+all cluster-internal egress — incompatible with vibeD probing the agent,
+Caddy proxying to the app, and (if you used the in-cluster "served" blob
+store) the agent pulling source. So set runtime.sandboxNetworkPolicy:
+Unmanaged and let vibeD own the policy here instead: default-deny, then
+allow exactly what vibeD needs.
+
+Off by default (dev runs fully open). Enable in production with:
+  runtime.sandboxNetworkPolicy: Unmanaged
+  networkPolicy.enabled: true
+  config.storage.tarball.backend: s3   # served can't be reached under egress lockdown
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "vibed.fullname" . }}-sandboxes
+  namespace: {{ .Values.namespaces.apps }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+spec:
+  # Applies to every warm-pool / claimed sandbox (they all carry this label).
+  podSelector:
+    matchExpressions:
+      - { key: vibed.dev/template, operator: Exists }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Only the vibeD control plane reaches sandboxes — the agent control API
+    # (:9000) for the controller's probe/inject, and the app port (:8080) for
+    # Caddy's reverse proxy.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - { protocol: TCP, port: 9000 }
+        - { protocol: TCP, port: 8080 }
+  egress:
+    # DNS (sandboxes get public resolvers, but allow 53 either way).
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Public internet for the agent's pre-signed S3 source pull + the user
+    # app's outbound calls — but never cluster-internal services (the §7.4
+    # data-egress control). Narrow these CIDRs further per environment.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
