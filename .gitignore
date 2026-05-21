@@ -39,6 +39,7 @@ docs/.docusaurus/
 /vibed
 /vibed-controller
 /vibed-router
+/vibed-workerd-loader
 vibed-dev.yaml
 /data/
 

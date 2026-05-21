@@ -2,6 +2,7 @@ GO := GOTOOLCHAIN=auto GO111MODULE=on go
 BINARY := bin/vibed
 CONTROLLER_BINARY := bin/vibed-controller
 ROUTER_BINARY := bin/vibed-router
+WORKERD_LOADER_BINARY := bin/vibed-workerd-loader
 KIND_CLUSTER := vibed-dev
 KIND_RUNTIME := podman
 GHCR_IMAGE := ghcr.io/vibed-project/vibed
@@ -22,7 +23,7 @@ TB_OBS := $(TESTBED)/observability
 TB_KEYCLOAK := $(TESTBED)/keycloak
 TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
 
-.PHONY: build build-controller build-router run run-http web-install web-build docs-install docs-build docs-dev build-all \
+.PHONY: build build-controller build-router build-workerd-loader run run-http web-install web-build docs-install docs-build docs-dev build-all \
         test test-integration test-integration-short test-integration-setup test-cleanup lint \
         generate manifests controller-gen openapi-gen oapi-codegen \
         image load-image \
@@ -41,6 +42,9 @@ build-controller:
 
 build-router:
 	$(GO) build -o $(ROUTER_BINARY) ./cmd/vibed-router
+
+build-workerd-loader:
+	$(GO) build -o $(WORKERD_LOADER_BINARY) ./cmd/vibed-workerd-loader
 
 run: build
 	./$(BINARY) --config vibed.yaml
