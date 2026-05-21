@@ -24,7 +24,7 @@ TB_KEYCLOAK := $(TESTBED)/keycloak
 TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
 
 .PHONY: build build-controller build-router build-workerd-loader run run-http web-install web-build docs-install docs-build docs-dev build-all \
-        test test-integration test-integration-short test-integration-setup test-cleanup lint \
+        test e2e e2e-cluster test-integration test-integration-short test-integration-setup test-cleanup lint \
         generate manifests controller-gen openapi-gen oapi-codegen \
         image load-image \
         runner-images runner-image-python runner-image-node load-runner-images \
@@ -79,6 +79,15 @@ build-all: web-build build
 
 test:
 	$(GO) test ./...
+
+## e2e: in-process end-to-end across the implemented slice (no cluster needed).
+e2e:
+	$(GO) test -count=1 ./test/e2e/...
+
+## e2e-cluster: the literal §10.2 smoke test; needs a cluster with the chart
+## installed (skips otherwise). See test/e2e/README.md.
+e2e-cluster:
+	$(GO) test -tags=e2ecluster -count=1 -v ./test/e2e/...
 
 test-integration-setup:
 	@echo "Loading test images into Kind cluster..."
