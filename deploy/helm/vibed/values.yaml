@@ -60,6 +60,98 @@ serviceAccount:
   create: true
   name: ""
 
+# === v0.3.1 data-plane topology =============================================
+
+# -- The two data-plane namespaces (refactor.md §7.1). The control plane
+#    (vibed server / controller / router) runs in .Release.Namespace.
+namespaces:
+  create: true
+  pools: vibed-pools   # SandboxWarmPool / SandboxTemplate + warm sandboxes
+  apps: vibed-apps     # claimed sandboxes + VibedApp CRs
+
+# -- Kata RuntimeClass for the general lane. Off by default — most clusters
+#    install it via their Kata operator. Set installRuntimeClass=true to let
+#    Helm own it.
+runtime:
+  defaultClass: kata-qemu      # kata-qemu (dev, no nested virt) | kata-fc (KVM)
+  installRuntimeClass: false
+  handler: ""                  # defaults to defaultClass
+  nodeSelector: {}             # e.g. { vibed.dev/sandbox-node: "true" }
+
+# -- vibed-controller: reconciles VibedApp -> SandboxClaim / workerd.
+controller:
+  enabled: true
+  replicaCount: 1
+  leaderElect: true
+  image:
+    repository: vibed-controller
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  # -- DNS suffix for app URLs; must match router/Caddy + your wildcard cert.
+  domain: vibed.example.com
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+# -- vibed-router: watches VibedApp status, programs Caddy routes.
+router:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: vibed-router
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits:   { cpu: 200m, memory: 128Mi }
+
+# -- Caddy: the wildcard reverse proxy for *.{controller.domain}. The router
+#    drives its routes via the admin API (:2019).
+caddy:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: caddy
+    tag: "2-alpine"
+    pullPolicy: IfNotPresent
+  # -- DNS-01 wildcard TLS. When false, Caddy serves plain HTTP (dev). For
+  #    production set provider + the token secret and use a Caddy image built
+  #    with the matching DNS plugin (e.g. caddy-dns/cloudflare).
+  tls:
+    dns01:
+      enabled: false
+      provider: cloudflare
+      tokenSecret: ""   # Secret with key CF_API_TOKEN
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: "1", memory: 256Mi }
+
+# -- workerd fast lane (refactor.md §5.6). Disabled by default; needs a
+#    workerd image (no official slim image — build one).
+workerd:
+  enabled: false
+  replicas: 3
+  controlPort: 9200
+  portBase: 9100
+  image:
+    repository: ghcr.io/vibed-project/workerd
+    tag: "dev"
+    pullPolicy: IfNotPresent
+  loaderImage:
+    repository: vibed-workerd-loader
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+# -- Warm pools: one SandboxTemplate + SandboxWarmPool per language template
+#    (refactor.md §6.1), rendered into namespaces.pools. Set replicas to size
+#    each pool; image must embed vibed-agent.
+warmPools:
+  node-24:      { enabled: true,  lane: general, image: "vibed-runner-node:dev",   replicas: 50, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
+  python-313:   { enabled: true,  lane: general, image: "vibed-runner-python:dev", replicas: 50, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
+  go-123:       { enabled: true,  lane: general, image: "vibed-template-go-123:dev",      replicas: 20, resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { cpu: "1", memory: 768Mi } } }
+  base-al2023:  { enabled: true,  lane: general, image: "vibed-template-base-al2023:dev", replicas: 30, resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } } }
+  static-nginx: { enabled: true,  lane: fast,    image: "vibed-template-static-nginx:dev", replicas: 30, resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { cpu: 200m, memory: 128Mi } } }
+
 config:
   server:
     transport: "http"
@@ -90,6 +182,20 @@ config:
     backend: "local"
     local:
       basePath: "/data/vibed/artifacts"
+    # -- Source-blob store for the /v1/deploy path. "served" (default) keeps
+    #    the tarball on vibeD's PVC and serves it at an in-cluster URL the
+    #    agent pulls; "s3" streams to S3/MinIO. publicBaseURL defaults to the
+    #    in-cluster Service URL (templated when left empty).
+    tarball:
+      backend: "served"
+      served:
+        basePath: "/data/vibed/sources"
+        publicBaseURL: ""   # empty -> http://<svc>.<ns>.svc.cluster.local:<port>
+      s3:
+        endpoint: ""
+        bucket: ""
+        region: ""
+        presignTTL: "15m"
   registry:
     enabled: true
     url: "kind-registry:5000"
