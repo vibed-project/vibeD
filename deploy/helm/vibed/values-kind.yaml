@@ -20,6 +20,17 @@ service:
 runtime:
   defaultClass: ""          # no Kata on Kind → schedule as normal pods
   installRuntimeClass: false
+  # Open sandbox networking so the controller can probe the agent, the agent
+  # can pull source from the in-cluster blob store, and Caddy can proxy.
+  sandboxNetworkPolicy: Unmanaged
+
+# agent-sandbox requires a SandboxClaim to be co-located with its
+# SandboxTemplate, so VibedApps/claims and the warm pools must share a
+# namespace. Converge everything into vibed-apps for this dev install.
+namespaces:
+  create: true
+  pools: vibed-apps
+  apps: vibed-apps
 
 controller:
   image: { repository: localhost/vibed-controller, tag: dev, pullPolicy: Never }
@@ -51,6 +62,10 @@ config:
   server:
     transport: "http"
     baseURL: "http://localhost:31808"
+  deployment:
+    # deploy.Service creates VibedApps here; must match namespaces.pools so
+    # the controller's SandboxClaim finds its SandboxTemplate.
+    namespace: "vibed-apps"
   store:
     backend: "sqlite"
     sqlite:
@@ -60,4 +75,4 @@ config:
       backend: "served"
       served:
         # In-cluster URL the agent pulls source blobs from.
-        publicBaseURL: "http://vibed.vibed-system.svc.cluster.local:8080"
+        publicBaseURL: "http://10.96.124.151:8080"

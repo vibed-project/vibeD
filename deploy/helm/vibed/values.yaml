@@ -77,6 +77,13 @@ runtime:
   installRuntimeClass: false
   handler: ""                  # defaults to defaultClass
   nodeSelector: {}             # e.g. { vibed.dev/sandbox-node: "true" }
+  # agent-sandbox NetworkPolicy mode for warm-pool sandboxes:
+  #   Managed  — agent-sandbox locks them down (ingress only from its router,
+  #              no cluster-internal egress). Secure, but currently blocks
+  #              vibeD's controller probe + in-cluster source pull + Caddy.
+  #   Unmanaged — open networking; required for the current vibeD traffic model
+  #              (use on dev / until the prod network model is reconciled).
+  sandboxNetworkPolicy: Managed
 
 # -- vibed-controller: reconciles VibedApp -> SandboxClaim / workerd.
 controller:

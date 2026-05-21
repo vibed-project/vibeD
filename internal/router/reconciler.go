@@ -19,7 +19,12 @@ import (
 // RoutePrefix is the @id namespace vibed-router owns inside Caddy. The
 // reconciler refuses to delete any route whose @id doesn't start with this
 // — keeps the router from clobbering routes someone added by hand.
-const RoutePrefix = "vibed-app/"
+//
+// No '/' here: Caddy's admin /id/<id> endpoint treats '/' as a path
+// separator, so a slashed @id (e.g. "vibed-app/<label>") makes PATCH and
+// DELETE /id/... resolve the wrong config node — the route could never be
+// updated or removed.
+const RoutePrefix = "vibed-app-"
 
 // Reconciler reconciles VibedApp resources into Caddy routes. It does not
 // patch VibedApp status — read-only on the K8s side — so multiple router

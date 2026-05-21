@@ -287,6 +287,11 @@ func (a *Agent) inject(ctx context.Context, req InjectRequest) (StatusResponse, 
 
 // moveDirContents moves every entry under src into dst. dst is expected to
 // be empty (resetWorkdirLocked guarantees this for the inject path).
+//
+// The staging dir (/tmp) and the workdir (/workspace) are usually separate
+// mounts in a sandbox pod, so a plain os.Rename fails with EXDEV
+// ("invalid cross-device link"). We try rename first (fast, same-device
+// path) and fall back to a recursive copy when it doesn't.
 func moveDirContents(src, dst string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
@@ -295,11 +300,59 @@ func moveDirContents(src, dst string) error {
 	for _, e := range entries {
 		from := filepath.Join(src, e.Name())
 		to := filepath.Join(dst, e.Name())
-		if err := os.Rename(from, to); err != nil {
+		if err := os.Rename(from, to); err == nil {
+			continue
+		} else if !errors.Is(err, syscall.EXDEV) {
 			return fmt.Errorf("move %s → %s: %w", from, to, err)
 		}
+		// Cross-device: copy then remove the source.
+		if err := copyPath(from, to); err != nil {
+			return fmt.Errorf("copy %s → %s: %w", from, to, err)
+		}
+		_ = os.RemoveAll(from)
 	}
 	return nil
+}
+
+// copyPath recursively copies src to dst (files, dirs; symlinks/specials are
+// skipped, matching the tar-extraction allowlist).
+func copyPath(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := copyPath(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return nil // skip symlinks/devices/etc.
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // startProcessLocked launches the user process. Caller holds a.mu.

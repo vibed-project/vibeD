@@ -22,6 +22,13 @@ metadata:
     vibed.dev/lane: {{ $cfg.lane }}
 spec:
   envVarsInjectionPolicy: Allowed
+  # agent-sandbox's "Managed" policy locks sandboxes down to ingress from its
+  # own sandbox-router and blocks cluster-internal egress (refactor.md §7.4).
+  # That blocks vibeD's model — the controller probing the agent on :9000, the
+  # agent pulling source from the in-cluster blob store, and Caddy proxying to
+  # the pod. Set runtime.sandboxNetworkPolicy=Disabled (dev) to open it up;
+  # production needs vibeD's traffic reconciled with agent-sandbox's router.
+  networkPolicyManagement: {{ $root.Values.runtime.sandboxNetworkPolicy | default "Managed" }}
   podTemplate:
     metadata:
       labels:

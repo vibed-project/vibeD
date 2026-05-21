@@ -9,10 +9,12 @@ spec:
   selector:
     matchLabels:
       {{- include "vibed.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
   template:
     metadata:
       labels:
         {{- include "vibed.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- if .Values.metrics.enabled }}

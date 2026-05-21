@@ -79,14 +79,16 @@ func (c *CaddyClient) EnsureRoute(ctx context.Context, r Route) error {
 
 	// PATCH /id/<id> replaces the existing route in place. Caddy returns
 	// 404 if no route with that @id exists yet — we fall back to POST on
-	// /<routes-path> to append.
+	// the routes array to append.
 	if status, err := c.do(ctx, http.MethodPatch, "/id/"+r.ID, body); err == nil && status/100 == 2 {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	// PATCH 404'd. Append.
-	if status, err := c.do(ctx, http.MethodPost, c.routesPath()+"/...", body); err != nil {
+	// PATCH 404'd. POST the route object to the array path to append it.
+	// (Caddy's "/..." token expects an ARRAY body and expands it; posting a
+	// single object to the bare array path appends that one element.)
+	if status, err := c.do(ctx, http.MethodPost, c.routesPath(), body); err != nil {
 		return err
 	} else if status/100 != 2 {
 		return fmt.Errorf("caddy POST routes: status %d", status)

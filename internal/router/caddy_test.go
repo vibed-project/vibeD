@@ -58,6 +58,9 @@ func (f *fakeCaddy) handler() http.Handler {
 		}
 	})
 
+	// GET lists route @ids; POST appends a single route object to the array
+	// (Caddy's append-to-array idiom — what EnsureRoute falls back to when
+	// PATCH /id/ 404s).
 	mux.HandleFunc("/config/apps/http/servers/srv0/routes", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -69,33 +72,21 @@ func (f *fakeCaddy) handler() http.Handler {
 			}
 			sort.Slice(ids, func(i, j int) bool { return ids[i]["@id"] < ids[j]["@id"] })
 			_ = json.NewEncoder(w).Encode(ids)
+		case http.MethodPost:
+			f.postHits++
+			body, _ := io.ReadAll(r.Body)
+			var probe struct {
+				ID string `json:"@id"`
+			}
+			if err := json.Unmarshal(body, &probe); err != nil || probe.ID == "" {
+				http.Error(w, "missing @id", http.StatusBadRequest)
+				return
+			}
+			f.routes[probe.ID] = body
+			w.WriteHeader(http.StatusOK)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
-
-	// POST /config/apps/http/servers/srv0/routes/... is what EnsureRoute
-	// falls back to when PATCH 404s. Caddy supports `/...` to append.
-	mux.HandleFunc("/config/apps/http/servers/srv0/routes/...", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		f.postHits++
-
-		// Parse out the @id so we can key on it in the fake's routes map.
-		body, _ := io.ReadAll(r.Body)
-		var probe struct {
-			ID string `json:"@id"`
-		}
-		if err := json.Unmarshal(body, &probe); err != nil || probe.ID == "" {
-			http.Error(w, "missing @id", http.StatusBadRequest)
-			return
-		}
-		f.routes[probe.ID] = body
-		w.WriteHeader(http.StatusOK)
 	})
 
 	return mux
