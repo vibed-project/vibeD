@@ -51,12 +51,12 @@ const (
 
 // Reason strings used in conditions. Keep short and machine-readable.
 const (
-	ReasonClaiming        = "Claiming"
-	ReasonStarting        = "Starting"
-	ReasonRunning         = "Running"
-	ReasonSourceMissing   = "SourceMissing"
-	ReasonSourceAmbiguous = "SourceAmbiguous"
-	ReasonClaimFailed     = "ClaimFailed"
+	ReasonClaiming         = "Claiming"
+	ReasonStarting         = "Starting"
+	ReasonRunning          = "Running"
+	ReasonSourceMissing    = "SourceMissing"
+	ReasonSourceAmbiguous  = "SourceAmbiguous"
+	ReasonClaimFailed      = "ClaimFailed"
 	ReasonAgentUnreachable = "AgentUnreachable"
 )
 

@@ -44,15 +44,15 @@ const (
 // template, which is the single most useful piece of debug context for
 // "vibeD deployed my Node app on python-313" support questions.
 const (
-	RuleStaticOnly       = 1
-	RuleBrowserBundle    = 2
-	RuleWorkerd          = 3
-	RuleSpin             = 4
-	RuleNodeWithDeps     = 5
-	RulePython           = 6
-	RuleGo               = 7
-	RuleDockerfile       = 8
-	RuleUnknownFallback  = 9
+	RuleStaticOnly      = 1
+	RuleBrowserBundle   = 2
+	RuleWorkerd         = 3
+	RuleSpin            = 4
+	RuleNodeWithDeps    = 5
+	RulePython          = 6
+	RuleGo              = 7
+	RuleDockerfile      = 8
+	RuleUnknownFallback = 9
 )
 
 // MaxTarballBytes mirrors refactor.md §5.1 (deploy API caps at 50 MB). The

@@ -110,7 +110,7 @@ func TestNineRules(t *testing.T) {
 		{
 			name: "rule 4: spin.toml → Spin",
 			files: map[string]string{
-				"spin.toml": `spin_manifest_version = "1"`,
+				"spin.toml":  `spin_manifest_version = "1"`,
 				"src/lib.rs": "fn main(){}",
 			},
 			wantRule: RuleSpin,
@@ -284,9 +284,9 @@ func TestPackageJSONInSubdirIsIgnored(t *testing.T) {
 	// for rule selection. The deep package.json still sets anyServerSignal
 	// for rule-1 purposes, which is the intended behavior.
 	d := classify(t, map[string]string{
-		"requirements.txt":         "flask",
-		"frontend/package.json":    `{"dependencies":{"react":"18"}}`,
-		"app.py":                   "from flask import Flask",
+		"requirements.txt":      "flask",
+		"frontend/package.json": `{"dependencies":{"react":"18"}}`,
+		"app.py":                "from flask import Flask",
 	})
 	if d.Rule != RulePython {
 		t.Errorf("rule = %d, want %d (Python, because root-level package.json absent)", d.Rule, RulePython)

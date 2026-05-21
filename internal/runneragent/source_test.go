@@ -47,9 +47,9 @@ func tarballFromMap(t *testing.T, files map[string]string) []byte {
 
 func TestSourceFetcherExtractsTarball(t *testing.T) {
 	tarball := tarballFromMap(t, map[string]string{
-		"app.py":            "print('hi')\n",
-		"sub/data.json":     `{"k":"v"}`,
-		"requirements.txt":  "flask\n",
+		"app.py":           "print('hi')\n",
+		"sub/data.json":    `{"k":"v"}`,
+		"requirements.txt": "flask\n",
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(tarball)
