@@ -97,8 +97,9 @@ func main() {
 			Client:        mgr.GetClient(),
 			PoolNamespace: poolNamespace,
 		},
-		Probe:  controller.NewHTTPAgentProbe(agentToken),
-		Router: controller.DeterministicRouter{Domain: domain},
+		Probe:    controller.NewHTTPAgentProbe(agentToken),
+		Injector: controller.NewHTTPInjector(agentToken),
+		Router:   controller.DeterministicRouter{Domain: domain},
 	}
 	// Fast lane: wire the workerd loader client only when replicas are
 	// configured. Otherwise the default DummyFastLaneDeployer rejects

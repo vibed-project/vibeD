@@ -120,9 +120,16 @@ spec:
             tcpSocket: { port: 2019 }
             initialDelaySeconds: 3
           securityContext:
-            allowPrivilegeEscalation: false
+            # The official caddy binary carries a cap_net_bind_service file
+            # capability so it can bind :80/:443 as non-root. exec'ing a
+            # file-capability binary needs no_new_privs=0 — i.e.
+            # allowPrivilegeEscalation: true — paired with dropping ALL and
+            # re-adding only NET_BIND_SERVICE.
+            allowPrivilegeEscalation: true
             readOnlyRootFilesystem: true
-            capabilities: { drop: ["ALL"] }
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
           resources:
             {{- toYaml .Values.caddy.resources | nindent 12 }}
           volumeMounts:

@@ -58,6 +58,7 @@ const (
 	ReasonSourceAmbiguous  = "SourceAmbiguous"
 	ReasonClaimFailed      = "ClaimFailed"
 	ReasonAgentUnreachable = "AgentUnreachable"
+	ReasonInjectFailed     = "InjectFailed"
 )
 
 // Claimer obtains a Sandbox for a VibedApp by creating (or reading) a
@@ -79,6 +80,16 @@ type Claimer interface {
 // DummyAgentProbe always returns ready=true.
 type AgentProbe interface {
 	IsReady(ctx context.Context, target string) (ready bool, err error)
+}
+
+// Injector pushes the user's source into a bound sandbox's vibed-agent
+// (refactor.md §5.3 step 2): once the agent at target ("host:port") is
+// healthy, the controller POSTs the source tarball URL so the agent pulls
+// it into /workspace and starts the user process. Returns running=true once
+// the process is up. The default DummyInjector reports running without a
+// real agent (tests / no-op); the real HTTPInjector lives in inject.go.
+type Injector interface {
+	Inject(ctx context.Context, target string, app *vibedv1.VibedApp) (running bool, err error)
 }
 
 // FastLaneDeployer deploys a workerd fast-lane app: it pushes the worker
@@ -109,6 +120,7 @@ type Reconciler struct {
 
 	Claimer  Claimer
 	Probe    AgentProbe
+	Injector Injector
 	Router   Router
 	FastLane FastLaneDeployer
 
@@ -159,6 +171,9 @@ func (r *Reconciler) applyDefaults() {
 	}
 	if r.Probe == nil {
 		r.Probe = DummyAgentProbe{}
+	}
+	if r.Injector == nil {
+		r.Injector = DummyInjector{}
 	}
 	if r.Router == nil {
 		r.Router = DeterministicRouter{Domain: "vibed.example.com"}
@@ -270,6 +285,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		if !ready {
 			// Agent reachable but user process not yet listening — requeue
 			// without rewriting status (nothing changed).
+			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		}
+		// Agent is up — inject the user's source (refactor.md §5.3 step 2).
+		// The agent pulls the tarball from spec.source.tarballRef and starts
+		// the user process. Idempotent: re-injecting on a requeue replaces
+		// the running process.
+		running, err := r.Injector.Inject(ctx, target, &app)
+		if err != nil {
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonInjectFailed, err.Error())
+			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
+				return reconcile.Result{}, perr
+			}
+			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		}
+		if !running {
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonStarting, "user process starting")
+			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
+				return reconcile.Result{}, perr
+			}
 			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
 		}
 		url, err := r.Router.Publish(ctx, &app, app.Status.SandboxRef)
@@ -478,6 +512,14 @@ func (DummyClaimer) EnsureClaim(_ context.Context, app *vibedv1.VibedApp) (bool,
 type DummyAgentProbe struct{}
 
 func (DummyAgentProbe) IsReady(_ context.Context, _ string) (bool, error) { return true, nil }
+
+// DummyInjector reports the user process as running without talking to a real
+// agent. The real HTTP injector lives in internal/controller/inject.go.
+type DummyInjector struct{}
+
+func (DummyInjector) Inject(_ context.Context, _ string, _ *vibedv1.VibedApp) (bool, error) {
+	return true, nil
+}
 
 // DummyFastLaneDeployer errors on use — the fast lane must be wired
 // explicitly (cmd/vibed-controller supplies the workerd-backed impl). This

@@ -96,7 +96,12 @@ func Middleware(cfg config.AuthConfig, userStore store.UserStore, logger *slog.L
 func NoAuthAdminMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(WithRole(r.Context(), "admin")))
+			// Inject both an admin role AND a stable user ID so owner-scoped
+			// endpoints (e.g. /v1/deploy via deploy.Service) work in no-auth
+			// dev mode instead of 401-ing on a missing user.
+			ctx := WithRole(r.Context(), "admin")
+			ctx = WithUserID(ctx, "admin")
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

@@ -27,7 +27,11 @@ spec:
       labels:
         vibed.dev/template: {{ $name }}
     spec:
-      runtimeClassName: {{ $root.Values.runtime.defaultClass }}
+      {{- with $root.Values.runtime.defaultClass }}
+      # Kata isolation for the general lane. Omitted (normal runtime) when
+      # runtime.defaultClass is empty — e.g. on a Kind dev cluster without Kata.
+      runtimeClassName: {{ . }}
+      {{- end }}
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
