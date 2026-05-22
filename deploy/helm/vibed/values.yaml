@@ -2,10 +2,11 @@
 replicaCount: 1
 
 image:
-  repository: vibed
-  # -- Image tag. IMPORTANT: Always pin to a specific version in production
-  # (e.g. "0.1.0"). Using "latest" risks deploying untested code.
-  tag: "latest"
+  repository: ghcr.io/vibed-project/vibed
+  # -- Image tag. Empty defaults to the chart's appVersion (the released
+  # version), which is what you want for a pinned release. Override only to
+  # track a moving tag like "latest" or a dev build.
+  tag: ""
   # -- Pull policy. Use "Always" in production to ensure the pinned tag
   # is re-fetched if the registry image was updated.
   pullPolicy: IfNotPresent
@@ -109,11 +110,17 @@ controller:
   replicaCount: 1
   leaderElect: true
   image:
-    repository: vibed-controller
-    tag: "latest"
+    repository: ghcr.io/vibed-project/vibed-controller
+    tag: ""              # empty -> chart appVersion
     pullPolicy: IfNotPresent
   # -- DNS suffix for app URLs; must match router/Caddy + your wildcard cert.
   domain: vibed.example.com
+  # -- URL scheme for published app URLs. Prod uses https (Caddy terminates
+  #    DNS-01 TLS); dev overlays set "http" since dev Caddy serves plain HTTP.
+  urlScheme: https
+  # -- Optional port appended to app URLs. Empty in prod (443/80 implicit).
+  #    Dev sets the host port that reaches Caddy (e.g. a port-forward on 18080).
+  urlPort: ""
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 500m, memory: 256Mi }
@@ -123,8 +130,8 @@ router:
   enabled: true
   replicaCount: 1
   image:
-    repository: vibed-router
-    tag: "latest"
+    repository: ghcr.io/vibed-project/vibed-router
+    tag: ""              # empty -> chart appVersion
     pullPolicy: IfNotPresent
   resources:
     requests: { cpu: 25m, memory: 32Mi }
@@ -163,19 +170,21 @@ workerd:
     tag: "dev"
     pullPolicy: IfNotPresent
   loaderImage:
-    repository: vibed-workerd-loader
-    tag: "latest"
+    repository: ghcr.io/vibed-project/vibed-workerd-loader
+    tag: ""              # empty -> chart appVersion
     pullPolicy: IfNotPresent
 
 # -- Warm pools: one SandboxTemplate + SandboxWarmPool per language template
-#    (refactor.md §6.1), rendered into namespaces.pools. Set replicas to size
-#    each pool; image must embed vibed-agent.
+#    (refactor.md §6.1), rendered into namespaces.apps. Set replicas to size
+#    each pool; image must embed vibed-agent. The image is a full ref
+#    (repo:tag) — bump the tag with each release (CI publishes these to GHCR).
+#    Override with your own registry/tag in production.
 warmPools:
-  node-24:      { enabled: true,  lane: general, image: "vibed-runner-node:dev",   replicas: 50, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
-  python-313:   { enabled: true,  lane: general, image: "vibed-runner-python:dev", replicas: 50, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
-  go-123:       { enabled: true,  lane: general, image: "vibed-template-go-123:dev",      replicas: 20, resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { cpu: "1", memory: 768Mi } } }
-  base-al2023:  { enabled: true,  lane: general, image: "vibed-template-base-al2023:dev", replicas: 30, resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } } }
-  static-nginx: { enabled: true,  lane: fast,    image: "vibed-template-static-nginx:dev", replicas: 30, resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { cpu: 200m, memory: 128Mi } } }
+  node-24:      { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-runner-node:0.3.1",         replicas: 50, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
+  python-313:   { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-runner-python:0.3.1",       replicas: 50, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
+  go-123:       { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-template-go-123:0.3.1",     replicas: 20, resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { cpu: "1", memory: 768Mi } } }
+  base-al2023:  { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-template-base-al2023:0.3.1", replicas: 30, resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } } }
+  static-nginx: { enabled: true,  lane: fast,    image: "ghcr.io/vibed-project/vibed-template-static-nginx:0.3.1", replicas: 30, resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { cpu: 200m, memory: 128Mi } } }
 
 config:
   server:

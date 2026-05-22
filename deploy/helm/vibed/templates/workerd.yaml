@@ -62,7 +62,7 @@ spec:
           volumeMounts:
             - { name: workerd-data, mountPath: /var/lib/workerd }
         - name: loader
-          image: "{{ .Values.workerd.loaderImage.repository }}:{{ .Values.workerd.loaderImage.tag }}"
+          image: "{{ .Values.workerd.loaderImage.repository }}:{{ .Values.workerd.loaderImage.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.workerd.loaderImage.pullPolicy }}
           args:
             - --listen=:{{ .Values.workerd.controlPort }}

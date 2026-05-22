@@ -1,8 +1,8 @@
 name: Runner Images
 
-# The Instant Preview fast-path runner images (see FAST-PATH.md). Built once
-# and pushed to GHCR — only when the runner definitions or the runner agent
-# source actually change, not on every merge to main.
+# The per-template warm-pool images (one per template under templates/). Each
+# embeds vibed-agent and is built once and pushed to GHCR — only when the
+# template definitions or the runner-agent source change, not on every merge.
 
 on:
   push:
@@ -31,12 +31,21 @@ jobs:
     strategy:
       matrix:
         runner:
-          - name: python
-            image: vibed-project/vibed-runner-python
-            dockerfile: templates/python-313/Dockerfile
           - name: node
             image: vibed-project/vibed-runner-node
             dockerfile: templates/node-24/Dockerfile
+          - name: python
+            image: vibed-project/vibed-runner-python
+            dockerfile: templates/python-313/Dockerfile
+          - name: go
+            image: vibed-project/vibed-template-go-123
+            dockerfile: templates/go-123/Dockerfile
+          - name: base
+            image: vibed-project/vibed-template-base-al2023
+            dockerfile: templates/base-al2023/Dockerfile
+          - name: static-nginx
+            image: vibed-project/vibed-template-static-nginx
+            dockerfile: templates/static-nginx/Dockerfile
     steps:
       - uses: actions/checkout@v5
 
@@ -72,6 +81,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.runner.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.runner.name }}
           platforms: linux/amd64,linux/arm64

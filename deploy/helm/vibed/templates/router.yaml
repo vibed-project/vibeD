@@ -65,7 +65,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: router
-          image: "{{ .Values.router.image.repository }}:{{ .Values.router.image.tag }}"
+          image: "{{ .Values.router.image.repository }}:{{ .Values.router.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.router.image.pullPolicy }}
           args:
             - --caddy-admin={{ $caddyAdmin }}
