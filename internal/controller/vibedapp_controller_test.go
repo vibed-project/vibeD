@@ -147,6 +147,70 @@ func TestHappyPath(t *testing.T) {
 	}
 }
 
+// stubClaimer returns a fixed bound result, for exercising the Ready-phase
+// pod-recreation detector without the DummyClaimer's hardcoded IP.
+type stubClaimer struct {
+	sandboxRef string
+	podIP      string
+}
+
+func (c stubClaimer) EnsureClaim(context.Context, *vibedv1.VibedApp) (bool, string, string, error) {
+	return true, c.sandboxRef, c.podIP, nil
+}
+
+// TestReadyReinjectsOnPodRecreation: a Ready app whose bound claim now reports
+// a different pod IP (the Sandbox pod was recreated) drops back to Starting so
+// the controller re-probes + re-injects into the fresh, empty workspace. The
+// per-app Service already follows the new pod, so the route is untouched.
+func TestReadyReinjectsOnPodRecreation(t *testing.T) {
+	app := validApp("recreated")
+	app.Status = vibedv1.VibedAppStatus{
+		Phase:       vibedv1.PhaseReady,
+		URL:         "https://x.test.example.com",
+		SandboxRef:  "sb-old",
+		PodIP:       "10.0.0.10", // stale: pod has since been replaced
+		RouteTarget: "vibed-app-x.vibed-apps.svc.cluster.local:8080",
+	}
+	r := newReconciler(t, app, func(r *Reconciler) {
+		r.Claimer = stubClaimer{sandboxRef: "sb-old", podIP: "10.0.0.20"}
+	})
+
+	got, res := runOnce(t, r, app)
+	if got.Status.Phase != vibedv1.PhaseStarting {
+		t.Fatalf("phase=%q want Starting (re-inject) after pod IP change", got.Status.Phase)
+	}
+	if got.Status.PodIP != "10.0.0.20" {
+		t.Errorf("PodIP=%q want updated 10.0.0.20", got.Status.PodIP)
+	}
+	if res.RequeueAfter == 0 {
+		t.Error("expected a requeue to drive the re-inject")
+	}
+}
+
+// TestReadyStaysWhenPodIPUnchanged: a Ready app whose pod IP hasn't changed is
+// a true no-op (no spurious re-inject on every claim-watch wake-up).
+func TestReadyStaysWhenPodIPUnchanged(t *testing.T) {
+	app := validApp("stable")
+	app.Status = vibedv1.VibedAppStatus{
+		Phase:       vibedv1.PhaseReady,
+		URL:         "https://y.test.example.com",
+		SandboxRef:  "sb-1",
+		PodIP:       "10.0.0.30",
+		RouteTarget: "vibed-app-y.vibed-apps.svc.cluster.local:8080",
+	}
+	r := newReconciler(t, app, func(r *Reconciler) {
+		r.Claimer = stubClaimer{sandboxRef: "sb-1", podIP: "10.0.0.30"}
+	})
+
+	got, res := runOnce(t, r, app)
+	if got.Status.Phase != vibedv1.PhaseReady {
+		t.Errorf("phase=%q want Ready (no change)", got.Status.Phase)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("no requeue expected when pod IP unchanged, got %v", res.RequeueAfter)
+	}
+}
+
 func TestMissingSourceFails(t *testing.T) {
 	app := validApp("no-source")
 	app.Spec.Source = vibedv1.Source{} // neither tarball nor git

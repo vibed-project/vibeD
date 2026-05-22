@@ -71,3 +71,16 @@ func TestDeterministicRouterDefaultsDomain(t *testing.T) {
 		t.Errorf("URL = %q, want default %q", url, want)
 	}
 }
+
+func TestDeterministicRouterSchemeAndPort(t *testing.T) {
+	// Dev shape: http scheme + a host port (the Caddy port-forward).
+	r := DeterministicRouter{Domain: "localhost", Scheme: "http", Port: "18080"}
+	app := newAppNS("vibed-apps", "hello")
+	url, err := r.Publish(context.Background(), app, "")
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if want := "http://" + AppLabel(app) + ".localhost:18080"; url != want {
+		t.Errorf("URL = %q, want %q", url, want)
+	}
+}

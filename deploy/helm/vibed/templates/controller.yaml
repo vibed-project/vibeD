@@ -25,6 +25,11 @@ rules:
   - apiGroups: ["vibed.dev"]
     resources: ["vibedapps/status"]
     verbs: ["get", "update", "patch"]
+  # Services: one per-app ClusterIP Service gives the router a stable upstream
+  # that survives Sandbox pod-IP churn (selects the bound pod by claim-uid).
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
   # SandboxClaim: created per VibedApp; Sandbox/templates read for binding.
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
@@ -84,12 +89,16 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: controller
-          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
           args:
             - --leader-elect={{ .Values.controller.leaderElect }}
             - --pool-namespace={{ .Values.namespaces.apps }}
             - --vibed-domain={{ .Values.controller.domain }}
+            - --app-url-scheme={{ .Values.controller.urlScheme | default "https" }}
+            {{- if .Values.controller.urlPort }}
+            - --app-url-port={{ .Values.controller.urlPort }}
+            {{- end }}
             {{- if .Values.workerd.enabled }}
             - --workerd-replicas={{ .Values.workerd.replicas }}
             - --workerd-control-port={{ .Values.workerd.controlPort }}

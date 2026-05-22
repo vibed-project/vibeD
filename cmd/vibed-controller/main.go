@@ -45,6 +45,8 @@ func main() {
 		probeAddr            string
 		enableLeaderElection bool
 		domain               string
+		urlScheme            string
+		urlPort              string
 		poolNamespace        string
 		agentToken           string
 		workerdReplicas      int
@@ -59,6 +61,10 @@ func main() {
 		"Enable leader election for controller manager. Required for HA.")
 	flag.StringVar(&domain, "vibed-domain", "vibed.example.com",
 		"DNS suffix used to build app URLs in the stub Router.")
+	flag.StringVar(&urlScheme, "app-url-scheme", "https",
+		"URL scheme for published app URLs. Set 'http' in dev (Caddy serves plain HTTP).")
+	flag.StringVar(&urlPort, "app-url-port", "",
+		"Optional port appended to app URLs (dev: the host port reaching Caddy, e.g. 18080). Empty in prod.")
 	flag.StringVar(&poolNamespace, "pool-namespace", "vibed-pools",
 		"Namespace where SandboxWarmPool / SandboxTemplate live (matches templates/*/template.yaml).")
 	flag.StringVar(&agentToken, "agent-token", "",
@@ -99,7 +105,8 @@ func main() {
 		},
 		Probe:    controller.NewHTTPAgentProbe(agentToken),
 		Injector: controller.NewHTTPInjector(agentToken),
-		Router:   controller.DeterministicRouter{Domain: domain},
+		Services: &controller.K8sServiceManager{Client: mgr.GetClient(), AppPort: 8080},
+		Router:   controller.DeterministicRouter{Domain: domain, Scheme: urlScheme, Port: urlPort},
 	}
 	// Fast lane: wire the workerd loader client only when replicas are
 	// configured. Otherwise the default DummyFastLaneDeployer rejects

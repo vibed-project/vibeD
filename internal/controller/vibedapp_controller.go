@@ -59,6 +59,7 @@ const (
 	ReasonClaimFailed      = "ClaimFailed"
 	ReasonAgentUnreachable = "AgentUnreachable"
 	ReasonInjectFailed     = "InjectFailed"
+	ReasonServiceFailed    = "ServiceFailed"
 )
 
 // Claimer obtains a Sandbox for a VibedApp by creating (or reading) a
@@ -121,6 +122,7 @@ type Reconciler struct {
 	Claimer  Claimer
 	Probe    AgentProbe
 	Injector Injector
+	Services ServiceManager
 	Router   Router
 	FastLane FastLaneDeployer
 
@@ -174,6 +176,9 @@ func (r *Reconciler) applyDefaults() {
 	}
 	if r.Injector == nil {
 		r.Injector = DummyInjector{}
+	}
+	if r.Services == nil {
+		r.Services = DummyServiceManager{}
 	}
 	if r.Router == nil {
 		r.Router = DeterministicRouter{Domain: "vibed.example.com"}
@@ -306,6 +311,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			}
 			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
 		}
+		// Publish a stable upstream for the router: a per-app Service that
+		// re-selects the bound pod across restarts, so the route doesn't go
+		// stale when the Sandbox pod's IP changes.
+		routeTarget, err := r.Services.EnsureService(ctx, &app)
+		if err != nil {
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonServiceFailed, err.Error())
+			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
+				return reconcile.Result{}, perr
+			}
+			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		}
+		app.Status.RouteTarget = routeTarget
 		url, err := r.Router.Publish(ctx, &app, app.Status.SandboxRef)
 		if err != nil {
 			setCondition(&app, ConditionReady, metav1.ConditionFalse, "RouterFailed", err.Error())
@@ -321,7 +338,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		setCondition(&app, ConditionReady, metav1.ConditionTrue, ReasonRunning, "user process listening")
 		return r.finish(ctx, &app, before, false)
 
-	case vibedv1.PhaseReady, vibedv1.PhaseSuspended, vibedv1.PhaseFailed:
+	case vibedv1.PhaseReady:
+		// Detect Sandbox pod recreation. The SandboxClaim watch wakes us when
+		// agent-sandbox rebinds a replacement pod (new IP, fresh empty
+		// workspace). The per-app Service already follows the new pod, so
+		// routing stays valid — but the workspace lost the injected source, so
+		// the user process won't be listening. Drop back to Starting to
+		// re-probe + re-inject; the unchanged route serves again once it's up.
+		bound, sandboxRef, podIP, err := r.Claimer.EnsureClaim(ctx, &app)
+		if err == nil && bound && podIP != "" && podIP != app.Status.PodIP {
+			logger.Info("sandbox pod replaced; re-injecting", "oldPodIP", app.Status.PodIP, "newPodIP", podIP)
+			app.Status.PodIP = podIP
+			app.Status.SandboxRef = sandboxRef
+			app.Status.Phase = vibedv1.PhaseStarting
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonStarting, "sandbox pod replaced; re-injecting source")
+			return r.finish(ctx, &app, before, true)
+		}
+		return reconcile.Result{}, nil
+
+	case vibedv1.PhaseSuspended, vibedv1.PhaseFailed:
 		// Steady states: nothing to do until spec changes or an external
 		// signal (idle TTL → Suspended, milestone F2) flips us.
 		return reconcile.Result{}, nil
@@ -374,10 +409,10 @@ func (r *Reconciler) reconcileFastLane(ctx context.Context, app *vibedv1.VibedAp
 		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
 	}
 
-	// PodIP carries the routable upstream. For the fast lane it's a
-	// host:port (the workerd replica + assigned socket), so vibed-router
-	// uses it verbatim instead of appending the default app port.
-	app.Status.PodIP = target
+	// RouteTarget carries the routable upstream. For the fast lane it's the
+	// workerd replica's host:port (the loader's assigned socket); there's no
+	// Sandbox pod, so PodIP stays empty.
+	app.Status.RouteTarget = target
 	app.Status.URL = url
 	app.Status.Phase = vibedv1.PhaseReady
 	now := metav1.Now()
@@ -418,7 +453,7 @@ func statusEqual(a, b *vibedv1.VibedAppStatus) bool {
 		return a == b
 	}
 	if a.Phase != b.Phase || a.URL != b.URL || a.SandboxRef != b.SandboxRef ||
-		a.PodIP != b.PodIP ||
+		a.PodIP != b.PodIP || a.RouteTarget != b.RouteTarget ||
 		a.SnapshotRef != b.SnapshotRef || !timePtrEqual(a.LastDeployedAt, b.LastDeployedAt) {
 		return false
 	}
@@ -543,14 +578,31 @@ func (DummyFastLaneDeployer) Remove(_ context.Context, _ *vibedv1.VibedApp) erro
 // Label shape: 12 lowercase alphanumeric characters, matching the
 // refactor.md §5.5 Caddyfile regex `^[a-z0-9]{12}$`. The collision
 // probability across 36^12 values is negligible at any plausible app count.
-type DeterministicRouter struct{ Domain string }
+type DeterministicRouter struct {
+	Domain string
+	// Scheme is the URL scheme for published app URLs; defaults to "https".
+	// Dev sets "http" because the dev Caddy serves plain HTTP.
+	Scheme string
+	// Port, when non-empty, is appended to the host (e.g. "18080"). Dev uses
+	// it to point at a port-forwarded/NodePort Caddy; prod leaves it empty so
+	// URLs are scheme-default (443/80).
+	Port string
+}
 
 func (d DeterministicRouter) Publish(_ context.Context, app *vibedv1.VibedApp, _ string) (string, error) {
 	domain := d.Domain
 	if domain == "" {
 		domain = "vibed.example.com"
 	}
-	return fmt.Sprintf("https://%s.%s", AppLabel(app), domain), nil
+	scheme := d.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	host := AppLabel(app) + "." + domain
+	if d.Port != "" {
+		host += ":" + d.Port
+	}
+	return fmt.Sprintf("%s://%s", scheme, host), nil
 }
 
 // AppLabel is the 12-char DNS label vibed-router uses to identify the app

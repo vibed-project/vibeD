@@ -30,6 +30,11 @@ runtime:
 controller:
   image: { repository: localhost/vibed-controller, tag: dev, pullPolicy: Never }
   domain: localhost
+  # Dev Caddy serves plain HTTP via a port-forward on host:18080
+  # (kubectl port-forward svc/vibed-caddy 18080:80), so published app URLs are
+  # http://<label>.localhost:18080 — directly openable in Chrome/Firefox.
+  urlScheme: http
+  urlPort: "18080"
 
 router:
   image: { repository: localhost/vibed-router, tag: dev, pullPolicy: Never }
@@ -65,5 +70,10 @@ config:
     tarball:
       backend: "served"
       served:
-        # In-cluster URL the agent pulls source blobs from.
-        publicBaseURL: "http://10.96.124.151:8080"
+        # Empty -> the chart defaults this to the in-cluster Service DNS name
+        # (http://vibed.vibed-system.svc.cluster.local:8080). In dev the
+        # sandboxes run Unmanaged (no agent-sandbox NetworkPolicy) so they keep
+        # normal cluster DNS and can resolve it. The DNS name is stable across
+        # reinstalls — don't hardcode the Service ClusterIP, which changes every
+        # `helm install` and silently breaks the agent's source pull.
+        publicBaseURL: ""

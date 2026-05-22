@@ -113,6 +113,68 @@ func TestReadyAppGetsRoute(t *testing.T) {
 	}
 }
 
+// TestRouteTargetPreferredOverPodIP: when the controller has published a
+// stable RouteTarget (the per-app Service DNS name), the router proxies to it
+// verbatim and ignores the raw PodIP — that's the whole point of the Service
+// indirection (PodIP goes stale on pod restart).
+func TestRouteTargetPreferredOverPodIP(t *testing.T) {
+	app := readyApp("rt-app")
+	target := "vibed-app-" + controller.AppLabel(app) + ".vibed-apps.svc.cluster.local:8080"
+	app.Status = vibedv1.VibedAppStatus{
+		Phase:       vibedv1.PhaseReady,
+		URL:         "https://" + controller.AppLabel(app) + ".vibed.example.com",
+		PodIP:       "10.0.0.42",
+		RouteTarget: target,
+	}
+	fc := newFakeCaddy()
+	r, _ := newReconciler(t, fc, app)
+
+	reconcileOnce(t, r, app)
+
+	id := RoutePrefix + controller.AppLabel(app)
+	body, ok := fc.routes[id]
+	if !ok {
+		t.Fatalf("route %s not stored; routes=%v", id, fc.routes)
+	}
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, target) {
+		t.Errorf("route should use RouteTarget %q: %s", target, bodyStr)
+	}
+	if strings.Contains(bodyStr, "10.0.0.42") {
+		t.Errorf("route must NOT fall back to PodIP when RouteTarget is set: %s", bodyStr)
+	}
+}
+
+// TestRouteHostStripsPort: a dev URL carries a port (http://x.localhost:18080),
+// but the Caddy host matcher must be the bare hostname — Caddy strips the port
+// from the request Host before matching, so a port in the matcher never hits.
+func TestRouteHostStripsPort(t *testing.T) {
+	app := readyApp("ported")
+	label := controller.AppLabel(app)
+	app.Status = vibedv1.VibedAppStatus{
+		Phase:       vibedv1.PhaseReady,
+		URL:         "http://" + label + ".localhost:18080",
+		RouteTarget: "vibed-app-" + label + ".vibed-apps.svc.cluster.local:8080",
+	}
+	fc := newFakeCaddy()
+	r, _ := newReconciler(t, fc, app)
+
+	reconcileOnce(t, r, app)
+
+	id := RoutePrefix + label
+	body, ok := fc.routes[id]
+	if !ok {
+		t.Fatalf("route %s not stored; routes=%v", id, fc.routes)
+	}
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, `"`+label+`.localhost"`) {
+		t.Errorf("host matcher should be the bare hostname: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, label+".localhost:18080") {
+		t.Errorf("host matcher must NOT include the port: %s", bodyStr)
+	}
+}
+
 // TestNonReadyAppDropsRoute covers the "stale state" case: an app is in
 // Claiming/Starting/Failed → router actively deletes any existing route
 // for it (which Caddy returns 404 for if there was none — fine).

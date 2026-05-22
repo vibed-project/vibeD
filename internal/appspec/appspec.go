@@ -27,34 +27,46 @@ var entrypointCandidates = map[string][]string{
 // DetectLanguage inspects the file map and returns the best-guess language:
 // "static", "nodejs", "python", "go", or "rust".
 func DetectLanguage(files map[string]string) string {
-	hasGoFile := false
+	// Collect signals in a single pass, then apply a fixed precedence. We must
+	// not return inside the loop: Go map iteration order is randomized, so
+	// returning on the first match makes detection nondeterministic when more
+	// than one signal is present (e.g. go.mod alongside app.py).
+	var hasGoMod, hasCargo, hasPkgJSON, hasPython, hasGoFile, hasHTML bool
 	for name := range files {
 		lower := strings.ToLower(name)
 		switch {
 		case lower == "go.mod":
-			return LangGo // explicit module file wins immediately
+			hasGoMod = true
 		case lower == "cargo.toml":
-			return LangRust
+			hasCargo = true
 		case lower == "package.json":
-			return LangNodeJS
+			hasPkgJSON = true
 		case lower == "requirements.txt" || lower == "main.py" || lower == "app.py":
-			return LangPython
+			hasPython = true
 		case strings.HasSuffix(lower, ".go"):
 			hasGoFile = true
+		case strings.HasSuffix(lower, ".html"):
+			hasHTML = true
 		}
 	}
-	// Any .go source file without a go.mod is still a Go app —
-	// the Dockerfile handles module init + tidy automatically.
-	if hasGoFile {
+	switch {
+	case hasGoMod:
 		return LangGo
+	case hasCargo:
+		return LangRust
+	case hasPkgJSON:
+		return LangNodeJS
+	case hasPython:
+		return LangPython
+	case hasGoFile:
+		// A bare .go file without go.mod is still a Go app — the Dockerfile
+		// handles module init + tidy automatically.
+		return LangGo
+	case hasHTML:
+		return LangStatic
+	default:
+		return LangStatic
 	}
-	// Check for HTML files (static site).
-	for name := range files {
-		if strings.HasSuffix(strings.ToLower(name), ".html") {
-			return LangStatic
-		}
-	}
-	return LangStatic
 }
 
 // Entrypoint returns the best-guess entry-point file for the given language,

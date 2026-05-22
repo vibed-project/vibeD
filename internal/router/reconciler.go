@@ -77,10 +77,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	id := RoutePrefix + controller.AppLabel(&app)
 
-	// Only Ready apps with a populated URL + PodIP get a route. Anything
-	// else means the controller hasn't finished spinning up; ensure no
-	// stale route persists.
-	if app.Status.Phase != vibedv1.PhaseReady || app.Status.URL == "" || app.Status.PodIP == "" {
+	// Only Ready apps with a populated URL + routable upstream get a route.
+	// Anything else means the controller hasn't finished spinning up; ensure
+	// no stale route persists.
+	upstream := r.upstream(&app)
+	if app.Status.Phase != vibedv1.PhaseReady || app.Status.URL == "" || upstream == "" {
 		if dErr := r.Caddy.DeleteRoute(ctx, id); dErr != nil {
 			return reconcile.Result{}, fmt.Errorf("delete stale route %s: %w", id, dErr)
 		}
@@ -90,14 +91,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	host := strings.TrimPrefix(app.Status.URL, "https://")
 	host = strings.TrimPrefix(host, "http://")
 	host = strings.SplitN(host, "/", 2)[0] // drop any path
-
-	// PodIP carries the routable upstream. General-lane apps store a bare
-	// pod IP and the user app listens on AppPort; fast-lane (workerd) apps
-	// store a full host:port (the loader's assigned socket), so we use it
-	// verbatim when a port is already present.
-	upstream := app.Status.PodIP
-	if !strings.Contains(upstream, ":") {
-		upstream = fmt.Sprintf("%s:%d", upstream, r.AppPort)
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i] // drop any port — Caddy matches Host with the port stripped
 	}
 
 	route := Route{
@@ -110,6 +105,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 	logger.Info("ensured route", "id", id, "host", host, "upstream", route.Upstream)
 	return reconcile.Result{}, nil
+}
+
+// upstream resolves the routable target Caddy proxies to. RouteTarget is the
+// stable, controller-published address (a per-app Service's cluster-DNS name,
+// or the workerd host:port) and is preferred. PodIP is a legacy fallback for
+// apps that predate RouteTarget: a bare pod IP gets AppPort appended; a value
+// that already carries a port is used verbatim. Returns "" when neither is set.
+func (r *Reconciler) upstream(app *vibedv1.VibedApp) string {
+	if t := app.Status.RouteTarget; t != "" {
+		return t
+	}
+	ip := app.Status.PodIP
+	if ip == "" {
+		return ""
+	}
+	if strings.Contains(ip, ":") {
+		return ip
+	}
+	return fmt.Sprintf("%s:%d", ip, r.AppPort)
 }
 
 // labelFromKey reconstructs controller.AppLabel from just the namespaced

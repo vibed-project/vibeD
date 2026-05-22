@@ -53,9 +53,13 @@ func TestFastLaneDeployReachesReady(t *testing.T) {
 	if fl.deploys != 1 {
 		t.Errorf("deploys = %d, want 1", fl.deploys)
 	}
-	// PodIP carries the full host:port for fast-lane routing.
-	if got.Status.PodIP != fl.target {
-		t.Errorf("PodIP = %q, want %q", got.Status.PodIP, fl.target)
+	// RouteTarget carries the full host:port for fast-lane routing; there's
+	// no Sandbox pod, so PodIP stays empty.
+	if got.Status.RouteTarget != fl.target {
+		t.Errorf("RouteTarget = %q, want %q", got.Status.RouteTarget, fl.target)
+	}
+	if got.Status.PodIP != "" {
+		t.Errorf("PodIP = %q, want empty for fast lane", got.Status.PodIP)
 	}
 	if got.Status.URL == "" {
 		t.Error("expected a URL once Ready")

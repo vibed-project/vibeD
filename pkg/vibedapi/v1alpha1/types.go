@@ -118,9 +118,17 @@ type VibedAppStatus struct {
 
 	// PodIP is the in-cluster IP of the bound Sandbox pod, populated once a
 	// SandboxClaim has been bound. The controller uses this to reach
-	// vibed-agent's control API (port 9000) and the router uses it to wire
-	// the user-facing route. Cleared on Suspended.
+	// vibed-agent's control API (port 9000) and to inject source. Cleared on
+	// Suspended. NOTE: a raw pod IP goes stale when the Sandbox pod is
+	// recreated, so it is NOT the routing target — see RouteTarget.
 	PodIP string `json:"podIP,omitempty"`
+
+	// RouteTarget is the stable upstream ("host:port") vibed-router proxies
+	// to. For general-lane apps it's the cluster-DNS name of the per-app
+	// Service (which re-selects the bound pod across restarts, so it survives
+	// pod-IP churn); for the workerd fast lane it's the worker's host:port.
+	// Empty until Ready. The router falls back to PodIP when this is unset.
+	RouteTarget string `json:"routeTarget,omitempty"`
 
 	// LastDeployedAt is when the app last transitioned to Ready.
 	LastDeployedAt *metav1.Time `json:"lastDeployedAt,omitempty"`

@@ -118,33 +118,74 @@ export interface ArtifactListResult {
   total: number;
 }
 
-export async function fetchArtifacts(status?: string, offset = 0, limit = 50): Promise<ArtifactListResult> {
-  const params = new URLSearchParams();
-  if (status) params.set('status', status);
-  if (offset > 0) params.set('offset', String(offset));
-  if (limit !== 50) params.set('limit', String(limit));
-  const qs = params.toString() ? `?${params.toString()}` : '';
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts${qs}`);
-  if (!res.ok) throw new Error(`Failed to fetch artifacts: ${res.statusText}`);
+// --- v0.3.1 /v1/apps (VibedApp) shape + mapping -----------------------------
+// The UI's data model predates VibedApp; rather than rewrite every component we
+// map the new App shape into the existing Artifact types here, so the rest of
+// the frontend is unchanged.
+
+interface ApiApp {
+  app_id: string;
+  name?: string;
+  owner?: string;
+  phase: 'Pending' | 'Claiming' | 'Starting' | 'Ready' | 'Suspended' | 'Failed';
+  url?: string;
+  runtime?: { lane?: 'fast' | 'general'; template?: string };
+  last_deployed_at?: string;
+}
+
+function phaseToStatus(phase: ApiApp['phase']): ArtifactSummary['status'] {
+  switch (phase) {
+    case 'Ready':     return 'running';
+    case 'Starting':  return 'deploying';
+    case 'Claiming':  return 'building';
+    case 'Failed':    return 'failed';
+    case 'Suspended': // idle-suspended apps read as pending until next deploy
+    case 'Pending':
+    default:          return 'pending';
+  }
+}
+
+function mapApp(a: ApiApp): Artifact {
+  const ts = a.last_deployed_at ?? '';
+  return {
+    id: a.app_id,
+    name: a.name ?? a.app_id,
+    owner_id: a.owner,
+    status: phaseToStatus(a.phase),
+    // VibedApps run on microVM sandboxes (general) or workerd runners (fast).
+    target: a.runtime?.lane === 'fast' ? 'runner' : 'sandbox',
+    url: a.url,
+    created_at: ts,
+    updated_at: ts,
+    version: 1, // VibedApp has no version history yet
+    language: a.runtime?.template,
+  };
+}
+
+export async function fetchArtifacts(_status?: string, _offset = 0, _limit = 50): Promise<ArtifactListResult> {
+  const res = await fetchWithTimeout(`${BASE}/v1/apps`);
+  if (!res.ok) throw new Error(`Failed to fetch apps: ${res.statusText}`);
   const data = await res.json();
-  return { artifacts: data?.artifacts ?? [], total: data?.total ?? 0 };
+  const items: ApiApp[] = data?.items ?? [];
+  const artifacts = items.map(mapApp);
+  return { artifacts, total: artifacts.length };
 }
 
 export async function fetchArtifact(id: string): Promise<Artifact> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}`);
-  if (!res.ok) throw new Error(`Failed to fetch artifact: ${res.statusText}`);
-  return res.json();
+  const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}`);
+  if (!res.ok) throw new Error(`Failed to fetch app: ${res.statusText}`);
+  return mapApp(await res.json());
 }
 
 export async function fetchLogs(id: string): Promise<LogsResponse> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}/logs`);
-  if (!res.ok) throw new Error(`Failed to fetch logs: ${res.statusText}`);
-  return res.json();
+  // /v1/apps/{id}/logs is not implemented yet (SSE stub). Degrade gracefully
+  // so the log viewer shows a notice instead of throwing.
+  return { artifact_id: id, logs: ['Live logs are not yet available for v0.3.1 apps.'] };
 }
 
 export async function deleteArtifact(id: string): Promise<void> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Failed to delete artifact: ${res.statusText}`);
+  const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) throw new Error(`Failed to delete app: ${res.statusText}`);
 }
 
 export async function fetchTargets(): Promise<TargetInfo[]> {
