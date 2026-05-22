@@ -7,11 +7,13 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/vibed-project/vibeD/internal/deployer"
 	"github.com/vibed-project/vibeD/internal/environment"
+	"github.com/vibed-project/vibeD/internal/events"
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/storage"
@@ -39,8 +41,11 @@ func testOrch(t *testing.T) (*orchestrator.Orchestrator, string) {
 	localStorage, err := storage.NewLocalStorage(tmpDir)
 	require.NoError(t, err)
 
-	// Store (in-memory for simplicity)
-	memStore := store.NewMemoryStore()
+	// Store (SQLite)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqliteStore, err := store.NewSQLiteStore(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { sqliteStore.Close() })
 
 	// Builder (mock)
 	mockBuilder := &testutil.MockBuilder{}
@@ -49,7 +54,7 @@ func testOrch(t *testing.T) (*orchestrator.Orchestrator, string) {
 	factory := deployer.NewFactory()
 	k8sDep := deployer.NewKubernetesDeployer(
 		clients.Clientset,
-		cfg.Deployment,
+		0,
 		logger,
 	)
 	factory.Register(api.TargetKubernetes, k8sDep)
@@ -60,17 +65,23 @@ func testOrch(t *testing.T) (*orchestrator.Orchestrator, string) {
 	// Metrics
 	m := metrics.New()
 
-	orch := orchestrator.NewOrchestrator(
-		cfg,
-		detector,
-		mockBuilder,
-		factory,
-		localStorage,
-		memStore,
-		m,
-		logger,
-	)
+	// Event Bus
+	bus := events.NewEventBus()
 
+	orch := orchestrator.NewOrchestrator(
+	        cfg,
+	        detector,
+	        mockBuilder,
+	        factory,
+	        localStorage,
+	        sqliteStore,
+	        sqliteStore,
+	        m,
+	        clients.Clientset,
+	        bus,
+	        sqliteStore,
+	        logger,
+	)
 	return orch, ns
 }
 
@@ -199,7 +210,7 @@ func TestOrchestrator_FullLifecycle(t *testing.T) {
 	list, err := orch.List(ctx, "", 0, 0)
 	require.NoError(t, err)
 	assert.Len(t, list.Artifacts, 1)
-	assert.Equal(t, name, list[0].Name)
+	assert.Equal(t, name, list.Artifacts[0].Name)
 
 	// 3. Status — should be running
 	artifact, err := orch.Status(ctx, artifactID)
@@ -294,7 +305,6 @@ func TestOrchestrator_BuildFailure(t *testing.T) {
 	cfg := testutil.TestConfig(ns, tmpDir)
 	localStorage, err := storage.NewLocalStorage(tmpDir)
 	require.NoError(t, err)
-	memStore := store.NewMemoryStore()
 
 	// Mock builder that always fails
 	failBuilder := &testutil.MockBuilder{
@@ -302,14 +312,20 @@ func TestOrchestrator_BuildFailure(t *testing.T) {
 	}
 
 	factory := deployer.NewFactory()
-	k8sDep := deployer.NewKubernetesDeployer(clients.Clientset, cfg.Deployment, logger)
+	k8sDep := deployer.NewKubernetesDeployer(clients.Clientset, 0, logger)
 	factory.Register(api.TargetKubernetes, k8sDep)
 
 	detector := environment.NewDetector(clients, logger)
 	m := metrics.New()
 
-	orch := orchestrator.NewOrchestrator(cfg, detector, failBuilder, factory, localStorage, memStore, m, logger)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqliteStore, err := store.NewSQLiteStore(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { sqliteStore.Close() })
 
+	bus := events.NewEventBus()
+
+	orch := orchestrator.NewOrchestrator(cfg, detector, failBuilder, factory, localStorage, sqliteStore, sqliteStore, m, clients.Clientset, bus, sqliteStore, logger)
 	ctx := context.Background()
 	req := testutil.SampleDeployRequest(testutil.RandomName())
 

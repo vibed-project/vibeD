@@ -1,0 +1,70 @@
+# go-123 — general-lane warm pool for Go app deploys (classifier rule 7).
+# Pinned to extensions.agents.x-k8s.io/v1alpha1 (kubernetes-sigs/agent-sandbox
+# v0.4.5+). See refactor.md §6.1.
+#
+# `go run .` plus toolchain caches drive the memory/cpu requests up vs the
+# interpreted templates; tuned to comfortably hold a small Gin server.
+---
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: go-123
+  namespace: vibed-pools
+  labels:
+    vibed.dev/template: go-123
+    vibed.dev/lane: general
+spec:
+  envVarsInjectionPolicy: Allowed
+  podTemplate:
+    metadata:
+      labels:
+        vibed.dev/template: go-123
+    spec:
+      runtimeClassName: kata-qemu
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: runtime
+          image: localhost/vibed-template-go-123:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: control, containerPort: 9000 }
+            - { name: http,    containerPort: 8080 }
+          resources:
+            requests: { cpu: "200m", memory: "256Mi" }
+            limits:   { cpu: "1",    memory: "768Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: workspace,    mountPath: /workspace }
+            - { name: go-build,     mountPath: /opt/go/cache }
+            - { name: go-mod-cache, mountPath: /opt/go/pkg/mod }
+            - { name: tmp,          mountPath: /tmp }
+      volumes:
+        - { name: workspace,    emptyDir: { sizeLimit: 200Mi } }
+        - { name: go-build,     emptyDir: { sizeLimit: 500Mi } }
+        - { name: go-mod-cache, emptyDir: { sizeLimit: 500Mi } }
+        - { name: tmp,          emptyDir: { sizeLimit:  64Mi } }
+---
+# 20 idle replicas per refactor.md §6.1 (lower than node/python because Go
+# is less common in the GenAI-vibe-code population).
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxWarmPool
+metadata:
+  name: go-123
+  namespace: vibed-pools
+  labels:
+    vibed.dev/template: go-123
+    vibed.dev/lane: general
+spec:
+  replicas: 20
+  sandboxTemplateRef:
+    name: go-123
+  updateStrategy:
+    type: OnReplenish

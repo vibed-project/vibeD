@@ -31,6 +31,9 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 	var mu sync.RWMutex
 	clients := make(map[string]*client)
 
+	var tokenMu sync.RWMutex
+	tokenClients := make(map[string]*client)
+
 	// Periodically clean up stale entries; stops when ctx is cancelled.
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -47,45 +50,70 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 					}
 				}
 				mu.Unlock()
+
+				tokenMu.Lock()
+				for key, c := range tokenClients {
+					if time.Since(c.lastSeen) > 10*time.Minute {
+						delete(tokenClients, key)
+					}
+				}
+				tokenMu.Unlock()
 			}
 		}
 	}()
 
-	getLimiter := func(key string) *rate.Limiter {
+	getLimiter := func(key string, isToken bool) *rate.Limiter {
+		var m *sync.RWMutex
+		var cmap map[string]*client
+		var r rate.Limit
+		var b int
+
+		if isToken {
+			m = &tokenMu
+			cmap = tokenClients
+			r = rate.Every(time.Minute / 5) // 5 per minute
+			b = 5
+		} else {
+			m = &mu
+			cmap = clients
+			r = rate.Limit(cfg.RequestsPerSecond)
+			b = cfg.Burst
+		}
+
 		// Fast path: check if client exists with read lock
-		mu.RLock()
-		if c, ok := clients[key]; ok {
+		m.RLock()
+		if c, ok := cmap[key]; ok {
 			c.lastSeen = time.Now()
-			mu.RUnlock()
+			m.RUnlock()
 			return c.limiter
 		}
-		mu.RUnlock()
+		m.RUnlock()
 
 		// Slow path: create new limiter with write lock
-		mu.Lock()
-		defer mu.Unlock()
+		m.Lock()
+		defer m.Unlock()
 
 		// Double-check after acquiring write lock
-		if c, ok := clients[key]; ok {
+		if c, ok := cmap[key]; ok {
 			c.lastSeen = time.Now()
 			return c.limiter
 		}
 
 		// Evict oldest entry if at capacity
-		if len(clients) >= maxRateLimitClients {
+		if len(cmap) >= maxRateLimitClients {
 			var oldestKey string
 			var oldestTime time.Time
-			for k, c := range clients {
+			for k, c := range cmap {
 				if oldestKey == "" || c.lastSeen.Before(oldestTime) {
 					oldestKey = k
 					oldestTime = c.lastSeen
 				}
 			}
-			delete(clients, oldestKey)
+			delete(cmap, oldestKey)
 		}
 
-		limiter := rate.NewLimiter(rate.Limit(cfg.RequestsPerSecond), cfg.Burst)
-		clients[key] = &client{limiter: limiter, lastSeen: time.Now()}
+		limiter := rate.NewLimiter(r, b)
+		cmap[key] = &client{limiter: limiter, lastSeen: time.Now()}
 		return limiter
 	}
 
@@ -99,6 +127,19 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 				return
 			}
 
+			// Add strict per-token rate limit for share link password attempts
+			if r.Method == http.MethodPost && strings.HasPrefix(path, "/api/share/") {
+				token := strings.TrimPrefix(path, "/api/share/")
+				if token != "" {
+					if !getLimiter(token, true).Allow() {
+						m.RateLimitedTotal.WithLabelValues("token").Inc()
+						w.Header().Set("Retry-After", "12")
+						http.Error(w, "rate limit exceeded for this share link", http.StatusTooManyRequests)
+						return
+					}
+				}
+			}
+
 			// Determine client key: authenticated user ID or IP
 			key := vibedauth.UserIDFromContext(r.Context())
 			clientType := "apikey"
@@ -110,7 +151,7 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 				}
 			}
 
-			if !getLimiter(key).Allow() {
+			if !getLimiter(key, false).Allow() {
 				m.RateLimitedTotal.WithLabelValues(clientType).Inc()
 				w.Header().Set("Retry-After", "1")
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)

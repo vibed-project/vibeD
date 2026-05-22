@@ -4,96 +4,62 @@ sidebar_position: 3
 
 # First Deployment
 
-Deploy your first artifact using vibeD's MCP tools.
+There are two ways to deploy: an AI agent via the MCP server, or the HTTP API directly. Both end up creating a `VibedApp` and returning a URL.
 
-## Using Claude Desktop
+## Connect Claude Desktop (MCP)
 
-### Option A: HTTP Transport (Remote / In-Cluster)
-
-If vibeD runs as a service (e.g. deployed to your Kind cluster), use [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) to bridge Claude Desktop's stdio to vibeD's HTTP endpoint.
-
-Add this to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+vibeD speaks **HTTP streamable** MCP at `/mcp`. Bridge Claude Desktop to it with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote). Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "vibed": {
       "command": "npx",
-      "args": [
-        "mcp-remote",
-        "http://vibed.127.0.0.1.sslip.io:9090/mcp/",
-        "--allow-http"
-      ]
+      "args": ["-y", "mcp-remote", "http://localhost:18090/mcp"]
     }
   }
 }
 ```
 
-:::info Prerequisites
-- **Node.js 20+** must be installed (for `npx`)
-- The vibeD MCP endpoint must be reachable from your machine — see [Port-Forward Access](./local-dev#port-forward-access) if running on a local Kind cluster
-:::
+This assumes the API port-forward from [local dev](local-dev.md) (`18090`). Fully quit and reopen Claude Desktop. With auth disabled (dev default) no token is needed.
 
-### Option B: Stdio Transport (Direct)
+Then ask Claude to deploy something:
 
-Run vibeD as a local process that Claude Desktop launches directly:
+> "Deploy a simple portfolio website with my name to vibeD."
 
-```json
-{
-  "mcpServers": {
-    "vibed": {
-      "command": "/path/to/vibed",
-      "args": ["--config", "/path/to/vibed.yaml"]
-    }
-  }
-}
-```
+Claude calls `deploy_artifact`; vibeD classifies the source, claims a warm sandbox, injects the source, and returns a URL once the app is `Ready`. See the [MCP tools overview](../mcp-tools/overview.md).
 
-This starts vibeD in stdio mode. The binary needs access to a Kubernetes cluster via your local kubeconfig.
+## Deploy via the HTTP API
 
-### Deploy Your First Artifact
-
-Ask Claude to deploy a simple website:
-
-> "Create a simple portfolio website with my name and deploy it using vibeD"
-
-Claude will use the `deploy_artifact` tool automatically. Static HTML/CSS/JS files deploy instantly via ConfigMap (no container build needed). More complex apps (Node.js, Python, Go) are built via Buildah.
-
-## Using MCP Inspector
-
-For testing, use the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
+`POST /v1/deploy` takes a multipart upload: a gzipped source tarball plus a JSON `metadata` blob.
 
 ```bash
-npx @modelcontextprotocol/inspector ./bin/vibed --config vibed.yaml
+# build a tiny static site
+mkdir site && printf '<!doctype html><h1>Hello vibeD</h1>' > site/index.html
+( cd site && COPYFILE_DISABLE=1 tar -czf ../site.tgz . )
+
+curl -X POST http://localhost:18090/v1/deploy \
+  -F 'source=@site.tgz;type=application/gzip' \
+  -F 'metadata={"name":"hello"};type=application/json'
+# → {"app_id":"hello","url":"http://6fcr8uffk2pd.localhost:18080"}
 ```
 
-Then call the `deploy_artifact` tool with:
+The classifier picks `static-nginx` automatically. To force a lane/template, add it to metadata:
 
 ```json
-{
-  "name": "hello-world",
-  "files": {
-    "index.html": "<!DOCTYPE html><html><body><h1>Hello from vibeD!</h1></body></html>"
-  }
-}
+{"name":"hello","runtime":{"template":"static-nginx"}}
 ```
 
-## Using the HTTP API
+A `200` means the app reached `Ready` within the latency budget and the `url` is live. A `202` with a `status_url` means it took a slow path — poll `GET /v1/apps/{app_id}` until `phase: Ready`.
 
-If vibeD is running in HTTP mode, you can call the MCP endpoint directly via Streamable HTTP:
+## See it
 
 ```bash
-# 1. Initialize session
-curl -X POST http://localhost:8080/mcp/ \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-    "protocolVersion":"2025-03-26","capabilities":{},
-    "clientInfo":{"name":"curl","version":"1.0"}}}'
+# Open the returned URL (dev: http://<label>.localhost:18080)
+curl -H "Host: 6fcr8uffk2pd.localhost" http://localhost:18080/
 
-# 2. Use the Mcp-Session-Id header from the response for subsequent calls
+# Or list apps
+curl http://localhost:18090/v1/apps
 ```
 
-## Check the Dashboard
-
-After deploying, open `http://localhost:8080` to see your artifact in the dashboard with its status and access URL.
+Deployed apps also appear in the dashboard at `http://localhost:18090/`.

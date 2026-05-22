@@ -15,9 +15,9 @@ import (
 // to the global default storage.
 type UserStorageRouter struct {
 	mu             sync.RWMutex
-	users          map[string]Storage               // lazy-created per-user backends
+	users          map[string]Storage                 // lazy-created per-user backends
 	userConfigs    map[string]*config.UserStorageConf // from API key configs
-	fallback       Storage                           // default for users without config
+	fallback       Storage                            // default for users without config
 	localCacheBase string                             // base dir for per-user local caches
 }
 

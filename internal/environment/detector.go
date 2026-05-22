@@ -26,7 +26,7 @@ func NewDetector(clients *k8s.Clients, logger *slog.Logger) *Detector {
 
 // DetectResult holds the availability of each deployment target.
 type DetectResult struct {
-	Knative bool
+	Sandbox bool
 	// Kubernetes is always available if we can talk to the cluster.
 	Kubernetes bool
 }
@@ -37,14 +37,14 @@ func (d *Detector) Detect() *DetectResult {
 		Kubernetes: true, // Always available if we have a client.
 	}
 
-	knative, err := k8s.HasCRD(d.discovery, "serving.knative.dev", "v1", "services")
+	sandbox, err := k8s.HasCRD(d.discovery, "agents.x-k8s.io", "v1alpha1", "sandboxes")
 	if err != nil {
-		d.logger.Warn("failed to check for Knative CRDs", "error", err)
+		d.logger.Warn("failed to check for Sandbox CRDs", "error", err)
 	}
-	result.Knative = knative
+	result.Sandbox = sandbox
 
 	d.logger.Debug("detected deployment targets",
-		"knative", result.Knative,
+		"sandbox", result.Sandbox,
 		"kubernetes", result.Kubernetes,
 	)
 
@@ -52,23 +52,21 @@ func (d *Detector) Detect() *DetectResult {
 }
 
 // SelectTarget chooses the best available deployment target.
-// Priority: Knative > wasmCloud > Kubernetes (plain).
 func (d *Detector) SelectTarget(preferred api.DeploymentTarget) (api.DeploymentTarget, error) {
 	result := d.Detect()
 
 	switch preferred {
-	case api.TargetKnative:
-		if !result.Knative {
-			return "", &api.ErrTargetUnavailable{Target: api.TargetKnative}
+	case api.TargetSandbox:
+		if !result.Sandbox {
+			return "", &api.ErrTargetUnavailable{Target: api.TargetSandbox}
 		}
-		return api.TargetKnative, nil
-
+		return api.TargetSandbox, nil
 	case api.TargetKubernetes:
 		return api.TargetKubernetes, nil
 
 	default: // "auto"
-		if result.Knative {
-			return api.TargetKnative, nil
+		if result.Sandbox {
+			return api.TargetSandbox, nil
 		}
 		return api.TargetKubernetes, nil
 	}
@@ -80,10 +78,10 @@ func (d *Detector) ListTargets() []api.TargetInfo {
 
 	return []api.TargetInfo{
 		{
-			Name:        api.TargetKnative,
-			Available:   result.Knative,
+			Name:        api.TargetSandbox,
+			Available:   result.Sandbox,
 			Preferred:   true,
-			Description: "Knative Serving - serverless deployment with auto-scaling and clean URLs",
+			Description: "Agent Sandbox - stateful, isolated workload environment",
 		},
 		{
 			Name:        api.TargetKubernetes,

@@ -36,7 +36,7 @@ Update an existing deployed artifact with new source files. Triggers a rebuild a
 {
   "artifact_id": "a1b2c3d4",
   "name": "my-portfolio",
-  "url": "http://my-portfolio.default.127.0.0.1.sslip.io:31080",
+  "url": "http://my-portfolio.default.localhost:31080",
   "target": "knative",
   "status": "running",
   "image_ref": "kind-registry:5000/vibed-artifacts/my-portfolio:v2",
@@ -46,8 +46,10 @@ Update an existing deployed artifact with new source files. Triggers a rebuild a
 
 ## What Happens
 
-1. **Validates** the artifact exists and the caller has permission
-2. **Stores** the new source files (replaces previous files)
-3. **Rebuilds** the container image
-4. **Redeploys** with the new image
-5. **Creates** a version snapshot for rollback
+1. **Validates** the app exists and the caller owns it
+2. **Stores** the new source tarball (replaces the previous source)
+3. **Re-injects** the new source into the app's sandbox — no rebuild
+
+:::note
+Redeploy (`POST /v1/apps/{id}/redeploy`) is not yet fully wired in v0.3.x. The supported update path is to deploy again under the same name.
+:::

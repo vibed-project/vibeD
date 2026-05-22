@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -21,7 +20,6 @@ type Config struct {
 	Registry     RegistryConfig     `yaml:"registry"`
 	Store        StoreConfig        `yaml:"store"`
 	Kubernetes   KubernetesConfig   `yaml:"kubernetes"`
-	Knative      KnativeConfig      `yaml:"knative"`
 	Limits       LimitsConfig       `yaml:"limits"`
 	GC           GCConfig           `yaml:"gc"`
 	Tracing      TracingConfig      `yaml:"tracing"`
@@ -94,7 +92,7 @@ type UserGitHubConf struct {
 
 // UserGitLabConf is per-user GitLab storage configuration.
 type UserGitLabConf struct {
-	URL       string `yaml:"url,omitempty"`   // defaults "https://gitlab.com"
+	URL       string `yaml:"url,omitempty"` // defaults "https://gitlab.com"
 	ProjectID int    `yaml:"projectID"`
 	Branch    string `yaml:"branch,omitempty"` // defaults "main"
 	Token     string `yaml:"token,omitempty"`  // supports "env:VAR" and "file:PATH"
@@ -127,11 +125,17 @@ type RateLimitConfig struct {
 type DeploymentConfig struct {
 	PreferredTarget string `yaml:"preferredTarget"` // "auto", "knative", "kubernetes"
 	Namespace       string `yaml:"namespace"`
+	// AppsNamespace is where the /v1 path creates VibedApp CRs. It must match
+	// the namespace the warm pools (SandboxTemplate/SandboxWarmPool) live in,
+	// because agent-sandbox requires a SandboxClaim to be co-located with its
+	// SandboxTemplate. Defaults to "vibed-apps".
+	AppsNamespace string        `yaml:"appsNamespace"`
+	ReadyTimeout  time.Duration `yaml:"readyTimeout"` // how long deployers wait for a workload to become Ready before failing the deploy
 }
 
 type BuilderConfig struct {
-	Engine           string        `yaml:"engine"`           // "pack" or "buildah" (default: "buildah")
-	Image            string        `yaml:"image"`            // buildpacks builder image (pack only)
+	Engine           string        `yaml:"engine"` // "pack" or "buildah" (default: "buildah")
+	Image            string        `yaml:"image"`  // buildpacks builder image (pack only)
 	RunImage         string        `yaml:"runImage"`
 	PullPolicy       string        `yaml:"pullPolicy"`
 	ContainerRuntime string        `yaml:"containerRuntime"` // "auto", "docker", "podman"
@@ -152,6 +156,38 @@ type StorageConfig struct {
 	Local   LocalStorageConfig `yaml:"local"`
 	GitHub  GitHubConfig       `yaml:"github"`
 	GitLab  GitLabConfig       `yaml:"gitlab"`
+	// Tarball configures the source-blob store for the /v1/deploy path
+	// (separate from the file-tree Storage above, which serves the legacy
+	// MCP build path).
+	Tarball TarballConfig `yaml:"tarball"`
+}
+
+// TarballConfig selects how /v1/deploy persists the uploaded source tarball
+// so vibed-agent can pull it. "served" (default) keeps the blob on vibeD's
+// own volume and serves it over an authenticated in-cluster URL — no extra
+// infra. "s3" streams to S3/MinIO and hands the agent a pre-signed URL.
+type TarballConfig struct {
+	Backend string              `yaml:"backend"` // "served" (default) | "s3"
+	Served  ServedTarballConfig `yaml:"served"`
+	S3      S3TarballConfig     `yaml:"s3"`
+}
+
+type ServedTarballConfig struct {
+	// BasePath is the directory tarballs are written to (should be a PVC).
+	BasePath string `yaml:"basePath"`
+	// PublicBaseURL is the in-cluster base the agent dials, e.g.
+	// "http://vibed.vibed-system.svc.cluster.local:8080". The store appends
+	// /internal/sources/<id>.tar.gz.
+	PublicBaseURL string `yaml:"publicBaseURL"`
+}
+
+type S3TarballConfig struct {
+	Endpoint   string `yaml:"endpoint"` // empty for AWS; set for MinIO
+	Bucket     string `yaml:"bucket"`
+	Region     string `yaml:"region"`
+	AccessKey  string `yaml:"accessKey"`
+	SecretKey  string `yaml:"secretKey"`
+	PresignTTL string `yaml:"presignTTL"` // GET URL validity (default "15m")
 }
 
 type LocalStorageConfig struct {
@@ -200,12 +236,6 @@ type KubernetesConfig struct {
 	Context    string `yaml:"context"`
 }
 
-type KnativeConfig struct {
-	DomainSuffix string `yaml:"domainSuffix"`
-	IngressClass string `yaml:"ingressClass"`
-	GatewayPort  int    `yaml:"gatewayPort"` // External port for the ingress gateway (e.g. 31080 for NodePort); 0 or 80 = omitted from URLs
-}
-
 // GCConfig configures the resource garbage collector.
 type GCConfig struct {
 	Enabled  bool   `yaml:"enabled"`  // Enable garbage collection (default: true)
@@ -230,6 +260,8 @@ func Default() *Config {
 		Deployment: DeploymentConfig{
 			PreferredTarget: "auto",
 			Namespace:       "default",
+			AppsNamespace:   "vibed-apps",
+			ReadyTimeout:    10 * time.Minute, // generous; cold image pulls + Sandbox reconcile can be slow
 		},
 		Builder: BuilderConfig{
 			Engine:           "buildah",
@@ -253,6 +285,15 @@ func Default() *Config {
 				URL:    "https://gitlab.com",
 				Branch: "main",
 			},
+			Tarball: TarballConfig{
+				Backend: "served",
+				Served: ServedTarballConfig{
+					BasePath: "/data/vibed/sources",
+				},
+				S3: S3TarballConfig{
+					PresignTTL: "15m",
+				},
+			},
 		},
 		Registry: RegistryConfig{
 			Enabled: false,
@@ -266,10 +307,6 @@ func Default() *Config {
 			SQLite: SQLiteConfig{
 				Path: "/data/vibed.db",
 			},
-		},
-		Knative: KnativeConfig{
-			DomainSuffix: "127.0.0.1.sslip.io",
-			IngressClass: "kourier.ingress.networking.knative.dev",
 		},
 		Limits: LimitsConfig{
 			MaxTotalFileSize: 50 * 1024 * 1024, // 50 MB
@@ -382,14 +419,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("KUBECONFIG"); v != "" && cfg.Kubernetes.Kubeconfig == "" {
 		cfg.Kubernetes.Kubeconfig = v
-	}
-	if v := os.Getenv("VIBED_KNATIVE_DOMAIN_SUFFIX"); v != "" {
-		cfg.Knative.DomainSuffix = v
-	}
-	if v := os.Getenv("VIBED_KNATIVE_GATEWAY_PORT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Knative.GatewayPort = n
-		}
 	}
 	// Auth overrides
 	if v := os.Getenv("VIBED_AUTH_ENABLED"); v != "" {
@@ -564,8 +593,8 @@ func validate(cfg *Config) error {
 		if !validModes[cfg.Auth.Mode] {
 			return fmt.Errorf("auth.mode must be one of: apikey, oauth, oidc (got %q)", cfg.Auth.Mode)
 		}
-		if (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "") && len(cfg.Auth.APIKeys) == 0 {
-			return fmt.Errorf("at least one API key is required when auth.mode is 'apikey'")
+		if (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "oauth" || cfg.Auth.Mode == "") && len(cfg.Auth.APIKeys) == 0 {
+			return fmt.Errorf("at least one API key (or proxy secret) is required when auth.mode is %q", cfg.Auth.Mode)
 		}
 		if cfg.Auth.Mode == "oidc" {
 			if cfg.Auth.OIDC.Issuer == "" {
@@ -600,8 +629,6 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("gc.maxAge must be a valid duration (got %q): %w", cfg.GC.MaxAge, err)
 		}
 	}
-
-	_ = strings.ToLower // suppress unused import if needed
 
 	return nil
 }

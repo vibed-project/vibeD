@@ -1,0 +1,35 @@
+agent-sandbox {{ .Values.version }} is installing into namespace {{ .Values.namespace }}.
+
+Watch the controller:
+  kubectl -n {{ .Values.namespace }} get deploy agent-sandbox-controller
+  kubectl -n {{ .Values.namespace }} logs deploy/agent-sandbox-controller -f
+
+CRDs:
+  kubectl get crd sandboxes.agents.x-k8s.io
+{{- if .Values.manifests.extensions.enabled }}
+  kubectl get crd sandboxtemplates.extensions.agents.x-k8s.io
+  kubectl get crd sandboxclaims.extensions.agents.x-k8s.io
+  kubectl get crd sandboxwarmpools.extensions.agents.x-k8s.io
+{{- end }}
+
+Create your first Sandbox:
+  cat <<EOF | kubectl apply -f -
+  apiVersion: agents.x-k8s.io/v1alpha1
+  kind: Sandbox
+  metadata:
+    name: my-sandbox
+  spec:
+    podTemplate:
+      spec:
+        containers:
+          - name: app
+            image: ghcr.io/example/agent:latest
+  EOF
+
+To uninstall:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  # The chart does NOT remove the upstream-applied resources. Clean them up with:
+  kubectl delete -f {{ .Values.manifests.core }}
+{{- if .Values.manifests.extensions.enabled }}
+  kubectl delete -f {{ .Values.manifests.extensions.url }}
+{{- end }}

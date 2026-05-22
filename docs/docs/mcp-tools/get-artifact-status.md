@@ -30,7 +30,8 @@ Returns the full artifact object:
   "name": "my-portfolio",
   "status": "running",
   "target": "knative",
-  "url": "http://my-portfolio.default.127.0.0.1.sslip.io:31080",
+  "mode": "built",
+  "url": "http://my-portfolio.default.localhost:31080",
   "image_ref": "kind-registry:5000/vibed-artifacts/my-portfolio:v1",
   "language": "static",
   "port": 80,
@@ -42,5 +43,7 @@ Returns the full artifact object:
   "updated_at": "2026-03-14T12:30:00Z"
 }
 ```
+
+The status reflects the app's [phase](../concepts/app-lifecycle.md) (`Pending` → `Claiming` → `Starting` → `Ready`, or `Failed`) along with its URL and the bound sandbox.
 
 Note: `secret_refs` shows only the reference (`secret-name:key`), never the actual secret value.

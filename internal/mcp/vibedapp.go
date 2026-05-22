@@ -1,0 +1,117 @@
+package mcp
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"io"
+	"sort"
+
+	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/pkg/api"
+	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
+)
+
+// When MCP runs over stdio there's no authenticated user; deploys still need
+// an owner so the VibedApp lifecycle (list/status/delete) can scope to it.
+// "local" is the stable fallback so all four tools agree on which apps to show.
+const localOwner = "local"
+
+func ownerFromContext(ctx context.Context) string {
+	if o := vibedauth.UserIDFromContext(ctx); o != "" {
+		return o
+	}
+	return localOwner
+}
+
+// tarballFromFiles packs an MCP file map into a gzipped tar, the form the
+// deploy service (and the classifier) consume. Entries are sorted so the
+// archive is byte-deterministic for a given input.
+func tarballFromFiles(files map[string]string) (io.Reader, error) {
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, name := range names {
+		content := files[name]
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     name,
+			Mode:     0o644,
+			Size:     int64(len(content)),
+			Typeflag: tar.TypeReg,
+		}); err != nil {
+			return nil, err
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			return nil, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return &buf, nil
+}
+
+// phaseToStatus maps a VibedApp lifecycle phase onto the artifact-status
+// vocabulary MCP clients already understand.
+func phaseToStatus(p vibedv1.Phase) api.ArtifactStatus {
+	switch p {
+	case vibedv1.PhasePending, vibedv1.PhaseClaiming:
+		return api.StatusPending
+	case vibedv1.PhaseStarting:
+		return api.StatusDeploying
+	case vibedv1.PhaseReady:
+		return api.StatusRunning
+	case vibedv1.PhaseSuspended:
+		return api.StatusRunning
+	case vibedv1.PhaseFailed:
+		return api.StatusFailed
+	default:
+		return api.StatusPending
+	}
+}
+
+// appToArtifact maps a VibedApp CR to the api.Artifact shape MCP returns for
+// get_artifact_status.
+func appToArtifact(app *vibedv1.VibedApp) *api.Artifact {
+	a := &api.Artifact{
+		ID:       app.Name,
+		Name:     app.Name,
+		OwnerID:  app.Spec.Owner,
+		Status:   phaseToStatus(app.Status.Phase),
+		Target:   api.TargetSandbox,
+		URL:      app.Status.URL,
+		Language: app.Spec.Runtime.Template,
+	}
+	if app.Status.LastDeployedAt != nil {
+		a.UpdatedAt = app.Status.LastDeployedAt.Time
+	}
+	return a
+}
+
+// appToSummary maps a VibedApp CR to the api.ArtifactSummary shape MCP
+// returns for list_artifacts.
+func appToSummary(app *vibedv1.VibedApp) api.ArtifactSummary {
+	s := api.ArtifactSummary{
+		ID:        app.Name,
+		Name:      app.Name,
+		OwnerID:   app.Spec.Owner,
+		Namespace: app.Namespace,
+		Status:    phaseToStatus(app.Status.Phase),
+		Target:    api.TargetSandbox,
+		URL:       app.Status.URL,
+	}
+	if app.Status.LastDeployedAt != nil {
+		s.UpdatedAt = app.Status.LastDeployedAt.Time
+	}
+	return s
+}

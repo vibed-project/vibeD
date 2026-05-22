@@ -1,0 +1,133 @@
+{{- if .Values.controller.enabled }}
+{{- $fullName := include "vibed.fullname" . }}
+{{- $sa := printf "%s-controller" $fullName }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullName }}-controller
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+rules:
+  # VibedApp: the controller reconciles these and writes status.
+  - apiGroups: ["vibed.dev"]
+    resources: ["vibedapps"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["vibed.dev"]
+    resources: ["vibedapps/status"]
+    verbs: ["get", "update", "patch"]
+  # Services: one per-app ClusterIP Service gives the router a stable upstream
+  # that survives Sandbox pod-IP churn (selects the bound pod by claim-uid).
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # SandboxClaim: created per VibedApp; Sandbox/templates read for binding.
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxtemplates", "sandboxwarmpools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch"]
+  # Leader election.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullName }}-controller
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullName }}-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vibed.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "vibed.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: {{ $sa }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: controller
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          args:
+            - --leader-elect={{ .Values.controller.leaderElect }}
+            - --pool-namespace={{ .Values.namespaces.apps }}
+            - --vibed-domain={{ .Values.controller.domain }}
+            - --app-url-scheme={{ .Values.controller.urlScheme | default "https" }}
+            {{- if .Values.controller.urlPort }}
+            - --app-url-port={{ .Values.controller.urlPort }}
+            {{- end }}
+            {{- if .Values.workerd.enabled }}
+            - --workerd-replicas={{ .Values.workerd.replicas }}
+            - --workerd-control-port={{ .Values.workerd.controlPort }}
+            - --workerd-service={{ $fullName }}-workerd
+            - --workerd-namespace={{ .Release.Namespace }}
+            {{- end }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            - name: VIBED_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullName }}-agent-token
+                  key: token
+                  optional: true
+          ports:
+            - { name: metrics, containerPort: 8081 }
+            - { name: probes, containerPort: 8082 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: probes }
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: probes }
+            initialDelaySeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+{{- end }}

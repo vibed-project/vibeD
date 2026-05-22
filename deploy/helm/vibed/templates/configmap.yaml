@@ -47,6 +47,10 @@ data:
     deployment:
       preferredTarget: {{ .Values.config.deployment.preferredTarget | quote }}
       namespace: {{ .Values.config.deployment.namespace | quote }}
+      # /v1 creates VibedApps here; must equal namespaces.apps (where the warm
+      # pools live) so the controller's SandboxClaim finds its SandboxTemplate.
+      appsNamespace: {{ .Values.config.deployment.appsNamespace | default .Values.namespaces.apps | quote }}
+      readyTimeout: {{ .Values.config.deployment.readyTimeout | default "10m" | quote }}
     builder:
       engine: {{ .Values.config.builder.engine | quote }}
       image: {{ .Values.config.builder.image | quote }}
@@ -64,6 +68,20 @@ data:
       backend: {{ .Values.config.storage.backend | quote }}
       local:
         basePath: {{ .Values.config.storage.local.basePath | quote }}
+      {{- with .Values.config.storage.tarball }}
+      tarball:
+        backend: {{ .backend | default "served" | quote }}
+        served:
+          basePath: {{ .served.basePath | default "/data/vibed/sources" | quote }}
+          # publicBaseURL defaults to the in-cluster Service URL so the agent
+          # can pull blobs vibeD serves at /internal/sources/.
+          publicBaseURL: {{ .served.publicBaseURL | default (printf "http://%s.%s.svc.cluster.local:%d" (include "vibed.fullname" $) $.Release.Namespace (int $.Values.service.port)) | quote }}
+        s3:
+          endpoint: {{ .s3.endpoint | default "" | quote }}
+          bucket: {{ .s3.bucket | default "" | quote }}
+          region: {{ .s3.region | default "" | quote }}
+          presignTTL: {{ .s3.presignTTL | default "15m" | quote }}
+      {{- end }}
     registry:
       enabled: {{ .Values.config.registry.enabled }}
       {{- if .Values.config.registry.url }}
@@ -77,10 +95,6 @@ data:
       configmap:
         name: {{ .Values.config.store.configmap.name | quote }}
         namespace: {{ default .Release.Namespace .Values.config.store.configmap.namespace | quote }}
-    knative:
-      domainSuffix: {{ .Values.config.knative.domainSuffix | quote }}
-      ingressClass: {{ .Values.config.knative.ingressClass | quote }}
-      gatewayPort: {{ int .Values.config.knative.gatewayPort }}
     limits:
       maxTotalFileSize: {{ int .Values.config.limits.maxTotalFileSize }}
       maxFileCount: {{ int .Values.config.limits.maxFileCount }}
@@ -89,3 +103,10 @@ data:
       enabled: {{ .Values.config.tracing.enabled | default false }}
       endpoint: {{ .Values.config.tracing.endpoint | default "" | quote }}
       sampleRate: {{ .Values.config.tracing.sampleRate | default 1.0 }}
+    {{- with .Values.config.gc }}
+    gc:
+      enabled: {{ .enabled | default true }}
+      interval: {{ .interval | default "5m" | quote }}
+      maxAge: {{ .maxAge | default "1h" | quote }}
+      dryRun: {{ .dryRun | default false }}
+    {{- end }}

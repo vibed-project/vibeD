@@ -12,7 +12,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: vibed-project/vibed
+  ORG: vibed-project
 
 jobs:
   build:
@@ -42,11 +42,19 @@ jobs:
       - name: Test
         run: go test ./... -short -count=1
 
-  # Build and push container image on merge to main (not on PRs).
+  # Build and push the control-plane images on merge to main (not on PRs).
+  # Template/runner images are built separately in runner-images.yaml.
   container:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { image: vibed,                dockerfile: Dockerfile }
+          - { image: vibed-controller,     dockerfile: cmd/vibed-controller/Dockerfile }
+          - { image: vibed-router,         dockerfile: cmd/vibed-router/Dockerfile }
+          - { image: vibed-workerd-loader, dockerfile: cmd/vibed-workerd-loader/Dockerfile }
     steps:
       - uses: actions/checkout@v5
 
@@ -69,7 +77,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest
             type=raw,value=main
@@ -79,9 +87,10 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           platforms: linux/amd64,linux/arm64

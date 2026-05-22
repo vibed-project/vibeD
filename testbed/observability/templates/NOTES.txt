@@ -1,0 +1,17 @@
+Observability stack installed in namespace {{ .Release.Namespace }}.
+
+Service endpoints (cluster-internal):
+  Prometheus:   http://{{ .Release.Name }}-prometheus-server.{{ .Release.Namespace }}.svc:80
+  Tempo:        http://{{ .Release.Name }}-tempo.{{ .Release.Namespace }}.svc:3100
+  Loki:         http://{{ .Release.Name }}-loki.{{ .Release.Namespace }}.svc:3100
+  OTel ingest:  {{ .Release.Name }}-opentelemetry-collector.{{ .Release.Namespace }}.svc:4317  (OTLP/gRPC)
+
+NodePort access (kind):
+  Grafana:     http://localhost:{{ .Values.grafana.service.nodePort }}  (admin / {{ .Values.grafana.adminPassword }})
+  Prometheus:  http://localhost:{{ .Values.prometheus.server.service.nodePort }}
+
+Send traces from your app to:
+  {{ .Release.Name }}-opentelemetry-collector.{{ .Release.Namespace }}.svc.cluster.local:4317
+
+To uninstall:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

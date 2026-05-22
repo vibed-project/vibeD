@@ -11,7 +11,28 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"go.opentelemetry.io/otel/trace"
 )
+
+// TraceIDLabel is the K8s label key carrying the OTel trace ID for the
+// deploy that created the resource. Lets operators correlate vibeD logs
+// with cluster-side resources via grep/kubectl.
+const TraceIDLabel = "vibed.dev/trace-id"
+
+// VibedLabels returns the standard vibeD-managed labels for an artifact's
+// resources, including the OTel trace ID derived from ctx (when present).
+// Use as the base label map for every K8s object vibeD creates.
+func VibedLabels(ctx context.Context, artifact *api.Artifact) map[string]string {
+	out := map[string]string{
+		"app.kubernetes.io/managed-by": "vibed",
+		"vibed.dev/artifact-id":        artifact.ID,
+	}
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		out[TraceIDLabel] = span.SpanContext().TraceID().String()
+	}
+	return out
+}
 
 // BuildEnvVars converts an artifact's env var map and secret references into
 // Kubernetes EnvVar slice. Plain env vars use literal values; secret refs use
@@ -64,6 +85,34 @@ func StaticFileVolumes(configMapName string) ([]corev1.VolumeMount, []corev1.Vol
 	}
 	return mounts, volumes
 }
+
+// HardenedPodSecurityContext returns a pod-level SecurityContext that satisfies
+// PodSecurity Standards "restricted". Workloads under PSA restricted otherwise
+// produce admission warnings or are outright rejected on K8s 1.25+.
+func HardenedPodSecurityContext() *corev1.PodSecurityContext {
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: ptrBool(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
+// HardenedContainerSecurityContext returns a container-level SecurityContext
+// that satisfies PodSecurity Standards "restricted". readOnlyRootFilesystem is
+// intentionally NOT set — many user images (notably stock nginx) need to write
+// to /var/cache or /var/run and break with it; callers that know their image
+// is read-only-friendly can set it themselves.
+func HardenedContainerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptrBool(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+}
+
+func ptrBool(b bool) *bool { return &b }
 
 // FetchPodLogs retrieves log lines from the first pod matching the given label selector.
 // If container is non-empty, logs are scoped to that container.

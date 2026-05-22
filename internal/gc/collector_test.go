@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -30,7 +30,7 @@ func newTestGC(t *testing.T, clientset *fake.Clientset, st store.ArtifactStore, 
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	gc, err := NewGarbageCollector(
-		clientset, st, testNamespace,
+		clientset, nil, st, testNamespace,
 		config.GCConfig{
 			Enabled:  true,
 			Interval: "1h",
@@ -257,7 +257,7 @@ func TestGC_StopsOnContextCancel(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	collector, err := NewGarbageCollector(
-		clientset, st, testNamespace,
+		clientset, nil, st, testNamespace,
 		config.GCConfig{
 			Enabled:  true,
 			Interval: "100ms",

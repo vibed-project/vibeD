@@ -3,18 +3,20 @@
 package frontend_test
 
 import (
-	"encoding/json"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"testing"
+        "encoding/json"
+        "log/slog"
+        "net/http"
+        "net/http/httptest"
+        "os"
+        "path/filepath"
+        "testing"
 
-	"github.com/vibed-project/vibeD/internal/config"
-	"github.com/vibed-project/vibeD/internal/deployer"
-	"github.com/vibed-project/vibeD/internal/environment"
-	"github.com/vibed-project/vibeD/internal/frontend"
-	"github.com/vibed-project/vibeD/internal/metrics"
+        "github.com/vibed-project/vibeD/internal/config"
+        "github.com/vibed-project/vibeD/internal/deployer"
+        "github.com/vibed-project/vibeD/internal/environment"
+        "github.com/vibed-project/vibeD/internal/events"
+        "github.com/vibed-project/vibeD/internal/frontend"
+        "github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
@@ -29,7 +31,14 @@ import (
 
 func TestAPI_ListArtifacts_Empty(t *testing.T) {
 	orch := testAPIOrchSimple(t)
-	handler := frontend.NewHandler(orch)
+	cfg := &config.Config{}
+	bus := events.NewEventBus()
+	m := metrics.New()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	userStore, err := store.NewSQLiteStore(dbPath)
+	require.NoError(t, err)
+	defer userStore.Close()
+	handler := frontend.NewHandler(orch, cfg, bus, m, userStore, nil)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -39,11 +48,10 @@ func TestAPI_ListArtifacts_Empty(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	var artifacts []api.ArtifactSummary
-	err = json.NewDecoder(resp.Body).Decode(&artifacts)
+	var listResult store.ListResult
+	err = json.NewDecoder(resp.Body).Decode(&listResult)
 	require.NoError(t, err)
-	assert.Empty(t, artifacts)
-}
+	assert.Empty(t, listResult.Artifacts)}
 
 func TestAPI_ListTargets(t *testing.T) {
 	testutil.SkipIfNoCluster(t)
@@ -60,8 +68,14 @@ func TestAPI_ListTargets(t *testing.T) {
 	detector := environment.NewDetector(clients, logger)
 	m := metrics.New()
 
-	orch := orchestrator.NewOrchestrator(cfg, detector, mockBuilder, factory, localStorage, memStore, m, logger)
-	handler := frontend.NewHandler(orch)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqlStore, err := store.NewSQLiteStore(dbPath)
+	require.NoError(t, err)
+	defer sqlStore.Close()
+
+	bus := events.NewEventBus()
+	orch := orchestrator.NewOrchestrator(cfg, detector, mockBuilder, factory, localStorage, memStore, sqlStore, m, clients.Clientset, bus, sqlStore, logger)
+	handler := frontend.NewHandler(orch, cfg, bus, m, sqlStore, nil)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -79,7 +93,14 @@ func TestAPI_ListTargets(t *testing.T) {
 
 func TestAPI_ArtifactNotFound(t *testing.T) {
 	orch := testAPIOrchSimple(t)
-	handler := frontend.NewHandler(orch)
+	cfg := &config.Config{}
+	bus := events.NewEventBus()
+	m := metrics.New()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	userStore, err := store.NewSQLiteStore(dbPath)
+	require.NoError(t, err)
+	defer userStore.Close()
+	handler := frontend.NewHandler(orch, cfg, bus, m, userStore, nil)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -117,5 +138,8 @@ func testAPIOrchSimple(t *testing.T) *orchestrator.Orchestrator {
 	factory := deployer.NewFactory()
 	m := metrics.New()
 
-	return orchestrator.NewOrchestrator(cfg, nil, mockBuilder, factory, localStorage, memStore, m, logger)
-}
+	dbPath := filepath.Join(tmpDir, "test.db")
+	sqlStore, err := store.NewSQLiteStore(dbPath)
+	require.NoError(t, err)
+
+	return orchestrator.NewOrchestrator(cfg, nil, mockBuilder, factory, localStorage, memStore, sqlStore, m, nil, events.NewEventBus(), sqlStore, logger)}

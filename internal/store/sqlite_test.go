@@ -23,20 +23,20 @@ func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 func testArtifact(id, name string) *api.Artifact {
 	now := time.Now().Truncate(time.Microsecond)
 	return &api.Artifact{
-		ID:        id,
-		Name:      name,
-		OwnerID:   "user-1",
-		Status:    api.StatusRunning,
-		Target:    api.TargetKnative,
-		ImageRef:  "nginx:latest",
-		URL:       "https://example.com",
-		Port:      8080,
+		ID:         id,
+		Name:       name,
+		OwnerID:    "user-1",
+		Status:     api.StatusRunning,
+		Target:     api.TargetKubernetes,
+		ImageRef:   "nginx:latest",
+		URL:        "https://example.com",
+		Port:       8080,
 		EnvVars:    map[string]string{"FOO": "bar"},
 		SecretRefs: map[string]string{"DB_PASSWORD": "my-creds:password"},
 		Language:   "static",
-		CreatedAt: now,
-		UpdatedAt: now,
-		Version:   1,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Version:    1,
 	}
 }
 
@@ -53,7 +53,7 @@ func TestSQLiteStore_CreateAndGet(t *testing.T) {
 	assert.Equal(t, "my-app", got.Name)
 	assert.Equal(t, "user-1", got.OwnerID)
 	assert.Equal(t, api.StatusRunning, got.Status)
-	assert.Equal(t, api.TargetKnative, got.Target)
+	assert.Equal(t, api.TargetKubernetes, got.Target)
 	assert.Equal(t, "nginx:latest", got.ImageRef)
 	assert.Equal(t, 8080, got.Port)
 	assert.Equal(t, "bar", got.EnvVars["FOO"])

@@ -10,7 +10,10 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/vibed-project/vibeD/internal/config"
@@ -32,19 +35,23 @@ const (
 
 // GarbageCollector periodically scans for orphaned K8s resources and removes them.
 type GarbageCollector struct {
-	clientset kubernetes.Interface
-	store     store.ArtifactStore
-	namespace string
-	interval  time.Duration
-	maxAge    time.Duration
-	dryRun    bool
-	metrics   *metrics.Metrics
-	logger    *slog.Logger
+	clientset     kubernetes.Interface
+	dynamicClient dynamic.Interface // optional; nil if not provided
+	store         store.ArtifactStore
+	namespace     string
+	interval      time.Duration
+	maxAge        time.Duration
+	dryRun        bool
+	metrics       *metrics.Metrics
+	logger        *slog.Logger
 }
 
 // NewGarbageCollector creates a new GarbageCollector from the given config.
+// dynamicClient is optional — pass nil to skip the Sandbox sweep (cluster
+// doesn't have agent-sandbox installed).
 func NewGarbageCollector(
 	clientset kubernetes.Interface,
+	dynamicClient dynamic.Interface,
 	st store.ArtifactStore,
 	namespace string,
 	cfg config.GCConfig,
@@ -61,14 +68,15 @@ func NewGarbageCollector(
 	}
 
 	return &GarbageCollector{
-		clientset: clientset,
-		store:     st,
-		namespace: namespace,
-		interval:  interval,
-		maxAge:    maxAge,
-		dryRun:    cfg.DryRun,
-		metrics:   m,
-		logger:    logger.With("component", "gc"),
+		clientset:     clientset,
+		dynamicClient: dynamicClient,
+		store:         st,
+		namespace:     namespace,
+		interval:      interval,
+		maxAge:        maxAge,
+		dryRun:        cfg.DryRun,
+		metrics:       m,
+		logger:        logger.With("component", "gc"),
 	}, nil
 }
 
@@ -97,15 +105,79 @@ func (gc *GarbageCollector) Run(ctx context.Context) {
 // collect runs a single GC cycle, cleaning up orphaned resources.
 func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.logger.Info("starting GC cycle")
-	gc.cleanOrphanedJobs(ctx)
-	gc.cleanOrphanedConfigMaps(ctx)
-	gc.cleanOrphanedDeployments(ctx)
+
+	res, err := gc.store.List(ctx, store.ListOptions{AdminView: true, Limit: 0})
+	if err != nil {
+		gc.logger.Error("failed to list artifacts for GC, skipping cycle", "error", err)
+		return
+	}
+
+	activeArtifacts := make(map[string]bool, len(res.Artifacts))
+	for _, a := range res.Artifacts {
+		activeArtifacts[a.ID] = true
+	}
+
+	gc.cleanOrphanedJobs(ctx, activeArtifacts)
+	gc.cleanOrphanedConfigMaps(ctx, activeArtifacts)
+	gc.cleanOrphanedDeployments(ctx, activeArtifacts)
+	gc.cleanOrphanedSandboxes(ctx, activeArtifacts)
 	gc.logger.Info("GC cycle complete")
+}
+
+// cleanOrphanedSandboxes deletes Sandbox CRs whose artifact no longer exists
+// in the store. Skipped silently when the agent-sandbox CRD isn't installed.
+func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeArtifacts map[string]bool) {
+	if gc.dynamicClient == nil {
+		return
+	}
+	sandboxGVR := schema.GroupVersionResource{
+		Group:    "agents.x-k8s.io",
+		Version:  "v1alpha1",
+		Resource: "sandboxes",
+	}
+
+	list, err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelManagedBy,
+	})
+	if err != nil {
+		// agent-sandbox CRD not installed in this cluster: silent skip.
+		if k8serrors.IsNotFound(err) {
+			return
+		}
+		gc.logger.Warn("failed to list sandboxes for GC", "error", err)
+		return
+	}
+
+	for _, sb := range list.Items {
+		labels := sb.GetLabels()
+		artifactID := labels[labelArtifactID]
+		if artifactID == "" {
+			continue
+		}
+		if activeArtifacts[artifactID] {
+			continue
+		}
+
+		if gc.dryRun {
+			gc.logger.Info("dry-run: would delete orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
+			continue
+		}
+
+		if err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).Delete(ctx, sb.GetName(), metav1.DeleteOptions{}); err != nil {
+			if k8serrors.IsNotFound(err) {
+				continue
+			}
+			gc.logger.Warn("failed to delete orphaned sandbox", "sandbox", sb.GetName(), "error", err)
+			continue
+		}
+		gc.metrics.GCResourcesCleaned.WithLabelValues("sandbox").Inc()
+		gc.logger.Info("deleted orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
+	}
 }
 
 // cleanOrphanedJobs deletes completed/failed build Jobs whose artifact
 // no longer exists in the store, or that are older than maxAge.
-func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context) {
+func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context, activeArtifacts map[string]bool) {
 	selector := labelManagedBy + "," + labelComponent + "=build"
 	jobs, err := gc.clientset.BatchV1().Jobs(gc.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: selector,
@@ -132,15 +204,11 @@ func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context) {
 		}
 
 		// Check if the artifact still exists.
-		_, err := gc.store.Get(ctx, artifactID)
-		orphaned := isNotFound(err)
-		stale := err == nil // artifact exists but job is old and finished
+		exists := activeArtifacts[artifactID]
+		orphaned := !exists
+		stale := exists // artifact exists but job is old and finished
 
 		if !orphaned && !stale {
-			// Unexpected error from store; skip.
-			if err != nil {
-				gc.logger.Warn("failed to check artifact for job GC", "job", job.Name, "error", err)
-			}
 			continue
 		}
 
@@ -162,7 +230,7 @@ func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context) {
 }
 
 // cleanOrphanedConfigMaps deletes ConfigMaps whose artifact no longer exists.
-func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context) {
+func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context, activeArtifacts map[string]bool) {
 	selector := labelManagedBy + "," + labelArtifactID
 	cms, err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: selector,
@@ -183,11 +251,7 @@ func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context) {
 			continue
 		}
 
-		_, err := gc.store.Get(ctx, artifactID)
-		if !isNotFound(err) {
-			if err != nil {
-				gc.logger.Warn("failed to check artifact for configmap GC", "configmap", cm.Name, "error", err)
-			}
+		if activeArtifacts[artifactID] {
 			continue
 		}
 
@@ -207,7 +271,7 @@ func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context) {
 
 // cleanOrphanedDeployments deletes Deployments (and their matching Services)
 // whose artifact no longer exists in the store.
-func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context) {
+func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context, activeArtifacts map[string]bool) {
 	deployments, err := gc.clientset.AppsV1().Deployments(gc.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelManagedBy,
 	})
@@ -222,11 +286,7 @@ func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context) {
 			continue
 		}
 
-		_, err := gc.store.Get(ctx, artifactID)
-		if !isNotFound(err) {
-			if err != nil {
-				gc.logger.Warn("failed to check artifact for deployment GC", "deployment", deploy.Name, "error", err)
-			}
+		if activeArtifacts[artifactID] {
 			continue
 		}
 

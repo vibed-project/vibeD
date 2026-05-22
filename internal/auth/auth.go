@@ -47,7 +47,10 @@ func Middleware(cfg config.AuthConfig, userStore store.UserStore, logger *slog.L
 		verifier = apiKeyVerifier(cfg.APIKeys, userStore, logger)
 
 	case "oauth":
-		verifier = oauthPassthroughVerifier(logger)
+		if len(cfg.APIKeys) == 0 {
+			return nil, fmt.Errorf("auth.mode is 'oauth' but no API keys (proxy secrets) are configured")
+		}
+		verifier = oauthPassthroughVerifier(cfg.APIKeys, logger)
 
 	case "oidc":
 		v, err := newOIDCVerifier(cfg.OIDC, userStore, logger)
@@ -93,7 +96,12 @@ func Middleware(cfg config.AuthConfig, userStore store.UserStore, logger *slog.L
 func NoAuthAdminMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(WithRole(r.Context(), "admin")))
+			// Inject both an admin role AND a stable user ID so owner-scoped
+			// endpoints (e.g. /v1/deploy via deploy.Service) work in no-auth
+			// dev mode instead of 401-ing on a missing user.
+			ctx := WithRole(r.Context(), "admin")
+			ctx = WithUserID(ctx, "admin")
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -113,8 +121,11 @@ func SkipAuthPaths(authMiddleware func(http.Handler) http.Handler) func(http.Han
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Protect MCP and API endpoints
-			if strings.HasPrefix(path, "/mcp") || strings.HasPrefix(path, "/api/") {
+			// Protect MCP, internal /api/ endpoints, /v1/* (the OpenAPI HTTP
+			// surface), and /internal/sources/ (source blobs the in-cluster
+			// agent pulls with the shared token).
+			if strings.HasPrefix(path, "/mcp") || strings.HasPrefix(path, "/api/") ||
+				strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/internal/sources/") {
 				authed.ServeHTTP(w, r)
 				return
 			}
@@ -224,12 +235,25 @@ func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key
 	logger.Info("auto-provisioned API key user", "name", key.Name, "role", role, "department", key.Department)
 }
 
-// oauthPassthroughVerifier accepts any Bearer token and passes it through.
-// This is intended for setups where an external gateway/proxy validates OAuth tokens
-// and vibeD trusts the proxy's authentication.
-func oauthPassthroughVerifier(logger *slog.Logger) mcpauth.TokenVerifier {
+// oauthPassthroughVerifier accepts a Bearer token that must match an API key
+// (acting as a proxy shared secret) and then trusts the X-Forwarded-User header.
+func oauthPassthroughVerifier(keys []config.APIKeyConf, logger *slog.Logger) mcpauth.TokenVerifier {
 	return func(ctx context.Context, token string, req *http.Request) (*mcpauth.TokenInfo, error) {
 		if token == "" {
+			return nil, mcpauth.ErrInvalidToken
+		}
+
+		valid := false
+		for _, key := range keys {
+			resolvedKey := resolveKeyValue(key.Key)
+			if subtle.ConstantTimeCompare([]byte(token), []byte(resolvedKey)) == 1 {
+				valid = true
+				break
+			}
+		}
+
+		if !valid {
+			logger.Warn("OAuth passthrough rejected: invalid proxy secret", "path", req.URL.Path)
 			return nil, mcpauth.ErrInvalidToken
 		}
 
@@ -307,11 +331,12 @@ func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *s
 		return nil, fmt.Errorf("discovering OIDC provider %q: %w", cfg.Issuer, err)
 	}
 
+	if cfg.Audience == "" {
+		return nil, fmt.Errorf("OIDC audience (client ID) must be configured to prevent cross-app token reuse")
+	}
+
 	verifierConfig := &oidc.Config{
 		ClientID: cfg.Audience,
-	}
-	if cfg.Audience == "" {
-		verifierConfig.SkipClientIDCheck = true
 	}
 	idTokenVerifier := provider.Verifier(verifierConfig)
 

@@ -1,0 +1,22 @@
+# Pre-baked dependency manifest for the vibed-runner-python image.
+#
+# Single source of truth: this file is embedded into the vibeD binary (the
+# fast-path dependency gate reads it to decide whether a Python app can run on
+# the warm pool — every dependency in the app's requirements.txt must appear
+# here, or it falls back to the full container build) AND copied into the
+# runner image by runners/python/Dockerfile.
+#
+# This list MUST stay in sync with the `pip install` line in
+# runners/python/Dockerfile. Package names use PEP 503 normalization
+# (case-insensitive; '_' and '.' treated as '-').
+language: python
+image: vibed-runner-python
+runtime: python:3.12-slim
+packages:
+  - flask
+  - fastapi
+  - uvicorn
+  - gunicorn
+  - requests
+  - jinja2
+  - pydantic

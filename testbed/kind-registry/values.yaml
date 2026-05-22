@@ -1,0 +1,40 @@
+# In-cluster Docker registry. Pairs with `scripts/configure-containerd.sh`
+# (run once after install) so that pods can pull from "kind-registry:5000".
+
+# Service name and namespace for the registry. Other namespaces can resolve the
+# bare name "kind-registry" via the ExternalName aliases below.
+name: kind-registry
+namespace: default
+
+image:
+  repository: registry
+  tag: "2"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# Cluster-internal service port. The host-side containerd hosts.toml that
+# `scripts/configure-containerd.sh` writes also assumes 5000.
+servicePort: 5000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# ExternalName aliases — create a `kind-registry` Service in additional namespaces
+# so workloads outside `default` can resolve "kind-registry:5000" via DNS.
+aliases:
+  - namespace: vibed-system
+    # Set to true for the chart to also create the namespace if missing.
+    createNamespace: false
+
+# Persistence is intentionally off by default. Restarting the registry pod will
+# wipe pushed images, which is fine for a dev testbed.
+persistence:
+  enabled: false
+  size: 5Gi
+  storageClassName: ""

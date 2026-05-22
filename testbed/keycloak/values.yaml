@@ -1,0 +1,35 @@
+# DEV-ONLY Keycloak. Do NOT use in production.
+# The bundled realm imports plaintext passwords and ephemeral H2 storage.
+
+image:
+  repository: quay.io/keycloak/keycloak
+  tag: "25.0.0"
+  pullPolicy: IfNotPresent
+
+# Initial admin console credentials (dev only).
+admin:
+  username: admin
+  password: admin
+
+# Issuer URL embedded in JWTs. Must be reachable identically from the host
+# (e.g. mcp-remote on the laptop) and from inside the relying party's pod.
+# On kind+podman, the host's localhost:31888 resolves inside the node via
+# the kind-config extraPortMappings loopback (see deploy/kind/kind-config.yaml).
+hostname: "http://localhost:31888"
+
+# NodePort exposed via deploy/kind/kind-config.yaml hostPort mapping (8080:31888).
+service:
+  nodePort: 31888
+
+# Realm file imported on first start. Must live under the chart's `realm/`
+# directory. Set to "" to skip realm import (admin can create one in the UI).
+realm:
+  file: "vibed-realm.json"
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi

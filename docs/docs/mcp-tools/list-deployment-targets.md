@@ -33,4 +33,4 @@ No parameters required.
 }
 ```
 
-This tool is useful for AI agents to decide which `target` to pass to `deploy_artifact`. When `target` is set to `auto` (the default), vibeD uses this detection internally to pick the best target.
+This tool lists the available runtime [templates](../concepts/lanes-and-templates.md) (e.g. `node-24`, `python-313`, `static-nginx`). You normally don't pass a template — the classifier picks one — but you can override it in the deploy metadata.

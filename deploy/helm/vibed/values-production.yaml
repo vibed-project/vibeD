@@ -6,8 +6,8 @@
 #     -n vibed-system --create-namespace
 #
 # IMPORTANT: Review and customize these values before deploying.
-# At minimum, update: image.tag, config.knative.domainSuffix,
-# config.registry.url, and auth.existingSecret.
+# At minimum, update: image.tag, config.registry.url, and
+# auth.existingSecret.
 
 image:
   # -- Pin to a specific release tag. Never use "latest" in production.
@@ -66,12 +66,6 @@ config:
     configmap:
       name: "vibed-artifacts"
       namespace: ""
-  knative:
-    # -- Your production domain (must have wildcard DNS configured)
-    domainSuffix: "vibed.example.com"
-    ingressClass: "kourier.ingress.networking.knative.dev"
-    # -- In production with proper ingress/LB, use 0 (standard port 80/443)
-    gatewayPort: 0
 
 # -- Ingress for external access. Configure with your domain and TLS.
 ingress:

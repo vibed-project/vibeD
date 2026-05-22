@@ -1,4 +1,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
+# These permissions apply to vibeD's deploy *target* namespace (configurable via
+# config.deployment.namespace), not to vibeD's own namespace. ClusterRole +
+# ClusterRoleBinding so vibeD can deploy into any namespace it's pointed at.
 kind: ClusterRole
 metadata:
   name: {{ include "vibed.fullname" . }}
@@ -9,6 +12,17 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+
+  # --- Events: surfacing pod failure reasons (ImagePullBackOff,
+  #     PSA admission, etc.) when fetching pod logs returns nothing.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  # --- Secrets: for validating secret references during deploy ---
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
 
   # --- Services: vibeD creates/manages K8s Services for deployed artifacts ---
   - apiGroups: [""]
@@ -30,15 +44,28 @@ rules:
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "delete"]
 
-  # --- Knative Serving: serverless deployment target ---
-  - apiGroups: ["serving.knative.dev"]
-    resources: ["services"]
+  # --- agent-sandbox: BYOC + Sandbox CR target, and the Instant Preview
+  #     fast-path warm runner pool. Without these the SandboxDeployer 403s
+  #     silently and the pool can't create/recycle runner Sandboxes. The full
+  #     verb set covers pool churn (create/delete), the GC sweep (list/delete),
+  #     and the SandboxDeployer (create/update/delete/get).
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxtemplates", "sandboxclaims", "sandboxwarmpools"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
 
-  # --- CRD detection: auto-detect available deployment targets ---
-  - apiGroups: ["apiextensions.k8s.io"]
-    resources: ["customresourcedefinitions"]
-    verbs: ["get", "list"]
+  # --- VibedApp: the /v1/deploy path (deploy.Service) creates and manages
+  #     these CRs; the controller reconciles them. The server reads back
+  #     status while watching a deploy to Ready.
+  - apiGroups: ["vibed.dev"]
+    resources: ["vibedapps"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["vibed.dev"]
+    resources: ["vibedapps/status"]
+    verbs: ["get"]
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -50,6 +77,40 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "vibed.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "vibed.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "vibed.fullname" . }}-crd-reader
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+rules:
+  # --- Namespace creation: for multi-tenant departments ---
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # --- CRD detection: auto-detect available deployment targets ---
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "vibed.fullname" . }}-crd-reader
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "vibed.fullname" . }}-crd-reader
 subjects:
   - kind: ServiceAccount
     name: {{ include "vibed.serviceAccountName" . }}

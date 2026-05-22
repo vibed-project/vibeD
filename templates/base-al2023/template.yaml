@@ -1,0 +1,70 @@
+# base-al2023 — kitchen-sink general-lane warm pool for classifier rules
+# 8 (Dockerfile-as-hint) and 9 (unknown fallback). Pinned to
+# extensions.agents.x-k8s.io/v1alpha1 (kubernetes-sigs/agent-sandbox v0.4.5+).
+# See refactor.md §6.1.
+#
+# This template's resource envelope is the biggest by design — it bundles
+# every common runtime and runs untrusted code whose shape the classifier
+# couldn't predict. If you're tempted to scale the pool down, make sure
+# rule 9's miss rate doesn't bite the deploy SLO first.
+---
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: base-al2023
+  namespace: vibed-pools
+  labels:
+    vibed.dev/template: base-al2023
+    vibed.dev/lane: general
+spec:
+  envVarsInjectionPolicy: Allowed
+  podTemplate:
+    metadata:
+      labels:
+        vibed.dev/template: base-al2023
+    spec:
+      runtimeClassName: kata-qemu
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: runtime
+          image: localhost/vibed-template-base-al2023:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: control, containerPort: 9000 }
+            - { name: http,    containerPort: 8080 }
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits:   { cpu: "1",    memory: "1Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: home,      mountPath: /home/runner }
+            - { name: tmp,       mountPath: /tmp }
+      volumes:
+        - { name: workspace, emptyDir: { sizeLimit: 200Mi } }
+        - { name: home,      emptyDir: { sizeLimit: 256Mi } }
+        - { name: tmp,       emptyDir: { sizeLimit: 128Mi } }
+---
+# 30 idle replicas per refactor.md §6.1.
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxWarmPool
+metadata:
+  name: base-al2023
+  namespace: vibed-pools
+  labels:
+    vibed.dev/template: base-al2023
+    vibed.dev/lane: general
+spec:
+  replicas: 30
+  sandboxTemplateRef:
+    name: base-al2023
+  updateStrategy:
+    type: OnReplenish

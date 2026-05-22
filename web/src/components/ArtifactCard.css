@@ -77,6 +77,17 @@
   font-weight: 500;
 }
 
+.mode-badge {
+  font-size: 0.65rem;
+  color: var(--amber, #d98e04);
+  border: 1px solid var(--amber, #d98e04);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+
 .card-target {
   font-size: 0.75rem;
   color: var(--text-muted);

@@ -75,5 +75,5 @@ store:
   backend: "memory"
 
 knative:
-  domainSuffix: "127.0.0.1.sslip.io"
+  domainSuffix: "localhost"
   ingressClass: "kourier.ingress.networking.knative.dev"

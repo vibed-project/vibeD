@@ -1,0 +1,13 @@
+{{- if .Values.realm.file }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-realm
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+  annotations:
+    keycloak.testbed/warning: "DEV-ONLY realm with plaintext passwords. Do not use in production."
+data:
+  {{ .Values.realm.file }}: |-
+{{ .Files.Get (printf "realm/%s" .Values.realm.file) | indent 4 }}
+{{- end }}

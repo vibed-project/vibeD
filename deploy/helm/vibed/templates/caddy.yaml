@@ -1,0 +1,146 @@
+{{- if .Values.caddy.enabled }}
+{{- $fullName := include "vibed.fullname" . }}
+{{- $name := printf "%s-caddy" $fullName }}
+---
+# Bootstrap Caddy config. The admin API (:2019) is how vibed-router programs
+# per-app routes into srv0; it starts with an empty route list. Wildcard TLS
+# is added under tls.automation when caddy.tls.dns01.enabled (needs a Caddy
+# image built with the matching caddy-dns plugin).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: caddy
+data:
+  caddy.json: |
+    {
+      "admin": { "listen": "0.0.0.0:2019" },
+      "apps": {
+        "http": {
+          "servers": {
+            "srv0": {
+              "listen": [":80"{{ if .Values.caddy.tls.dns01.enabled }}, ":443"{{ end }}],
+              "routes": []
+            }
+          }
+        }{{ if .Values.caddy.tls.dns01.enabled }},
+        "tls": {
+          "automation": {
+            "policies": [
+              {
+                "subjects": ["*.{{ .Values.controller.domain }}"],
+                "issuers": [
+                  {
+                    "module": "acme",
+                    "challenges": {
+                      "dns": { "provider": { "name": "{{ .Values.caddy.tls.dns01.provider }}" } }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }{{ end }}
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: caddy
+spec:
+  selector:
+    {{- include "vibed.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: caddy
+  ports:
+    - { name: http,  port: 80,   targetPort: 80 }
+    {{- if .Values.caddy.tls.dns01.enabled }}
+    - { name: https, port: 443,  targetPort: 443 }
+    {{- end }}
+    # admin: cluster-internal only. Restrict to the router with a
+    # NetworkPolicy in production — it is a powerful management API.
+    - { name: admin, port: 2019, targetPort: 2019 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: caddy
+spec:
+  replicas: {{ .Values.caddy.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vibed.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: caddy
+  template:
+    metadata:
+      labels:
+        {{- include "vibed.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: caddy
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: caddy
+          image: "{{ .Values.caddy.image.repository }}:{{ .Values.caddy.image.tag }}"
+          imagePullPolicy: {{ .Values.caddy.image.pullPolicy }}
+          args: ["caddy", "run", "--config", "/etc/caddy/caddy.json"]
+          env:
+            - { name: XDG_DATA_HOME, value: /data }
+            - { name: XDG_CONFIG_HOME, value: /config }
+            {{- if .Values.caddy.tls.dns01.enabled }}
+            {{- if .Values.caddy.tls.dns01.tokenSecret }}
+            - name: CF_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.caddy.tls.dns01.tokenSecret }}
+                  key: CF_API_TOKEN
+            {{- end }}
+            {{- end }}
+          ports:
+            - { name: http,  containerPort: 80 }
+            {{- if .Values.caddy.tls.dns01.enabled }}
+            - { name: https, containerPort: 443 }
+            {{- end }}
+            - { name: admin, containerPort: 2019 }
+          readinessProbe:
+            tcpSocket: { port: 2019 }
+            initialDelaySeconds: 3
+          securityContext:
+            # The official caddy binary carries a cap_net_bind_service file
+            # capability so it can bind :80/:443 as non-root. exec'ing a
+            # file-capability binary needs no_new_privs=0 — i.e.
+            # allowPrivilegeEscalation: true — paired with dropping ALL and
+            # re-adding only NET_BIND_SERVICE.
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          resources:
+            {{- toYaml .Values.caddy.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config-file, mountPath: /etc/caddy }
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /config }
+      volumes:
+        - name: config-file
+          configMap: { name: {{ $name }} }
+        - name: data
+          emptyDir: {}
+        - name: config
+          emptyDir: {}
+{{- end }}

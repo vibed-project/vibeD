@@ -31,3 +31,13 @@ func (f *Factory) Get(target api.DeploymentTarget) (Deployer, error) {
 	}
 	return d, nil
 }
+
+// All returns every registered (target, deployer) pair. Used by Delete when an
+// artifact has no Target recorded so we can best-effort sweep every backend.
+func (f *Factory) All() map[api.DeploymentTarget]Deployer {
+	out := make(map[api.DeploymentTarget]Deployer, len(f.deployers))
+	for k, v := range f.deployers {
+		out[k] = v
+	}
+	return out
+}

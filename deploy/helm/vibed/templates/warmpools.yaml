@@ -1,0 +1,84 @@
+{{- /*
+One SandboxTemplate + SandboxWarmPool per enabled language template
+(refactor.md §6.1), rendered into namespaces.pools. The controller claims
+from these by name (= the classifier's template pick). Images must embed
+vibed-agent at /usr/local/bin/vibed-agent (see templates/<name>/Dockerfile).
+
+These mirror templates/<name>/template.yaml but are values-driven so image
+refs / pool sizes / the RuntimeClass are environment-configurable.
+*/ -}}
+{{- $root := . }}
+{{- range $name, $cfg := .Values.warmPools }}
+{{- if $cfg.enabled }}
+---
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Values.namespaces.apps }}
+  labels:
+    {{- include "vibed.labels" $root | nindent 4 }}
+    vibed.dev/template: {{ $name }}
+    vibed.dev/lane: {{ $cfg.lane }}
+spec:
+  envVarsInjectionPolicy: Allowed
+  # agent-sandbox's "Managed" policy locks sandboxes down to ingress from its
+  # own sandbox-router and blocks cluster-internal egress (refactor.md §7.4).
+  # That blocks vibeD's model — the controller probing the agent on :9000, the
+  # agent pulling source from the in-cluster blob store, and Caddy proxying to
+  # the pod. Set runtime.sandboxNetworkPolicy=Disabled (dev) to open it up;
+  # production needs vibeD's traffic reconciled with agent-sandbox's router.
+  networkPolicyManagement: {{ $root.Values.runtime.sandboxNetworkPolicy | default "Managed" }}
+  podTemplate:
+    metadata:
+      labels:
+        vibed.dev/template: {{ $name }}
+    spec:
+      {{- with $root.Values.runtime.defaultClass }}
+      # Kata isolation for the general lane. Omitted (normal runtime) when
+      # runtime.defaultClass is empty — e.g. on a Kind dev cluster without Kata.
+      runtimeClassName: {{ . }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: runtime
+          image: {{ $cfg.image | quote }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: control, containerPort: 9000 }
+            - { name: http,    containerPort: 8080 }
+          resources:
+            {{- toYaml $cfg.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: workspace, mountPath: /workspace }
+            - { name: tmp,       mountPath: /tmp }
+      volumes:
+        - { name: workspace, emptyDir: { sizeLimit: 200Mi } }
+        - { name: tmp,       emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxWarmPool
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Values.namespaces.apps }}
+  labels:
+    {{- include "vibed.labels" $root | nindent 4 }}
+    vibed.dev/template: {{ $name }}
+    vibed.dev/lane: {{ $cfg.lane }}
+spec:
+  replicas: {{ $cfg.replicas }}
+  sandboxTemplateRef:
+    name: {{ $name }}
+  updateStrategy:
+    type: OnReplenish
+{{- end }}
+{{- end }}

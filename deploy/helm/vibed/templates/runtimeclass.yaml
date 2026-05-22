@@ -1,0 +1,23 @@
+{{- /*
+The general lane runs user code in Kata microVMs. v0.3.1 defaults to
+kata-qemu (works without nested virt, so it runs on plain Kind/dev nodes);
+flip runtime.defaultClass to kata-fc on bare-metal/KVM nodes.
+
+Most clusters install the RuntimeClass via their Kata operator, so this is
+OFF by default — set runtime.installRuntimeClass=true only if you want Helm
+to own it. The handler must match what containerd has registered.
+*/ -}}
+{{- if .Values.runtime.installRuntimeClass }}
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ .Values.runtime.defaultClass }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+handler: {{ .Values.runtime.handler | default .Values.runtime.defaultClass }}
+{{- with .Values.runtime.nodeSelector }}
+scheduling:
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+{{- end }}

@@ -4,45 +4,49 @@ sidebar_position: 1
 
 # Installation
 
+vibeD ships as a Helm chart and runs on any Kubernetes 1.29+ cluster with a compatible node pool. For a laptop setup, see [Local development](local-dev.md) instead.
+
 ## Prerequisites
 
-- **Go 1.25+** (or 1.23+ with `GOTOOLCHAIN=auto`)
-- **Kubernetes cluster** (Kind, Minikube, or production)
-- **Container runtime** (Docker or Podman)
-- **kubectl** configured to access your cluster
-- **Node.js 20+** (for frontend build)
+1. **A Kubernetes cluster** (EKS/GKE/AKS or on-prem), 1.29+.
+2. **[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) installed** (v0.4.5+). vibeD builds on its `Sandbox`, `SandboxTemplate`, `SandboxClaim`, and `SandboxWarmPool` CRDs and its controller. Install it before vibeD.
+3. **A Kata RuntimeClass** for the general lane — `kata-qemu` (works without nested virt) or `kata-fc` (Firecracker, needs KVM). The general lane runs user code in Kata microVMs.
+4. **A sandbox node pool** labeled `vibed.dev/sandbox-node: "true"` running `containerd` + `containerd-shim-kata-v2`. Kata + Firecracker needs KVM (bare metal, `*.metal` on AWS, or nested-virt images on GCP).
+5. **Object storage** (S3 or MinIO) for source tarballs in production — see [storage](../configuration/storage.md).
+6. **A DNS-01 capable DNS provider** (Cloudflare, Route53, …) for Caddy's wildcard TLS cert on `*.<your-domain>`.
 
-## Build from Source
-
-```bash
-git clone https://github.com/vibed-project/vibeD.git
-cd vibed
-
-# Build frontend + backend
-make build-all
-
-# Or just the Go binary (uses pre-built frontend)
-make build
-```
-
-## Install with Helm
+## Install
 
 ```bash
-# Install dependencies (Knative Serving)
-helm install vibed-deps deploy/helm/vibed-deps/
-
-# Install vibeD
 helm install vibed deploy/helm/vibed/ \
-  --set config.deployment.namespace=default
+  -n vibed-system --create-namespace \
+  --set controller.domain=apps.example.com \
+  --set config.storage.tarball.backend=s3 \
+  --set config.storage.tarball.s3.bucket=vibed-sources \
+  --set config.storage.tarball.s3.region=us-east-1
 ```
 
-## Verify Installation
+This installs the control plane (vibed, vibed-controller, vibed-router, Caddy) into `vibed-system` and the warm pools into the `vibed-apps` workloads namespace.
+
+:::warning CRD upgrades
+The `VibedApp` CRD lives in the chart's `crds/` directory. Helm installs CRDs **only on first install and never on `helm upgrade`**. After upgrading to a version that changes the CRD schema, apply it manually:
 
 ```bash
-# Check vibeD is running
-kubectl get pods -l app.kubernetes.io/name=vibed
-
-# Check the dashboard
-kubectl port-forward svc/vibed 8080:8080
-open http://localhost:8080
+kubectl apply -f deploy/helm/vibed/crds/vibed.dev_vibedapps.yaml
 ```
+:::
+
+## Verify
+
+```bash
+kubectl get pods -n vibed-system            # control plane Running
+kubectl get sandboxwarmpool -n vibed-apps   # warm pools populated
+```
+
+## Production essentials
+
+- **Source backend = `s3`.** The `served` backend (vibeD serves blobs from its own PVC) only works in dev. In production, sandboxes run under a restrictive NetworkPolicy with no cluster DNS, so the agent can only pull from a pre-signed S3/MinIO URL.
+- **Sandbox NetworkPolicy.** Set `runtime.sandboxNetworkPolicy: Unmanaged` and `networkPolicy.enabled: true` so vibeD owns a policy that permits exactly the control-plane → sandbox traffic plus DNS + S3 egress.
+- **Pin image tags** (not `latest`) and enable auth before exposing the API.
+
+See the [configuration reference](../configuration/config-reference.md) for every value, and the [production guide](../deployment/production-guide.md) for the full hardened setup.

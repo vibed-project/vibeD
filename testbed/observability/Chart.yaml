@@ -1,0 +1,37 @@
+apiVersion: v2
+name: observability
+description: LGTM-ish observability stack — Prometheus, Grafana, Tempo, Loki, Promtail, OTel Collector (testbed)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - observability
+  - prometheus
+  - grafana
+  - loki
+  - tempo
+  - otel
+home: https://github.com/maxkorbacher/vibed
+sources:
+  - https://github.com/maxkorbacher/vibed
+maintainers:
+  - name: vibeD
+dependencies:
+  - name: prometheus
+    version: "~28.0"
+    repository: https://prometheus-community.github.io/helm-charts
+  - name: grafana
+    version: "~10.0"
+    repository: https://grafana.github.io/helm-charts
+  - name: tempo
+    version: "~1.24"
+    repository: https://grafana.github.io/helm-charts
+  - name: loki
+    version: "~6.55"
+    repository: https://grafana.github.io/helm-charts
+  - name: promtail
+    version: "~6.17"
+    repository: https://grafana.github.io/helm-charts
+  - name: opentelemetry-collector
+    version: "~0.147"
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts

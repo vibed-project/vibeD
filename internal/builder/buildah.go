@@ -18,6 +18,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // BuildahBuilder builds container images by creating Kubernetes Jobs
@@ -85,10 +87,24 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 			files[e.Name()] = ""
 		}
 	}
-	dockerfile := GenerateDockerfile(req.Language, files)
+	
 	dockerfilePath := filepath.Join(req.SourceDir, "Dockerfile")
-	if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0644); err != nil {
-		return nil, fmt.Errorf("writing Dockerfile: %w", err)
+	
+	// Check if a Dockerfile already exists (case-insensitive check)
+	hasCustomDockerfile := false
+	for name := range files {
+		if strings.EqualFold(name, "Dockerfile") {
+			hasCustomDockerfile = true
+			b.logger.Info("using provided custom Dockerfile", "file", name)
+			break
+		}
+	}
+
+	if !hasCustomDockerfile {
+		dockerfile := GenerateDockerfile(req.Language, files)
+		if err := os.WriteFile(dockerfilePath, []byte(dockerfile), 0644); err != nil {
+			return nil, fmt.Errorf("writing generated Dockerfile: %w", err)
+		}
 	}
 
 	// 2. Compute sub-path relative to PVC mount
@@ -111,34 +127,65 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 	if b.insecure {
 		tlsVerify = "false"
 	}
-	buildCmd := fmt.Sprintf(
-		"buildah bud --storage-driver=vfs --isolation=chroot -t %s /workspace && "+
-			"buildah push --storage-driver=vfs --tls-verify=%s %s docker://%s",
-		req.ImageName, tlsVerify, req.ImageName, req.ImageName,
-	)
+	// After push, write the manifest digest to a marker line vibeD parses
+	// from the Job logs. We pin the deployed image to image@sha256 so
+	// redeploys can't accidentally pull a different blob from registry cache.
+	buildScript := `set -e
+buildah bud --storage-driver=vfs --isolation=chroot -t "$1" /workspace
+buildah push --storage-driver=vfs --tls-verify="$2" --digestfile /tmp/vibed-digest "$1" "docker://$1"
+echo "VIBED_DIGEST=$(cat /tmp/vibed-digest)"`
 
 	// 5. Create K8s Job
+	ns := req.Namespace
+	if ns == "" {
+	        ns = b.namespace // fallback to global
+	}
+
+	jobLabels := map[string]string{
+		"app.kubernetes.io/managed-by": "vibed",
+		"vibed.dev/component":          "build",
+	}
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		jobLabels["vibed.dev/trace-id"] = span.SpanContext().TraceID().String()
+	}
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
-			Namespace: b.namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "vibed",
-				"vibed.dev/component":          "build",
-			},
+			Namespace: ns,
+			Labels:    jobLabels,
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            ptr.To(int32(0)),
-			TTLSecondsAfterFinished: ptr.To(int32(120)),
+			// Tolerate transient pull/registry/eviction failures with up to
+			// 2 retries, but cap the entire build via ActiveDeadlineSeconds
+			// so a stuck pod doesn't block the artifact forever.
+			BackoffLimit:            ptr.To(int32(2)),
+			ActiveDeadlineSeconds:   ptr.To(int64(b.timeout.Seconds())),
+			// Keep the Job around for 10 minutes after completion so
+			// fetchJobLogs has a chance to grab logs even after a vibeD
+			// restart. Stale finished Jobs get GC'd by the periodic GC sweep.
+			TTLSecondsAfterFinished: ptr.To(int32(600)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
+					// Pod-level securityContext: tighten what we can while
+					// still allowing rootless Buildah to function. Buildah's
+					// in-pod uid-mapping needs newuidmap (setuid binary), so
+					// AllowPrivilegeEscalation cannot be set to false on the
+					// container — keep this Job's namespace at PSA `baseline`
+					// or higher.
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: ptr.To(true),
+						RunAsUser:    ptr.To(int64(1000)),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:    "buildah",
 							Image:   b.buildahImage,
 							Command: []string{"sh", "-c"},
-							Args:    []string{buildCmd},
+							Args:    []string{buildScript, "build-script", req.ImageName, tlsVerify},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      "source",
@@ -149,7 +196,8 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 							},
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"SETUID", "SETGID"},
+									Drop: []corev1.Capability{"ALL"},
+									Add:  []corev1.Capability{"SETUID", "SETGID"},
 								},
 							},
 						},
@@ -168,78 +216,122 @@ func (b *BuildahBuilder) Build(ctx context.Context, req BuildRequest) (*BuildRes
 			},
 		},
 	}
+b.logger.Info("creating build Job", "job", jobName, "namespace", ns)
+_, err = b.clientset.BatchV1().Jobs(ns).Create(ctx, job, metav1.CreateOptions{})
+if k8serrors.IsAlreadyExists(err) {
+        b.logger.Warn("stale build Job exists, deleting and retrying", "job", jobName)
+        b.cleanup(ctx, ns, jobName)
 
-	b.logger.Info("creating build Job", "job", jobName, "namespace", b.namespace)
-	_, err = b.clientset.BatchV1().Jobs(b.namespace).Create(ctx, job, metav1.CreateOptions{})
-	if k8serrors.IsAlreadyExists(err) {
-		b.logger.Warn("stale build Job exists, deleting and retrying", "job", jobName)
-		b.cleanup(ctx, jobName)
-		time.Sleep(2 * time.Second)
-		_, err = b.clientset.BatchV1().Jobs(b.namespace).Create(ctx, job, metav1.CreateOptions{})
-	}
+        // Wait for deletion with exponential backoff rather than a fixed 2s sleep
+        interval := 100 * time.Millisecond
+        for i := 0; i < 15; i++ {
+                _, checkErr := b.clientset.BatchV1().Jobs(ns).Get(ctx, jobName, metav1.GetOptions{})
+                if k8serrors.IsNotFound(checkErr) {
+                        break
+                }
+                time.Sleep(interval)
+                interval *= 2
+                if interval > 2*time.Second {
+                        interval = 2 * time.Second
+                }
+        }
+
+        _, err = b.clientset.BatchV1().Jobs(ns).Create(ctx, job, metav1.CreateOptions{})
+}
 	if err != nil {
 		return nil, fmt.Errorf("creating build Job: %w", err)
 	}
 
 	// 6. Wait for Job completion
-	err = b.waitForJob(ctx, jobName)
+	err = b.waitForJob(ctx, ns, jobName)
 	if err != nil {
 		// Fetch logs for debugging
-		logs := b.fetchJobLogs(ctx, jobName)
-		b.cleanup(ctx, jobName)
+		logs := b.fetchJobLogs(ctx, ns, jobName)
+		b.cleanup(ctx, ns, jobName)
 		return nil, fmt.Errorf("build failed: %w\nBuild logs:\n%s", err, logs)
-	}
+		}
 
-	b.logger.Info("build completed", "image", req.ImageName)
-	b.cleanup(ctx, jobName)
+	// Parse pushed-image digest from Job logs before cleanup. Best-effort:
+	// digest pinning is an optimization, not a hard requirement.
+	digest := parseDigestFromLogs(b.fetchJobLogs(ctx, ns, jobName))
+	b.logger.Info("build completed", "image", req.ImageName, "digest", digest)
+	b.cleanup(ctx, ns, jobName)
 
 	return &BuildResult{
 		ImageRef: req.ImageName,
+		Digest:   digest,
 	}, nil
 }
 
-func (b *BuildahBuilder) waitForJob(_ context.Context, jobName string) error {
-	// Use a detached context so MCP client disconnects don't kill the build.
-	waitCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
+// parseDigestFromLogs extracts the value of the marker line we emit after
+// a successful push: "VIBED_DIGEST=sha256:...". Returns "" if absent.
+func parseDigestFromLogs(logs string) string {
+	const marker = "VIBED_DIGEST="
+	for _, line := range strings.Split(logs, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, marker) {
+			d := strings.TrimPrefix(line, marker)
+			if strings.HasPrefix(d, "sha256:") {
+				return d
+			}
+		}
+	}
+	return ""
+}
+
+func (b *BuildahBuilder) waitForJob(ctx context.Context, namespace, jobName string) error {
+	// Honor the parent context (orchestrator lifecycle) AND cap with timeout.
+	// This way SIGTERM cancels in-flight builds instead of leaking them, and
+	// runaway builds still hit the b.timeout ceiling.
+	waitCtx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	interval := 2 * time.Second
 
 	for {
+		// Check context before doing API call
 		select {
 		case <-waitCtx.Done():
 			return fmt.Errorf("build timed out after %v", b.timeout)
-		case <-ticker.C:
-			job, err := b.clientset.BatchV1().Jobs(b.namespace).Get(waitCtx, jobName, metav1.GetOptions{})
-			if err != nil {
-				return fmt.Errorf("checking Job status: %w", err)
-			}
+		default:
+		}
 
-			if job.Status.Succeeded > 0 {
-				return nil
-			}
-			if job.Status.Failed > 0 {
-				return fmt.Errorf("build Job failed")
+		job, err := b.clientset.BatchV1().Jobs(namespace).Get(waitCtx, jobName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("checking Job status: %w", err)
+		}
+
+		if job.Status.Succeeded > 0 {
+			return nil
+		}
+		if job.Status.Failed > 0 {
+			return fmt.Errorf("build Job failed")
+		}
+
+		// Wait with exponential backoff
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("build timed out after %v", b.timeout)
+		case <-time.After(interval):
+			if interval < 15*time.Second {
+				interval = time.Duration(float64(interval) * 1.5)
 			}
 		}
 	}
 }
 
-func (b *BuildahBuilder) fetchJobLogs(_ context.Context, jobName string) string {
-	logCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+func (b *BuildahBuilder) fetchJobLogs(_ context.Context, namespace, jobName string) string {
+        logCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+        defer cancel()
 
-	pods, err := b.clientset.CoreV1().Pods(b.namespace).List(logCtx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+        pods, err := b.clientset.CoreV1().Pods(namespace).List(logCtx, metav1.ListOptions{		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
 	})
 	if err != nil || len(pods.Items) == 0 {
 		return "(no build logs available)"
 	}
 
 	tailLines := int64(50)
-	req := b.clientset.CoreV1().Pods(b.namespace).GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{
-		TailLines: &tailLines,
+	req := b.clientset.CoreV1().Pods(namespace).GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{		TailLines: &tailLines,
 	})
 	stream, err := req.Stream(logCtx)
 	if err != nil {
@@ -255,13 +347,12 @@ func (b *BuildahBuilder) fetchJobLogs(_ context.Context, jobName string) string 
 	return strings.Join(lines, "\n")
 }
 
-func (b *BuildahBuilder) cleanup(_ context.Context, jobName string) {
-	cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+func (b *BuildahBuilder) cleanup(_ context.Context, namespace, jobName string) {
+        cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
 
-	propagation := metav1.DeletePropagationBackground
-	err := b.clientset.BatchV1().Jobs(b.namespace).Delete(cleanCtx, jobName, metav1.DeleteOptions{
-		PropagationPolicy: &propagation,
+        propagation := metav1.DeletePropagationBackground
+        err := b.clientset.BatchV1().Jobs(namespace).Delete(cleanCtx, jobName, metav1.DeleteOptions{		PropagationPolicy: &propagation,
 	})
 	if err != nil && !k8serrors.IsNotFound(err) {
 		b.logger.Warn("failed to cleanup build Job", "job", jobName, "error", err)

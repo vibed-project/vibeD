@@ -1,0 +1,79 @@
+# Local Kind dev overlay for the v0.3.1 stack.
+#
+#   helm upgrade --install vibed deploy/helm/vibed -n vibed-system \
+#     -f deploy/helm/vibed/values-kind.yaml
+#
+# Kind has no Kata, so runtime.defaultClass is empty (warm pools run as
+# normal pods). Only the lightweight static-nginx pool is enabled to keep
+# image builds small; workerd is off. All images are the locally built :dev
+# tags loaded via `kind load`, pulled Never.
+
+image:
+  repository: localhost/vibed
+  tag: dev
+  pullPolicy: Never
+
+service:
+  type: NodePort
+  nodePort: 31808
+
+runtime:
+  defaultClass: ""          # no Kata on Kind → schedule as normal pods
+  installRuntimeClass: false
+  # Open sandbox networking so the controller can probe the agent, the agent
+  # can pull source from the in-cluster blob store, and Caddy can proxy.
+  sandboxNetworkPolicy: Unmanaged
+
+# (Single workloads namespace is now the chart default — vibed-apps — so no
+# namespace override is needed here.)
+
+controller:
+  image: { repository: localhost/vibed-controller, tag: dev, pullPolicy: Never }
+  domain: localhost
+  # Dev Caddy serves plain HTTP via a port-forward on host:18080
+  # (kubectl port-forward svc/vibed-caddy 18080:80), so published app URLs are
+  # http://<label>.localhost:18080 — directly openable in Chrome/Firefox.
+  urlScheme: http
+  urlPort: "18080"
+
+router:
+  image: { repository: localhost/vibed-router, tag: dev, pullPolicy: Never }
+
+caddy:
+  # stock upstream caddy image; no DNS-01 on dev (plain HTTP).
+  image: { repository: caddy, tag: 2-alpine, pullPolicy: IfNotPresent }
+  tls:
+    dns01:
+      enabled: false
+
+workerd:
+  enabled: false
+
+# Only static-nginx is built + loaded for this test; disable the rest so the
+# controller doesn't claim against pools whose images aren't present.
+warmPools:
+  static-nginx: { enabled: true,  lane: fast,    image: "localhost/vibed-template-static-nginx:dev", replicas: 2, resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { cpu: 200m, memory: 128Mi } } }
+  node-24:      { enabled: false }
+  python-313:   { enabled: false }
+  go-123:       { enabled: false }
+  base-al2023:  { enabled: false }
+
+config:
+  server:
+    transport: "http"
+    baseURL: "http://localhost:31808"
+  store:
+    backend: "sqlite"
+    sqlite:
+      path: "/data/vibed/vibed.db"
+  storage:
+    tarball:
+      backend: "served"
+      served:
+        # Empty -> the chart defaults this to the in-cluster Service DNS name
+        # (http://vibed.vibed-system.svc.cluster.local:8080). In dev the
+        # sandboxes run Unmanaged (no agent-sandbox NetworkPolicy) so they keep
+        # normal cluster DNS and can resolve it. The DNS name is stable across
+        # reinstalls — don't hardcode the Service ClusterIP, which changes every
+        # `helm install` and silently breaks the agent's source pull.
+        publicBaseURL: ""

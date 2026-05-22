@@ -29,14 +29,14 @@ List all version snapshots for a deployed artifact, ordered by version number. E
     {
       "version": 1,
       "status": "running",
-      "url": "http://my-portfolio.default.127.0.0.1.sslip.io:31080",
+      "url": "http://my-portfolio.default.localhost:31080",
       "image_ref": "kind-registry:5000/vibed-artifacts/my-portfolio:v1",
       "created_at": "2026-03-14T10:00:00Z"
     },
     {
       "version": 2,
       "status": "running",
-      "url": "http://my-portfolio.default.127.0.0.1.sslip.io:31080",
+      "url": "http://my-portfolio.default.localhost:31080",
       "image_ref": "kind-registry:5000/vibed-artifacts/my-portfolio:v2",
       "created_at": "2026-03-14T12:30:00Z"
     }

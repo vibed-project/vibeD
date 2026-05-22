@@ -1,0 +1,87 @@
+{{- if .Values.router.enabled }}
+{{- $fullName := include "vibed.fullname" . }}
+{{- $sa := printf "%s-router" $fullName }}
+{{- $caddyAdmin := printf "http://%s-caddy.%s.svc.cluster.local:2019" $fullName .Release.Namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: router
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullName }}-router
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+rules:
+  # The router only reads VibedApp status to program Caddy — never writes.
+  - apiGroups: ["vibed.dev"]
+    resources: ["vibedapps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullName }}-router
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullName }}-router
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-router
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: router
+spec:
+  replicas: {{ .Values.router.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vibed.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: router
+  template:
+    metadata:
+      labels:
+        {{- include "vibed.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: router
+    spec:
+      serviceAccountName: {{ $sa }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: router
+          image: "{{ .Values.router.image.repository }}:{{ .Values.router.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.router.image.pullPolicy }}
+          args:
+            - --caddy-admin={{ $caddyAdmin }}
+          ports:
+            - { name: metrics, containerPort: 8083 }
+            - { name: probes, containerPort: 8084 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: probes }
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: probes }
+            initialDelaySeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            {{- toYaml .Values.router.resources | nindent 12 }}
+{{- end }}

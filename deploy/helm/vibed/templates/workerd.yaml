@@ -1,0 +1,92 @@
+{{- if .Values.workerd.enabled }}
+{{- $fullName := include "vibed.fullname" . }}
+{{- $name := printf "%s-workerd" $fullName }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workerd
+spec:
+  clusterIP: None # headless → per-pod DNS for the controller's shard addressing
+  selector:
+    {{- include "vibed.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: workerd
+  ports:
+    - { name: control, port: {{ .Values.workerd.controlPort }}, targetPort: {{ .Values.workerd.controlPort }} }
+    - { name: app0,    port: {{ .Values.workerd.portBase }},    targetPort: {{ .Values.workerd.portBase }} }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workerd
+spec:
+  serviceName: {{ $name }}
+  replicas: {{ .Values.workerd.replicas }}
+  selector:
+    matchLabels:
+      {{- include "vibed.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: workerd
+  template:
+    metadata:
+      labels:
+        {{- include "vibed.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: workerd
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: workerd
+          image: "{{ .Values.workerd.image.repository }}:{{ .Values.workerd.image.tag }}"
+          imagePullPolicy: {{ .Values.workerd.image.pullPolicy }}
+          args: ["serve", "/var/lib/workerd/config.capnp", "--watch"]
+          ports:
+            - { name: app0, containerPort: {{ .Values.workerd.portBase }} }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "1",    memory: "512Mi" }
+          volumeMounts:
+            - { name: workerd-data, mountPath: /var/lib/workerd }
+        - name: loader
+          image: "{{ .Values.workerd.loaderImage.repository }}:{{ .Values.workerd.loaderImage.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.workerd.loaderImage.pullPolicy }}
+          args:
+            - --listen=:{{ .Values.workerd.controlPort }}
+            - --base-dir=/var/lib/workerd
+            - --port-base={{ .Values.workerd.portBase }}
+          env:
+            - name: VIBED_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullName }}-agent-token
+                  key: token
+                  optional: true
+          ports:
+            - { name: control, containerPort: {{ .Values.workerd.controlPort }} }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "200m", memory: "128Mi" }
+          volumeMounts:
+            - { name: workerd-data, mountPath: /var/lib/workerd }
+      volumes:
+        - name: workerd-data
+          emptyDir: { sizeLimit: 256Mi }
+{{- end }}

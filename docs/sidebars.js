@@ -10,7 +10,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Concepts',
-      items: ['concepts/architecture', 'concepts/deployment-targets', 'concepts/artifact-lifecycle'],
+      items: ['concepts/architecture', 'concepts/lanes-and-templates', 'concepts/app-lifecycle'],
     },
     {
       type: 'category',
@@ -22,7 +22,6 @@ const sidebars = {
       label: 'Deployment',
       items: [
         'deployment/production-guide',
-        'deployment/knative-setup',
         'deployment/monitoring',
         'deployment/troubleshooting',
       ],

@@ -10,8 +10,8 @@ type DeploymentTarget string
 
 const (
 	TargetAuto       DeploymentTarget = "auto"
-	TargetKnative    DeploymentTarget = "knative"
 	TargetKubernetes DeploymentTarget = "kubernetes"
+	TargetSandbox    DeploymentTarget = "sandbox"
 )
 
 // ArtifactStatus represents the lifecycle state of a deployed artifact.
@@ -26,27 +26,40 @@ const (
 	StatusDeleted   ArtifactStatus = "deleted"
 )
 
+// DeployMode is retained as a persisted artifact attribute. With the legacy
+// Instant-Preview path removed in v0.3.1 every artifact is ModeBuilt; the type
+// stays so the store schema (and any historical "preview" rows) round-trip
+// cleanly, and so a future mode distinction can slot in without a migration.
+type DeployMode string
+
+const (
+	// ModeBuilt is a durable artifact backed by a built or static image.
+	ModeBuilt DeployMode = "built"
+)
+
 // Artifact is the central domain object representing a deployed workload.
 type Artifact struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name"`
-	OwnerID    string            `json:"owner_id,omitempty"`
-	Status     ArtifactStatus    `json:"status"`
-	Target     DeploymentTarget  `json:"target"`
-	ImageRef   string            `json:"image_ref,omitempty"`
-	URL        string            `json:"url,omitempty"`
-	Port       int               `json:"port,omitempty"`
-	EnvVars    map[string]string `json:"env_vars,omitempty"`
-	SecretRefs map[string]string `json:"secret_refs,omitempty"` // env var name → "secret-name:key"
-	Language   string            `json:"language,omitempty"`
-	StaticFiles string           `json:"static_files,omitempty"` // ConfigMap name for static content (skip build)
-	Error       string           `json:"error,omitempty"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
-	StorageRef  string           `json:"storage_ref,omitempty"`
-	Version     int              `json:"version"`                    // Current version number (1-based, 0 = pre-versioning)
-	VersionID   string           `json:"version_id,omitempty"`       // Unique ID for this version snapshot
-	SharedWith  []string         `json:"shared_with,omitempty"`      // UserIDs with read-only access
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	OwnerID     string            `json:"owner_id,omitempty"`
+	Namespace   string            `json:"namespace,omitempty"`
+	Status      ArtifactStatus    `json:"status"`
+	Target      DeploymentTarget  `json:"target"`
+	ImageRef    string            `json:"image_ref,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	Port        int               `json:"port,omitempty"`
+	EnvVars     map[string]string `json:"-"`
+	SecretRefs  map[string]string `json:"-"` // env var name → "secret-name:key"
+	Language    string            `json:"language,omitempty"`
+	Mode        DeployMode        `json:"mode,omitempty"`         // "preview" (fast-path runner) or "built"
+	StaticFiles string            `json:"static_files,omitempty"` // ConfigMap name for static content (skip build)
+	Error       string            `json:"error,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	StorageRef  string            `json:"storage_ref,omitempty"`
+	Version     int               `json:"version"`               // Current version number (1-based, 0 = pre-versioning)
+	VersionID   string            `json:"version_id,omitempty"`  // Unique ID for this version snapshot
+	SharedWith  []string          `json:"shared_with,omitempty"` // UserIDs with read-only access
 }
 
 // ArtifactSummary is a lightweight view of an artifact for list responses.
@@ -54,8 +67,10 @@ type ArtifactSummary struct {
 	ID         string           `json:"id"`
 	Name       string           `json:"name"`
 	OwnerID    string           `json:"owner_id,omitempty"`
+	Namespace  string           `json:"namespace,omitempty"`
 	Status     ArtifactStatus   `json:"status"`
 	Target     DeploymentTarget `json:"target"`
+	Mode       DeployMode       `json:"mode,omitempty"`
 	URL        string           `json:"url,omitempty"`
 	CreatedAt  time.Time        `json:"created_at"`
 	UpdatedAt  time.Time        `json:"updated_at"`
@@ -70,8 +85,8 @@ type ArtifactVersion struct {
 	Version    int               `json:"version"`
 	ImageRef   string            `json:"image_ref"`
 	StorageRef string            `json:"storage_ref,omitempty"`
-	EnvVars    map[string]string `json:"env_vars,omitempty"`
-	SecretRefs map[string]string `json:"secret_refs,omitempty"`
+	EnvVars    map[string]string `json:"-"`
+	SecretRefs map[string]string `json:"-"`
 	Status     ArtifactStatus    `json:"status"`
 	URL        string            `json:"url,omitempty"`
 	CreatedAt  time.Time         `json:"created_at"`
@@ -103,6 +118,7 @@ type UserWithKey struct {
 type Department struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
+	Namespace string    `json:"namespace"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -161,6 +177,7 @@ func (a *Artifact) ToSummary() ArtifactSummary {
 		OwnerID:    a.OwnerID,
 		Status:     a.Status,
 		Target:     a.Target,
+		Mode:       a.Mode,
 		URL:        a.URL,
 		CreatedAt:  a.CreatedAt,
 		UpdatedAt:  a.UpdatedAt,

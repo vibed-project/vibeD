@@ -53,7 +53,6 @@ auth:
 - Keys also support `file:/path/to/token` to read tokens from files
 - Each key has a human-readable `name` used as the user identity (UserID) for ownership
 - Optional `scopes` restrict what the key can do (empty = unrestricted)
-- Optional `storage` block overrides the storage backend for this user (see [Per-User Multi-Repo Storage](./storage.md#per-user-multi-repo-storage))
 - Constant-time comparison prevents timing attacks
 
 ### OIDC Mode
@@ -261,10 +260,6 @@ When authentication is enabled, vibeD enforces per-user artifact isolation:
 - Accessing another user's artifact returns "not found" (not "forbidden") to avoid leaking artifact existence
 
 When authentication is disabled, ownership checks are skipped and all users see all artifacts.
-
-### Per-User Storage
-
-Each API key can optionally define a dedicated storage backend (GitHub or GitLab repository), ensuring complete artifact isolation. See [Per-User Multi-Repo Storage](./storage.md#per-user-multi-repo-storage) for configuration details.
 
 ## Connecting MCP Clients
 

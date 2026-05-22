@@ -1,0 +1,108 @@
+# vibed-workerd — the fast-lane runtime (refactor.md §5.6).
+#
+# Each replica runs two containers sharing an emptyDir at /var/lib/workerd:
+#   * workerd       — serves the rendered config.capnp (many isolates, one
+#                     socket per app on ports 9100+).
+#   * loader sidecar (vibed-workerd-loader) — owns the script set and config;
+#                     vibed-controller POSTs deploys to its control API (:9200)
+#                     and the controller shards apps by hash(app_id) % replicas.
+#
+# A headless Service gives each pod stable DNS
+# (vibed-workerd-<idx>.vibed-workerd.<ns>.svc.cluster.local) so the controller
+# can address the exact replica an app shards to.
+#
+# CAVEATS (see internal/workerd loader.go): the config.capnp schema and the
+# `workerd serve --watch` reload behavior are written to the documented
+# workerd contract but not validated against a live workerd binary here. The
+# `image:` is a placeholder — there is no official slim workerd image; build
+# one (or pin a community image) before deploying. This manifest folds into
+# the Helm chart in milestone F6.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vibed-workerd
+  namespace: vibed-system
+  labels:
+    app.kubernetes.io/name: vibed-workerd
+    app.kubernetes.io/managed-by: vibed
+spec:
+  clusterIP: None # headless → per-pod DNS
+  selector:
+    app.kubernetes.io/name: vibed-workerd
+  ports:
+    - { name: control, port: 9200, targetPort: 9200 }
+    # App sockets (9100+) are reached per-pod by the router via pod DNS; they
+    # don't need to be in the Service, but we expose a range hint for clarity.
+    - { name: app0, port: 9100, targetPort: 9100 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vibed-workerd
+  namespace: vibed-system
+  labels:
+    app.kubernetes.io/name: vibed-workerd
+    app.kubernetes.io/managed-by: vibed
+spec:
+  serviceName: vibed-workerd
+  replicas: 3 # refactor.md §8 fastLane.workerd.replicas; keep in sync with the controller's --workerd-replicas
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vibed-workerd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vibed-workerd
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: workerd
+          # Placeholder — supply a real workerd image before deploying.
+          image: ghcr.io/vibed-project/workerd:dev
+          imagePullPolicy: IfNotPresent
+          # --watch reloads when the loader rewrites config.capnp.
+          args: ["serve", "/var/lib/workerd/config.capnp", "--watch"]
+          ports:
+            - { name: app0, containerPort: 9100 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "1",    memory: "512Mi" }
+          volumeMounts:
+            - { name: workerd-data, mountPath: /var/lib/workerd }
+        - name: loader
+          image: ghcr.io/vibed-project/vibed-workerd-loader:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --listen=:9200
+            - --base-dir=/var/lib/workerd
+            - --port-base=9100
+          env:
+            - name: VIBED_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vibed-agent-token
+                  key: token
+                  optional: true
+          ports:
+            - { name: control, containerPort: 9200 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi"  }
+            limits:   { cpu: "200m", memory: "128Mi" }
+          volumeMounts:
+            - { name: workerd-data, mountPath: /var/lib/workerd }
+      volumes:
+        - name: workerd-data
+          emptyDir: { sizeLimit: 256Mi }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -17,17 +16,18 @@ import (
 
 const schema = `
 CREATE TABLE IF NOT EXISTS artifacts (
-	id           TEXT PRIMARY KEY,
-	name         TEXT UNIQUE NOT NULL,
-	owner_id     TEXT NOT NULL DEFAULT '',
-	status       TEXT NOT NULL,
-	target       TEXT NOT NULL DEFAULT '',
-	image_ref    TEXT NOT NULL DEFAULT '',
-	url          TEXT NOT NULL DEFAULT '',
-	port         INTEGER NOT NULL DEFAULT 0,
-	env_vars     TEXT NOT NULL DEFAULT '{}',
-	secret_refs  TEXT NOT NULL DEFAULT '{}',
-	language     TEXT NOT NULL DEFAULT '',
+        id           TEXT PRIMARY KEY,
+        name         TEXT UNIQUE NOT NULL,
+        owner_id     TEXT NOT NULL DEFAULT '',
+        namespace    TEXT NOT NULL DEFAULT '',
+        status       TEXT NOT NULL,
+        target       TEXT NOT NULL DEFAULT '',
+        mode         TEXT NOT NULL DEFAULT '',
+        image_ref    TEXT NOT NULL DEFAULT '',
+        url          TEXT NOT NULL DEFAULT '',
+        port         INTEGER NOT NULL DEFAULT 0,
+        env_vars     TEXT NOT NULL DEFAULT '{}',
+        secret_refs  TEXT NOT NULL DEFAULT '{}',	language     TEXT NOT NULL DEFAULT '',
 	static_files TEXT NOT NULL DEFAULT '',
 	error        TEXT NOT NULL DEFAULT '',
 	created_at   TEXT NOT NULL,
@@ -80,16 +80,27 @@ CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact_id ON artifact_version
 CREATE INDEX IF NOT EXISTS idx_share_links_artifact_id ON share_links(artifact_id);
 
 CREATE TABLE IF NOT EXISTS departments (
-	id         TEXT PRIMARY KEY,
-	name       TEXT UNIQUE NOT NULL,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-);
-`
+        id         TEXT PRIMARY KEY,
+        name       TEXT UNIQUE NOT NULL,
+        namespace  TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+);`
 
 // SQLiteStore is a persistent ArtifactStore backed by SQLite.
 type SQLiteStore struct {
 	db *sql.DB
+
+	// Prepared statements for hot paths
+	stmtGetArtifact       *sql.Stmt
+	stmtGetArtifactByName *sql.Stmt
+	stmtCreateArtifact    *sql.Stmt
+	stmtUpdateArtifact    *sql.Stmt
+	stmtDeleteArtifact    *sql.Stmt
+	stmtCreateVersion     *sql.Stmt
+	stmtListVersions      *sql.Stmt
+	stmtGetUser           *sql.Stmt
+	stmtGetUserByName     *sql.Stmt
 }
 
 // NewSQLiteStore opens (or creates) a SQLite database at the given path
@@ -119,8 +130,19 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	}
 
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("creating schema: %w", err)
+	        db.Close()
+	        return nil, fmt.Errorf("initializing schema: %w", err)
+	}
+
+	// Migrations
+	if _, err := db.Exec(`ALTER TABLE artifacts ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`); err != nil {
+	        // Ignore duplicate column error
+	}
+	if _, err := db.Exec(`ALTER TABLE artifacts ADD COLUMN mode TEXT NOT NULL DEFAULT ''`); err != nil {
+	        // Ignore duplicate column error — added for the Instant Preview fast path
+	}
+	if _, err := db.Exec(`ALTER TABLE departments ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`); err != nil {
+	        // Ignore duplicate column error
 	}
 
 	// Migration: add department_id to users if missing
@@ -139,11 +161,116 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		}
 	}
 
-	return &SQLiteStore{db: db}, nil
+	s := &SQLiteStore{db: db}
+
+	// Prepare hot-path statements
+	if err := s.prepareStatements(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("preparing statements: %w", err)
+	}
+
+	return s, nil
 }
 
-// Close closes the database connection.
+func (s *SQLiteStore) prepareStatements() error {
+	var err error
+
+	s.stmtGetArtifact, err = s.db.Prepare(`SELECT id, name, owner_id, namespace, status, target, mode, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE id = ?`)
+	if err != nil {
+	        return err
+	}
+
+	s.stmtGetArtifactByName, err = s.db.Prepare(`SELECT id, name, owner_id, namespace, status, target, mode, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with FROM artifacts WHERE name = ?`)
+	if err != nil {
+	        return err
+	}
+
+	s.stmtCreateArtifact, err = s.db.Prepare(`
+	        INSERT INTO artifacts (
+	                id, name, owner_id, namespace, status, target, mode, image_ref, url, port, env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref, version, version_id, shared_with
+	        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+	        return err
+	}
+
+	s.stmtUpdateArtifact, err = s.db.Prepare(`
+	        UPDATE artifacts SET
+	                name = ?, owner_id = ?, namespace = ?, status = ?, target = ?, mode = ?, image_ref = ?, url = ?, port = ?,
+	                env_vars = ?, secret_refs = ?, language = ?, static_files = ?, error = ?, created_at = ?, updated_at = ?,
+	                storage_ref = ?, version = ?, version_id = ?, shared_with = ?
+	        WHERE id = ?
+	`)
+	if err != nil {
+		return err
+	}
+
+	s.stmtDeleteArtifact, err = s.db.Prepare(`DELETE FROM artifacts WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+
+	s.stmtCreateVersion, err = s.db.Prepare(`
+		INSERT INTO artifact_versions (
+			version_id, artifact_id, version, image_ref, storage_ref, env_vars, secret_refs, status, url, created_at, created_by
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+
+	s.stmtListVersions, err = s.db.Prepare(`
+		SELECT version_id, artifact_id, version, image_ref, storage_ref, env_vars, secret_refs, status, url, created_at, created_by 
+		FROM artifact_versions 
+		WHERE artifact_id = ? 
+		ORDER BY version ASC
+	`)
+	if err != nil {
+		return err
+	}
+
+	s.stmtGetUser, err = s.db.Prepare(`SELECT id, name, email, role, status, provider, department_id, api_key_hash, created_at, updated_at FROM users WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+
+	s.stmtGetUserByName, err = s.db.Prepare(`SELECT id, name, email, role, status, provider, department_id, api_key_hash, created_at, updated_at FROM users WHERE name = ? COLLATE NOCASE`)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Close closes the database and all prepared statements.
 func (s *SQLiteStore) Close() error {
+	if s.stmtGetArtifact != nil {
+		s.stmtGetArtifact.Close()
+	}
+	if s.stmtGetArtifactByName != nil {
+		s.stmtGetArtifactByName.Close()
+	}
+	if s.stmtCreateArtifact != nil {
+		s.stmtCreateArtifact.Close()
+	}
+	if s.stmtUpdateArtifact != nil {
+		s.stmtUpdateArtifact.Close()
+	}
+	if s.stmtDeleteArtifact != nil {
+		s.stmtDeleteArtifact.Close()
+	}
+	if s.stmtCreateVersion != nil {
+		s.stmtCreateVersion.Close()
+	}
+	if s.stmtListVersions != nil {
+		s.stmtListVersions.Close()
+	}
+	if s.stmtGetUser != nil {
+		s.stmtGetUser.Close()
+	}
+	if s.stmtGetUserByName != nil {
+		s.stmtGetUserByName.Close()
+	}
 	return s.db.Close()
 }
 
@@ -161,16 +288,12 @@ func (s *SQLiteStore) Create(ctx context.Context, artifact *api.Artifact) error 
 		return fmt.Errorf("marshaling shared_with: %w", err)
 	}
 
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO artifacts (id, name, owner_id, status, target, image_ref, url, port,
-			env_vars, secret_refs, language, static_files, error, created_at, updated_at, storage_ref,
-			version, version_id, shared_with)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		artifact.ID, artifact.Name, artifact.OwnerID, string(artifact.Status),
-		string(artifact.Target), artifact.ImageRef, artifact.URL, artifact.Port,
-		string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
-		artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
-		artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
+	_, err = s.stmtCreateArtifact.ExecContext(ctx,
+	        artifact.ID, artifact.Name, artifact.OwnerID, artifact.Namespace, string(artifact.Status),
+	        string(artifact.Target), string(artifact.Mode), artifact.ImageRef, artifact.URL, artifact.Port,
+	        string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
+	        artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
+	        artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -182,11 +305,7 @@ func (s *SQLiteStore) Create(ctx context.Context, artifact *api.Artifact) error 
 }
 
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*api.Artifact, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, owner_id, status, target, image_ref, url, port,
-			env_vars, secret_refs, language, static_files, error, created_at, updated_at,
-			storage_ref, version, version_id, shared_with
-		FROM artifacts WHERE id = ?`, id)
+	row := s.stmtGetArtifact.QueryRowContext(ctx, id)
 
 	a, err := scanArtifact(row)
 	if err == sql.ErrNoRows {
@@ -199,11 +318,7 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*api.Artifact, error)
 }
 
 func (s *SQLiteStore) GetByName(ctx context.Context, name string) (*api.Artifact, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, owner_id, status, target, image_ref, url, port,
-			env_vars, secret_refs, language, static_files, error, created_at, updated_at,
-			storage_ref, version, version_id, shared_with
-		FROM artifacts WHERE name = ?`, name)
+	row := s.stmtGetArtifactByName.QueryRowContext(ctx, name)
 
 	a, err := scanArtifact(row)
 	if err == sql.ErrNoRows {
@@ -216,28 +331,37 @@ func (s *SQLiteStore) GetByName(ctx context.Context, name string) (*api.Artifact
 }
 
 func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) (*ListResult, error) {
-	whereClause := ""
+	var conditions []string
 	var args []interface{}
 
 	if opts.StatusFilter != "" && opts.StatusFilter != "all" {
-		whereClause = " WHERE status = ?"
+		conditions = append(conditions, "status = ?")
 		args = append(args, opts.StatusFilter)
+	}
+
+	if !opts.AdminView && opts.OwnerID != "" {
+		conditions = append(conditions, "(owner_id = ? OR shared_with LIKE ?)")
+		args = append(args, opts.OwnerID, `%"`+opts.OwnerID+`"%`)
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
 	// Get total count first
 	countQuery := "SELECT COUNT(*) FROM artifacts" + whereClause
-	var totalRaw int
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&totalRaw); err != nil {
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("counting artifacts: %w", err)
 	}
 
 	// Fetch rows with ordering and optional pagination
-	query := `SELECT id, name, owner_id, status, target, url, created_at, updated_at, version, shared_with FROM artifacts` + whereClause + ` ORDER BY created_at DESC`
+	query := `SELECT id, name, owner_id, namespace, status, target, mode, url, created_at, updated_at, version, shared_with FROM artifacts` + whereClause + ` ORDER BY created_at DESC`
 	queryArgs := append([]interface{}{}, args...)
-
 	if opts.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
-		queryArgs = append(queryArgs, opts.Limit+opts.Offset+200, 0) // fetch enough for ownership filter
+		queryArgs = append(queryArgs, opts.Limit, opts.Offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
@@ -246,57 +370,45 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) (*ListResult, 
 	}
 	defer rows.Close()
 
-	// Scan all matching rows, apply ownership filter in Go
-	var all []api.ArtifactSummary
+	var results []api.ArtifactSummary
+	if results == nil {
+		results = make([]api.ArtifactSummary, 0)
+	}
+
 	for rows.Next() {
 		var (
-			summary                api.ArtifactSummary
-			status, target         string
-			createdAt, updatedAt   string
-			sharedWithJSON         string
+			summary              api.ArtifactSummary
+			status, target, mode string
+			createdAt, updatedAt string
+			sharedWithJSON       string
 		)
 		if err := rows.Scan(
-			&summary.ID, &summary.Name, &summary.OwnerID,
-			&status, &target, &summary.URL,
-			&createdAt, &updatedAt, &summary.Version, &sharedWithJSON,
-		); err != nil {
-			return nil, fmt.Errorf("scanning artifact summary: %w", err)
+		        &summary.ID, &summary.Name, &summary.OwnerID, &summary.Namespace,
+		        &status, &target, &mode, &summary.URL,
+		        &createdAt, &updatedAt, &summary.Version, &sharedWithJSON,
+		); err != nil {			return nil, fmt.Errorf("scanning artifact summary: %w", err)
 		}
 
 		summary.Status = api.ArtifactStatus(status)
 		summary.Target = api.DeploymentTarget(target)
+		summary.Mode = api.DeployMode(mode)
 		summary.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		summary.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
-		_ = json.Unmarshal([]byte(sharedWithJSON), &summary.SharedWith)
-
-		if !opts.AdminView && opts.OwnerID != "" {
-			isOwner := summary.OwnerID == opts.OwnerID
-			isShared := slices.Contains(summary.SharedWith, opts.OwnerID)
-			if !isOwner && !isShared {
-				continue
-			}
+		if err := json.Unmarshal([]byte(sharedWithJSON), &summary.SharedWith); err != nil && sharedWithJSON != "" && sharedWithJSON != "null" {
+			return nil, fmt.Errorf("unmarshaling shared_with: %w", err)
+		}
+		if summary.SharedWith == nil {
+			summary.SharedWith = []string{}
 		}
 
-		all = append(all, summary)
+		results = append(results, summary)
 	}
+
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	total := len(all)
-
-	// Apply offset/limit
-	if opts.Offset > 0 && opts.Offset < len(all) {
-		all = all[opts.Offset:]
-	} else if opts.Offset >= len(all) {
-		all = nil
-	}
-
-	if opts.Limit > 0 && opts.Limit < len(all) {
-		all = all[:opts.Limit]
-	}
-
-	return &ListResult{Artifacts: all, Total: total}, nil
+	return &ListResult{Artifacts: results, Total: total}, nil
 }
 
 func (s *SQLiteStore) Update(ctx context.Context, artifact *api.Artifact) error {
@@ -313,17 +425,13 @@ func (s *SQLiteStore) Update(ctx context.Context, artifact *api.Artifact) error 
 		return fmt.Errorf("marshaling shared_with: %w", err)
 	}
 
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE artifacts SET name=?, owner_id=?, status=?, target=?, image_ref=?, url=?, port=?,
-			env_vars=?, secret_refs=?, language=?, static_files=?, error=?, created_at=?, updated_at=?,
-			storage_ref=?, version=?, version_id=?, shared_with=?
-		WHERE id=?`,
-		artifact.Name, artifact.OwnerID, string(artifact.Status),
-		string(artifact.Target), artifact.ImageRef, artifact.URL, artifact.Port,
-		string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
-		artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
-		artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
-		artifact.ID,
+	res, err := s.stmtUpdateArtifact.ExecContext(ctx,
+	        artifact.Name, artifact.OwnerID, artifact.Namespace, string(artifact.Status),
+	        string(artifact.Target), string(artifact.Mode), artifact.ImageRef, artifact.URL, artifact.Port,
+	        string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
+	        artifact.CreatedAt.Format(time.RFC3339Nano), artifact.UpdatedAt.Format(time.RFC3339Nano),
+	        artifact.StorageRef, artifact.Version, artifact.VersionID, string(sharedWith),
+	        artifact.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("updating artifact: %w", err)
@@ -342,7 +450,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 
-	res, err := tx.ExecContext(ctx, "DELETE FROM artifacts WHERE id = ?", id)
+	res, err := tx.Stmt(s.stmtDeleteArtifact).ExecContext(ctx, id)
 	if err != nil {
 		return fmt.Errorf("deleting artifact: %w", err)
 	}
@@ -368,10 +476,7 @@ func (s *SQLiteStore) CreateVersion(ctx context.Context, version *api.ArtifactVe
 		return fmt.Errorf("marshaling secret_refs: %w", err)
 	}
 
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO artifact_versions (version_id, artifact_id, version, image_ref, storage_ref,
-			env_vars, secret_refs, status, url, created_at, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = s.stmtCreateVersion.ExecContext(ctx,
 		version.VersionID, version.ArtifactID, version.Version,
 		version.ImageRef, version.StorageRef, string(envVars), string(secretRefs),
 		string(version.Status), version.URL,
@@ -384,10 +489,7 @@ func (s *SQLiteStore) CreateVersion(ctx context.Context, version *api.ArtifactVe
 }
 
 func (s *SQLiteStore) ListVersions(ctx context.Context, artifactID string) ([]api.ArtifactVersion, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT version_id, artifact_id, version, image_ref, storage_ref,
-			env_vars, secret_refs, status, url, created_at, created_by
-		FROM artifact_versions WHERE artifact_id = ? ORDER BY version ASC`, artifactID)
+	rows, err := s.stmtListVersions.QueryContext(ctx, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("listing versions: %w", err)
 	}
@@ -429,21 +531,22 @@ type scanner interface {
 
 func scanArtifact(row scanner) (*api.Artifact, error) {
 	var (
-		a               api.Artifact
-		status, target  string
-		envVarsJSON     string
-		secretRefsJSON  string
-		sharedWithJSON  string
-		createdAt       string
-		updatedAt       string
+		a              api.Artifact
+		status, target string
+		mode           string
+		envVarsJSON    string
+		secretRefsJSON string
+		sharedWithJSON string
+		createdAt      string
+		updatedAt      string
 	)
 
 	err := row.Scan(
-		&a.ID, &a.Name, &a.OwnerID, &status, &target,
-		&a.ImageRef, &a.URL, &a.Port, &envVarsJSON, &secretRefsJSON,
-		&a.Language, &a.StaticFiles, &a.Error,
-		&createdAt, &updatedAt, &a.StorageRef,
-		&a.Version, &a.VersionID, &sharedWithJSON,
+	        &a.ID, &a.Name, &a.OwnerID, &a.Namespace, &status, &target, &mode,
+	        &a.ImageRef, &a.URL, &a.Port, &envVarsJSON, &secretRefsJSON,
+	        &a.Language, &a.StaticFiles, &a.Error,
+	        &createdAt, &updatedAt, &a.StorageRef,
+	        &a.Version, &a.VersionID, &sharedWithJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -451,17 +554,24 @@ func scanArtifact(row scanner) (*api.Artifact, error) {
 
 	a.Status = api.ArtifactStatus(status)
 	a.Target = api.DeploymentTarget(target)
+	a.Mode = api.DeployMode(mode)
 	a.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	a.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 
 	if envVarsJSON != "" && envVarsJSON != "{}" {
-		_ = json.Unmarshal([]byte(envVarsJSON), &a.EnvVars)
+		if err := json.Unmarshal([]byte(envVarsJSON), &a.EnvVars); err != nil {
+			return nil, fmt.Errorf("unmarshaling env_vars: %w", err)
+		}
 	}
 	if secretRefsJSON != "" && secretRefsJSON != "{}" {
-		_ = json.Unmarshal([]byte(secretRefsJSON), &a.SecretRefs)
+		if err := json.Unmarshal([]byte(secretRefsJSON), &a.SecretRefs); err != nil {
+			return nil, fmt.Errorf("unmarshaling secret_refs: %w", err)
+		}
 	}
 	if sharedWithJSON != "" && sharedWithJSON != "[]" {
-		_ = json.Unmarshal([]byte(sharedWithJSON), &a.SharedWith)
+		if err := json.Unmarshal([]byte(sharedWithJSON), &a.SharedWith); err != nil {
+			return nil, fmt.Errorf("unmarshaling shared_with: %w", err)
+		}
 	}
 
 	return &a, nil
@@ -489,10 +599,14 @@ func scanVersion(rows *sql.Rows) (*api.ArtifactVersion, error) {
 	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 
 	if envVarsJSON != "" && envVarsJSON != "{}" {
-		_ = json.Unmarshal([]byte(envVarsJSON), &v.EnvVars)
+		if err := json.Unmarshal([]byte(envVarsJSON), &v.EnvVars); err != nil {
+			return nil, fmt.Errorf("unmarshaling env_vars: %w", err)
+		}
 	}
 	if secretRefsJSON != "" && secretRefsJSON != "{}" {
-		_ = json.Unmarshal([]byte(secretRefsJSON), &v.SecretRefs)
+		if err := json.Unmarshal([]byte(secretRefsJSON), &v.SecretRefs); err != nil {
+			return nil, fmt.Errorf("unmarshaling secret_refs: %w", err)
+		}
 	}
 
 	return &v, nil
@@ -524,9 +638,9 @@ func (s *SQLiteStore) CreateUser(ctx context.Context, user *api.User) error {
 func (s *SQLiteStore) GetUser(ctx context.Context, id string) (*api.User, error) {
 	var u api.User
 	var createdAt, updatedAt string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, email, role, status, provider, department_id, created_at, updated_at FROM users WHERE id = ?`, id,
-	).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Status, &u.Provider, &u.DepartmentID, &createdAt, &updatedAt)
+	err := s.stmtGetUser.QueryRowContext(ctx, id).Scan(
+		&u.ID, &u.Name, &u.Email, &u.Role, &u.Status, &u.Provider, &u.DepartmentID, &u.APIKeyHash, &createdAt, &updatedAt,
+	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user %q not found", id)
 	}
@@ -541,9 +655,9 @@ func (s *SQLiteStore) GetUser(ctx context.Context, id string) (*api.User, error)
 func (s *SQLiteStore) GetUserByName(ctx context.Context, name string) (*api.User, error) {
 	var u api.User
 	var createdAt, updatedAt string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, email, role, status, provider, department_id, created_at, updated_at FROM users WHERE name = ?`, name,
-	).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Status, &u.Provider, &u.DepartmentID, &createdAt, &updatedAt)
+	err := s.stmtGetUserByName.QueryRowContext(ctx, name).Scan(
+		&u.ID, &u.Name, &u.Email, &u.Role, &u.Status, &u.Provider, &u.DepartmentID, &u.APIKeyHash, &createdAt, &updatedAt,
+	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user %q not found", name)
 	}
@@ -703,9 +817,9 @@ func (s *SQLiteStore) RevokeShareLink(ctx context.Context, token string) error {
 
 func (s *SQLiteStore) CreateDepartment(ctx context.Context, dept *api.Department) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO departments (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		dept.ID, dept.Name,
-		dept.CreatedAt.Format(time.RFC3339Nano), dept.UpdatedAt.Format(time.RFC3339Nano),
+	        `INSERT INTO departments (id, name, namespace, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+	        dept.ID, dept.Name, dept.Namespace,
+	        dept.CreatedAt.Format(time.RFC3339Nano), dept.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -720,8 +834,8 @@ func (s *SQLiteStore) GetDepartment(ctx context.Context, id string) (*api.Depart
 	var d api.Department
 	var createdAt, updatedAt string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, created_at, updated_at FROM departments WHERE id = ?`, id,
-	).Scan(&d.ID, &d.Name, &createdAt, &updatedAt)
+	        `SELECT id, name, namespace, created_at, updated_at FROM departments WHERE id = ?`, id,
+	).Scan(&d.ID, &d.Name, &d.Namespace, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("department %q not found", id)
 	}
@@ -737,8 +851,8 @@ func (s *SQLiteStore) GetDepartmentByName(ctx context.Context, name string) (*ap
 	var d api.Department
 	var createdAt, updatedAt string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, created_at, updated_at FROM departments WHERE name = ?`, name,
-	).Scan(&d.ID, &d.Name, &createdAt, &updatedAt)
+	        `SELECT id, name, namespace, created_at, updated_at FROM departments WHERE name = ?`, name,
+	).Scan(&d.ID, &d.Name, &d.Namespace, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("department %q not found", name)
 	}
@@ -752,19 +866,19 @@ func (s *SQLiteStore) GetDepartmentByName(ctx context.Context, name string) (*ap
 
 func (s *SQLiteStore) ListDepartments(ctx context.Context) ([]api.Department, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, created_at, updated_at FROM departments ORDER BY name`)
+	        `SELECT id, name, namespace, created_at, updated_at FROM departments ORDER BY name`)
 	if err != nil {
-		return nil, fmt.Errorf("listing departments: %w", err)
+	        return nil, fmt.Errorf("listing departments: %w", err)
 	}
 	defer rows.Close()
 
 	var depts []api.Department
 	for rows.Next() {
-		var d api.Department
-		var createdAt, updatedAt string
-		if err := rows.Scan(&d.ID, &d.Name, &createdAt, &updatedAt); err != nil {
-			return nil, fmt.Errorf("scanning department: %w", err)
-		}
+	        var d api.Department
+	        var createdAt, updatedAt string
+	        if err := rows.Scan(&d.ID, &d.Name, &d.Namespace, &createdAt, &updatedAt); err != nil {
+	                return nil, fmt.Errorf("scanning department: %w", err)
+	        }
 		d.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		d.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 		depts = append(depts, d)
@@ -774,8 +888,8 @@ func (s *SQLiteStore) ListDepartments(ctx context.Context) ([]api.Department, er
 
 func (s *SQLiteStore) UpdateDepartment(ctx context.Context, dept *api.Department) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE departments SET name=?, updated_at=? WHERE id=?`,
-		dept.Name, dept.UpdatedAt.Format(time.RFC3339Nano), dept.ID,
+	        `UPDATE departments SET name=?, namespace=?, updated_at=? WHERE id=?`,
+	        dept.Name, dept.Namespace, dept.UpdatedAt.Format(time.RFC3339Nano), dept.ID,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {

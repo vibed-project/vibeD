@@ -1,0 +1,213 @@
+package runneragent
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// newTestAgent returns an Agent with a temp workdir and an httptest server
+// driving its control handler.
+func newTestAgent(t *testing.T, token string) (*Agent, *httptest.Server) {
+	t.Helper()
+	a := New(Config{
+		Workdir:   t.TempDir(),
+		Token:     token,
+		AppPort:   8080,
+		StopGrace: time.Second,
+	})
+	srv := httptest.NewServer(a.handler())
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { a.stopProcess() })
+	return a, srv
+}
+
+func do(t *testing.T, srv *httptest.Server, method, path, token string, body any) (*http.Response, []byte) {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, srv.URL+path, rdr)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp, data
+}
+
+// waitState polls /status until the agent reports want, or fails after timeout.
+func waitState(t *testing.T, srv *httptest.Server, token, want string) StatusResponse {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var last StatusResponse
+	for time.Now().Before(deadline) {
+		_, data := do(t, srv, http.MethodGet, PathStatus, token, nil)
+		_ = json.Unmarshal(data, &last)
+		if last.State == want {
+			return last
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("state %q not reached, last = %+v", want, last)
+	return last
+}
+
+func TestInjectRunsAndStops(t *testing.T) {
+	a, srv := newTestAgent(t, "")
+
+	resp, data := do(t, srv, http.MethodPost, PathInject, "", InjectRequest{
+		Command: []string{"sh", "-c", "echo hello-from-app; sleep 30"},
+		Files:   map[string]string{"marker.txt": "present"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("inject status = %d, body = %s", resp.StatusCode, data)
+	}
+
+	st := waitState(t, srv, "", StateRunning)
+	if st.PID == 0 {
+		t.Fatalf("expected a PID while running, got %+v", st)
+	}
+
+	// File was written into the workdir.
+	if _, err := os.Stat(filepath.Join(a.cfg.Workdir, "marker.txt")); err != nil {
+		t.Fatalf("injected file not written: %v", err)
+	}
+
+	// Process output was captured.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, logData := do(t, srv, http.MethodGet, PathLogs, "", nil)
+		var lr LogsResponse
+		_ = json.Unmarshal(logData, &lr)
+		if len(lr.Lines) > 0 && lr.Lines[0] == "hello-from-app" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+		if time.Now().After(deadline) {
+			t.Fatalf("expected captured log line, got %v", lr.Lines)
+		}
+	}
+
+	// Stop returns the agent to idle.
+	resp, _ = do(t, srv, http.MethodPost, PathStop, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop status = %d", resp.StatusCode)
+	}
+	st = waitState(t, srv, "", StateIdle)
+	if st.PID != 0 {
+		t.Fatalf("expected no PID after stop, got %+v", st)
+	}
+}
+
+func TestInjectFailedProcess(t *testing.T) {
+	_, srv := newTestAgent(t, "")
+	do(t, srv, http.MethodPost, PathInject, "", InjectRequest{
+		Command: []string{"sh", "-c", "exit 3"},
+		Files:   map[string]string{"x": "y"},
+	})
+	st := waitState(t, srv, "", StateFailed)
+	if st.ExitCode == nil || *st.ExitCode != 3 {
+		t.Fatalf("expected exit code 3, got %+v", st)
+	}
+}
+
+func TestReinjectReplacesProcess(t *testing.T) {
+	_, srv := newTestAgent(t, "")
+	do(t, srv, http.MethodPost, PathInject, "", InjectRequest{
+		Command: []string{"sh", "-c", "sleep 30"},
+		Files:   map[string]string{"a": "1"},
+	})
+	first := waitState(t, srv, "", StateRunning)
+
+	do(t, srv, http.MethodPost, PathInject, "", InjectRequest{
+		Command: []string{"sh", "-c", "sleep 30"},
+		Files:   map[string]string{"b": "2"},
+	})
+	second := waitState(t, srv, "", StateRunning)
+
+	if first.PID == second.PID {
+		t.Fatalf("re-inject should start a new process, both PIDs = %d", first.PID)
+	}
+}
+
+func TestInjectRejectsUnrunnableLanguage(t *testing.T) {
+	_, srv := newTestAgent(t, "")
+	resp, data := do(t, srv, http.MethodPost, PathInject, "", InjectRequest{
+		Language: "go", // compiled — no fast-path run command, and no explicit Command
+		Files:    map[string]string{"main.go": "package main"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unrunnable language, got %d: %s", resp.StatusCode, data)
+	}
+}
+
+func TestAuthRequired(t *testing.T) {
+	_, srv := newTestAgent(t, "s3cret")
+
+	// Missing token → 401.
+	resp, _ := do(t, srv, http.MethodGet, PathStatus, "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", resp.StatusCode)
+	}
+	// Correct token → 200.
+	resp, _ = do(t, srv, http.MethodGet, PathStatus, "s3cret", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with token, got %d", resp.StatusCode)
+	}
+	// Healthz is unauthenticated.
+	resp, _ = do(t, srv, http.MethodGet, PathHealthz, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz should be unauthenticated, got %d", resp.StatusCode)
+	}
+}
+
+func TestWriteFilesRejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	for _, bad := range []string{"../escape", "/etc/passwd", "a/../../escape"} {
+		if err := writeFiles(root, map[string]string{bad: "x"}); err == nil {
+			t.Errorf("writeFiles(%q) = nil error, want rejection", bad)
+		}
+	}
+	// Nested-but-safe path is allowed.
+	if err := writeFiles(root, map[string]string{"sub/dir/file.txt": "ok"}); err != nil {
+		t.Fatalf("writeFiles nested path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "sub/dir/file.txt")); err != nil {
+		t.Fatalf("nested file not written: %v", err)
+	}
+}
+
+func TestBuildEnvForcesPort(t *testing.T) {
+	env := buildEnv(map[string]string{"FOO": "bar"}, 9999)
+	var sawPort, sawFoo bool
+	for _, kv := range env {
+		switch kv {
+		case "PORT=9999":
+			sawPort = true
+		case "FOO=bar":
+			sawFoo = true
+		}
+	}
+	if !sawPort {
+		t.Error("buildEnv did not set PORT")
+	}
+	if !sawFoo {
+		t.Error("buildEnv did not include extra env")
+	}
+}

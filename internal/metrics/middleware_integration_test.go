@@ -31,19 +31,24 @@ func TestHTTPMiddleware_RecordsRequests(t *testing.T) {
 	defer srv.Close()
 
 	// Make some requests
-	resp, err := http.Get(srv.URL + "/api/artifacts")
-	require.NoError(t, err)
-	resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	func() {
+	        resp, err := http.Get(srv.URL + "/api/artifacts")
+	        require.NoError(t, err)
+	        defer resp.Body.Close()
+	        assert.Equal(t, http.StatusOK, resp.StatusCode)
+	}()
 
-	resp, err = http.Get(srv.URL + "/api/artifacts/abc123")
-	require.NoError(t, err)
-	resp.Body.Close()
+	func() {
+	        resp, err := http.Get(srv.URL + "/api/artifacts/abc123")
+	        require.NoError(t, err)
+	        defer resp.Body.Close()
+	}()
 
-	resp, err = http.Get(srv.URL + "/healthz")
-	require.NoError(t, err)
-	resp.Body.Close()
-
+	func() {
+	        resp, err := http.Get(srv.URL + "/healthz")
+	        require.NoError(t, err)
+	        defer resp.Body.Close()
+	}()
 	// Gather all metrics and check
 	families, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)
@@ -74,16 +79,19 @@ func TestNormalizePath(t *testing.T) {
 
 	// Make requests to different artifact IDs
 	for _, id := range []string{"abc123", "def456", "ghi789"} {
-		resp, err := http.Get(srv.URL + "/api/artifacts/" + id)
-		require.NoError(t, err)
-		resp.Body.Close()
+	        func(id string) {
+	                resp, err := http.Get(srv.URL + "/api/artifacts/" + id)
+	                require.NoError(t, err)
+	                defer resp.Body.Close()
+	        }(id)
 	}
 
 	// Make a logs request
-	resp, err := http.Get(srv.URL + "/api/artifacts/abc123/logs")
-	require.NoError(t, err)
-	resp.Body.Close()
-
+	func() {
+	        resp, err := http.Get(srv.URL + "/api/artifacts/abc123/logs")
+	        require.NoError(t, err)
+	        defer resp.Body.Close()
+	}()
 	// Gather metrics
 	families, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)

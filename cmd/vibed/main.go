@@ -15,7 +15,9 @@ import (
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/builder"
+	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/internal/deployer"
 	"github.com/vibed-project/vibeD/internal/environment"
 	"github.com/vibed-project/vibeD/internal/events"
@@ -29,13 +31,18 @@ import (
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
+	"github.com/vibed-project/vibeD/internal/tarball"
 	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
 	"github.com/vibed-project/vibeD/pkg/api"
+	vibedhttp "github.com/vibed-project/vibeD/pkg/vibedapi/http"
+	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	knversioned "knative.dev/serving/pkg/client/clientset/versioned"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func main() {
@@ -97,8 +104,6 @@ func main() {
 
 	var bldr builder.Builder
 	switch cfg.Builder.Engine {
-	case "pack":
-		bldr = builder.NewPackBuilder(cfg.Builder, logger)
 	case "buildah", "":
 		ns := cfg.Builder.Buildah.Namespace
 		if ns == "" {
@@ -209,21 +214,23 @@ func main() {
 		bootstrapAPIKeyUsers(cfg.Auth.APIKeys, userStore, logger)
 	}
 
-	// Initialize deployers
+	// Initialize deployers. Knative was removed in v0.3.1 (refactor.md §1.4
+	// "Not a Knative replacement"); the Sandbox + Kubernetes deployers cover
+	// every supported target.
+
 	factory := deployer.NewFactory()
 
-	// Register Knative deployer
-	knClient, err := knversioned.NewForConfig(k8sClients.RestConfig)
-	if err != nil {
-		logger.Warn("failed to create Knative client (Knative may not be installed)", "error", err)
-	} else {
-		knDeployer := deployer.NewKnativeDeployer(knClient, k8sClients.Clientset, cfg.Deployment, cfg.Knative, logger)
-		factory.Register(api.TargetKnative, knDeployer)
-	}
+	// Register Sandbox deployer
+	sbDeployer := deployer.NewSandboxDeployer(k8sClients.DynamicClient, k8sClients.Clientset, logger)
+	factory.Register(api.TargetSandbox, sbDeployer)
 
 	// Register Kubernetes deployer
-	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, cfg.Deployment, logger)
+	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, cfg.Deployment.ReadyTimeout, logger)
 	factory.Register(api.TargetKubernetes, k8sDeployer)
+
+	// The legacy in-process "Instant Preview" warm pool was removed in
+	// v0.3.1. Warm-pool management is now the job of vibed-controller +
+	// agent-sandbox (SandboxWarmPool / SandboxClaim); see internal/controller.
 
 	// Create orchestrator
 	// Create event bus for SSE streaming
@@ -235,27 +242,40 @@ func main() {
 		shareLinkStore = sls
 	}
 
-	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, m, k8sClients.Clientset, bus, shareLinkStore, logger)
+	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, userStore, m, k8sClients.Clientset, bus, shareLinkStore, logger)
 
-	// Start garbage collector
+	// Lifecycle context shared by GC and orchestrator's async goroutines so
+	// SIGTERM cancels in-flight builds and the GC loop together.
+	lifeCtx, lifeCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer lifeCancel()
+	orch.SetLifecycleContext(lifeCtx)
+
+	// Start garbage collector.
 	if cfg.GC.Enabled {
 		collector, err := gc.NewGarbageCollector(
-			k8sClients.Clientset, st, cfg.Deployment.Namespace,
+			k8sClients.Clientset, k8sClients.DynamicClient,
+			st, cfg.Deployment.Namespace,
 			cfg.GC, m, logger,
 		)
 		if err != nil {
 			logger.Error("failed to create garbage collector", "error", err)
 			os.Exit(1)
 		}
-		// GC runs in background; ctx from signal.NotifyContext will stop it on shutdown.
-		// We create ctx early here so GC can start before the transport blocks.
-		gcCtx, gcCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer gcCancel()
-		go collector.Run(gcCtx)
+		go collector.Run(lifeCtx)
+	}
+
+	// Build the VibedApp deploy service (POST /v1/deploy + the MCP core
+	// lifecycle). When prerequisites aren't configured (no K8s/tarball
+	// store) this is nil and both the HTTP endpoints and the MCP tools fall
+	// back: HTTP returns 501, MCP uses the orchestrator build path.
+	deploySvc, derr := buildDeployService(cfg, k8sClients, logger)
+	if derr != nil {
+		logger.Warn("VibedApp deploy path disabled; falling back to orchestrator", "error", derr)
+		deploySvc = nil
 	}
 
 	// Create MCP server
-	mcpServer := mcppkg.NewServer(orch, cfg.Limits, userStore)
+	mcpServer := mcppkg.NewServer(orch, deploySvc, cfg.Limits, userStore)
 
 	// Initialize authentication middleware
 	authMiddleware, err := vibedauth.Middleware(cfg.Auth, userStore, logger)
@@ -287,10 +307,9 @@ func main() {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, logger)
-
+		runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, m, checker, bus, authMiddleware, tlsConfig, userStore, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -303,15 +322,34 @@ func main() {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
 	mux := http.NewServeMux()
 
-	// Health check endpoints (always unauthenticated)
-	mux.HandleFunc("/healthz", checker.LivenessHandler())
-	mux.HandleFunc("/readyz", checker.ReadinessHandler())
-
-	// Prometheus metrics endpoint (always unauthenticated)
-	mux.Handle("/metrics", promhttp.Handler())
+	// /v1/* HTTP API + /healthz, /readyz, /metrics are mounted via
+	// oapi-codegen's HandlerFromMux so the OpenAPI spec is the single source
+	// of truth for routing. Stubs for the /v1/* business endpoints return
+	// 501 until later milestones wire them; ops endpoints delegate to the
+	// real handlers.
+	vibedAPI := vibedhttp.New(
+		http.HandlerFunc(checker.LivenessHandler()),
+		http.HandlerFunc(checker.ReadinessHandler()),
+		promhttp.Handler(),
+		logger,
+	)
+	// Wire the VibedApp deploy path (POST /v1/deploy + /v1/apps), built once
+	// in main() and shared with the MCP server. nil = prerequisites absent;
+	// the endpoints stay 501 and the rest of vibeD still boots.
+	if deploySvc != nil {
+		vibedAPI.Deploy = deploySvc
+		// Served tarball backend: vibeD serves the source blobs the agent pulls.
+		if blob, berr := tarball.NewBlobHandler(cfg.Storage.Tarball); berr != nil {
+			logger.Warn("blob handler init failed", "error", berr)
+		} else if blob != nil {
+			mux.Handle(tarball.BlobPathPrefix, blob)
+			logger.Info("serving source blobs", "prefix", tarball.BlobPathPrefix)
+		}
+	}
+	vibedhttp.HandlerFromMux(vibedAPI, mux)
 
 	// MCP HTTP endpoint
 	mcpHandler := mcp.NewStreamableHTTPHandler(
@@ -330,8 +368,12 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 		mux.HandleFunc("/.well-known/oauth-protected-resource", vibedauth.OAuthMetadataHandler(cfg.Auth.OIDC, resourceURL))
 	}
 
+	// (The /preview/* reverse-proxy was removed in v0.3.1 — fast-path
+	// previews now flow through vibed-router + Caddy like every other
+	// app, so there's no longer a per-process proxy living here.)
+
 	// Frontend + API
-	frontendHandler := frontend.NewHandler(orch, cfg, bus, m, userStore)
+	frontendHandler := frontend.NewHandler(orch, cfg, bus, m, userStore, k8sClients)
 	mux.Handle("/", frontendHandler)
 
 	// Build handler chain: role → auth (selective) → metrics → mux
@@ -432,6 +474,40 @@ func bootstrapAPIKeyUsers(keys []config.APIKeyConf, userStore store.UserStore, l
 			logger.Info("bootstrapped API key user", "name", key.Name, "role", role)
 		}
 	}
+}
+
+// buildDeployService assembles the /v1/deploy service: a controller-runtime
+// client for VibedApp CRs, the configured tarball store, and the classifier.
+// Returns an error (leaving the /v1 endpoints as 501) when prerequisites
+// aren't configured, so vibeD still boots in ops-only or MCP-only mode.
+func buildDeployService(cfg *config.Config, k8sClients *k8s.Clients, logger *slog.Logger) (*deploy.Service, error) {
+	store, err := tarball.New(cfg.Storage.Tarball)
+	if err != nil {
+		return nil, fmt.Errorf("tarball store: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("scheme: %w", err)
+	}
+	if err := vibedv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("scheme: %w", err)
+	}
+	c, err := ctrlclient.New(k8sClients.RestConfig, ctrlclient.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("k8s client: %w", err)
+	}
+
+	appsNS := cfg.Deployment.AppsNamespace
+	if appsNS == "" {
+		appsNS = cfg.Deployment.Namespace
+	}
+	return &deploy.Service{
+		Client:     c,
+		Store:      store,
+		Classifier: classifier.Classifier{},
+		Namespace:  appsNS,
+	}, nil
 }
 
 // newLogger creates a slog.Logger based on the server configuration.
