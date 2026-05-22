@@ -1,109 +1,162 @@
 //go:build e2ecluster
 
 // cluster_test.go is the literal cluster E2E from refactor.md §10.2. Unlike
-// slice_test.go (in-process, always runs), this needs a real cluster with the
-// full vibeD stack already installed:
+// slice_test.go (in-process, always runs), this drives a REAL deploy through a
+// running stack: it POSTs a tarball to /v1/deploy and waits for the app to
+// reach Ready. It needs a cluster with the full vibeD stack installed and the
+// server reachable (set VIBED_E2E_URL, default http://localhost:18090):
 //
-//	make dev                 # kind + agent-sandbox + deps
+//	# CI runs this via .github/workflows/e2e-cluster.yaml. Locally:
 //	helm install vibed deploy/helm/vibed -n vibed-system --create-namespace \
-//	     --set workerd.enabled=false
-//	make e2e-cluster         # runs this file (-tags=e2ecluster)
+//	     -f deploy/helm/vibed/values-kind.yaml --wait
+//	kubectl port-forward -n vibed-system svc/vibed 18090:8080 &
+//	make e2e-cluster
 //
-// It is gated behind the e2ecluster build tag and skips when no cluster (or no
-// VibedApp CRD) is reachable, so it never breaks the default `go test`.
+// Gated behind the e2ecluster build tag, and skips when the server isn't
+// reachable, so it never breaks the default `go test`.
 package e2e
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
 	"testing"
 	"time"
-
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	ctrlcfg "sigs.k8s.io/controller-runtime/pkg/client/config"
-
-	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
-const clusterAppsNS = "vibed-apps"
-
-// clusterClient builds a controller-runtime client from the ambient
-// kubeconfig, or skips the test when none is available / the CRD is missing.
-func clusterClient(t *testing.T) client.Client {
-	t.Helper()
-	cfg, err := ctrlcfg.GetConfig()
-	if err != nil {
-		t.Skipf("skipping cluster E2E: no kubeconfig: %v", err)
+// baseURL is the vibed server under test; the workflow sets VIBED_E2E_URL.
+func baseURL() string {
+	if u := os.Getenv("VIBED_E2E_URL"); u != "" {
+		return u
 	}
-	scheme := runtime.NewScheme()
-	if err := vibedv1.AddToScheme(scheme); err != nil {
-		t.Fatalf("scheme: %v", err)
-	}
-	c, err := client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		t.Skipf("skipping cluster E2E: cannot build client: %v", err)
-	}
-	// Probe the CRD: list VibedApps. A NoMatch/NotFound means the chart isn't
-	// installed — skip rather than fail.
-	var list vibedv1.VibedAppList
-	if err := c.List(context.Background(), &list); err != nil {
-		t.Skipf("skipping cluster E2E: VibedApp CRD not reachable (chart installed?): %v", err)
-	}
-	return c
+	return "http://localhost:18090"
 }
 
-// TestClusterDeployReachesReady creates a VibedApp directly and waits for the
-// controller to drive it to Ready with a URL. It assumes the source tarball
-// referenced already exists (or that the agent tolerates a static template);
-// for a fuller test, point sourceRef at a real uploaded tarball.
-//
-// NOTE: this is intentionally a thin smoke test. The richer "POST /v1/deploy,
-// curl the returned URL, p99 < 10s over 100 deploys" loop from §10.2 belongs
-// in a load harness (test/load, milestone F7-load) once images are published.
+// requireServer skips unless the vibed server answers /healthz. The build tag
+// already keeps this out of the default `go test`; this guard means a tagged
+// run without a live server skips rather than fails.
+func requireServer(t *testing.T) string {
+	t.Helper()
+	base := baseURL()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Skipf("skipping cluster E2E: vibed not reachable at %s: %v", base, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("skipping cluster E2E: %s/healthz returned %d", base, resp.StatusCode)
+	}
+	return base
+}
+
+// staticTarball builds a gzipped tar with a single index.html.
+func staticTarball(t *testing.T, html string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	body := []byte(html)
+	if err := tw.WriteHeader(&tar.Header{Name: "index.html", Mode: 0o644, Size: int64(len(body))}); err != nil {
+		t.Fatalf("tar header: %v", err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatalf("tar write: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+type deployResp struct {
+	AppID     string `json:"app_id"`
+	URL       string `json:"url"`
+	StatusURL string `json:"status_url"`
+}
+
+type appResp struct {
+	AppID string `json:"app_id"`
+	Phase string `json:"phase"`
+	URL   string `json:"url"`
+}
+
+// TestClusterDeployReachesReady drives a real deploy through the running stack:
+// POST /v1/deploy with a static tarball, then poll /v1/apps/{id} until Ready.
+// This exercises upload -> classify -> claim a warm sandbox -> inject source ->
+// agent serves -> Ready against a real cluster with the chart installed.
 func TestClusterDeployReachesReady(t *testing.T) {
-	c := clusterClient(t)
-	ctx := context.Background()
+	base := requireServer(t)
+	const name = "e2e-static"
 
-	name := "e2e-static"
-	app := &vibedv1.VibedApp{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: clusterAppsNS},
-		Spec: vibedv1.VibedAppSpec{
-			Owner:  "e2e@vibed.test",
-			Source: vibedv1.Source{TarballRef: "http://example.invalid/placeholder.tar.gz"},
-			Runtime: vibedv1.Runtime{
-				Lane:     vibedv1.LaneFast,
-				Template: "static-nginx",
-			},
-		},
+	// Multipart body: gzipped source tarball + metadata JSON.
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	src, _ := mw.CreateFormFile("source", "source.tar.gz")
+	if _, err := src.Write(staticTarball(t, "<!doctype html><h1>cluster e2e</h1>")); err != nil {
+		t.Fatalf("write source: %v", err)
 	}
-	_ = c.Delete(ctx, app) // clean any prior run
-	if err := c.Create(ctx, app); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create VibedApp: %v", err)
-	}
-	t.Cleanup(func() { _ = c.Delete(context.Background(), app) })
+	meta, _ := mw.CreateFormField("metadata")
+	meta.Write([]byte(`{"name":"` + name + `"}`))
+	mw.Close()
 
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		got := &vibedv1.VibedApp{}
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: clusterAppsNS}, got); err != nil {
-			t.Fatalf("get VibedApp: %v", err)
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/deploy", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/deploy: %v", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	// 200 = already Ready; 202 = accepted onto a slow path (poll). Both fine.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("deploy returned %d: %s", resp.StatusCode, raw)
+	}
+	var dr deployResp
+	if err := json.Unmarshal(raw, &dr); err != nil || dr.AppID == "" {
+		t.Fatalf("bad deploy response (%d): %s", resp.StatusCode, raw)
+	}
+	t.Cleanup(func() {
+		dreq, _ := http.NewRequest(http.MethodDelete, base+"/v1/apps/"+dr.AppID, nil)
+		if r, e := http.DefaultClient.Do(dreq); e == nil {
+			r.Body.Close()
 		}
-		switch got.Status.Phase {
-		case vibedv1.PhaseReady:
-			if got.Status.URL == "" {
+	})
+
+	deadline := time.Now().Add(120 * time.Second)
+	for {
+		gr, err := http.Get(base + "/v1/apps/" + dr.AppID)
+		if err != nil {
+			t.Fatalf("GET /v1/apps/%s: %v", dr.AppID, err)
+		}
+		b, _ := io.ReadAll(gr.Body)
+		gr.Body.Close()
+		var ar appResp
+		_ = json.Unmarshal(b, &ar)
+		switch ar.Phase {
+		case "Ready":
+			if ar.URL == "" {
 				t.Fatal("Ready but no URL")
 			}
-			t.Logf("app Ready at %s", got.Status.URL)
+			t.Logf("app %s Ready at %s", dr.AppID, ar.URL)
 			return
-		case vibedv1.PhaseFailed:
-			t.Fatalf("app Failed: %+v", got.Status.Conditions)
+		case "Failed":
+			t.Fatalf("app %s Failed: %s", dr.AppID, b)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("app never reached Ready (last phase %q)", got.Status.Phase)
+			t.Fatalf("app %s never reached Ready (last phase %q)", dr.AppID, ar.Phase)
 		}
-		time.Sleep(time.Second)
+		time.Sleep(2 * time.Second)
 	}
 }

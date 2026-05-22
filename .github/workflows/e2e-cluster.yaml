@@ -1,0 +1,141 @@
+name: E2E (cluster)
+
+# Stands up the full vibeD stack on a throwaway Kind cluster (Kind +
+# agent-sandbox + vibeD via the dev overlay) and runs the real deploy E2E:
+# POST /v1/deploy with a static site and assert it reaches Ready. Heavy, so
+# it's path-filtered to code/helm/template changes.
+#
+# The dev overlay (values-kind.yaml) runs sandboxes as plain pods
+# (runtime.defaultClass="" => no Kata RuntimeClass), served source store, and
+# only the lightweight static-nginx warm pool — so this needs no KVM/Kata and
+# only four images.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'pkg/**'
+      - 'templates/static-nginx/**'
+      - 'deploy/helm/vibed/**'
+      - 'test/e2e/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/e2e-cluster.yaml'
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'pkg/**'
+      - 'templates/static-nginx/**'
+      - 'deploy/helm/vibed/**'
+      - 'test/e2e/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/e2e-cluster.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  KIND_CLUSTER: vibed-e2e
+  AGENT_SANDBOX_VERSION: v0.4.5
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: vibed-e2e
+
+      - name: Install agent-sandbox
+        run: |
+          base="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}"
+          kubectl apply --server-side -f "${base}/manifest.yaml"
+          kubectl apply --server-side -f "${base}/extensions.yaml"
+          kubectl wait --for=condition=Established --timeout=90s \
+            crd/sandboxes.agents.x-k8s.io \
+            crd/sandboxtemplates.extensions.agents.x-k8s.io \
+            crd/sandboxclaims.extensions.agents.x-k8s.io \
+            crd/sandboxwarmpools.extensions.agents.x-k8s.io
+          kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller --timeout=180s
+
+      - name: Build images
+        run: |
+          set -euo pipefail
+          builds=(
+            "vibed:Dockerfile"
+            "vibed-controller:cmd/vibed-controller/Dockerfile"
+            "vibed-router:cmd/vibed-router/Dockerfile"
+            "vibed-template-static-nginx:templates/static-nginx/Dockerfile"
+          )
+          for b in "${builds[@]}"; do
+            name="${b%%:*}"; dockerfile="${b#*:}"
+            echo "::group::build ${name}"
+            docker build -t "localhost/${name}:dev" -f "${dockerfile}" .
+            echo "::endgroup::"
+          done
+
+      - name: Load images into kind
+        run: |
+          set -euo pipefail
+          for name in vibed vibed-controller vibed-router vibed-template-static-nginx; do
+            kind load docker-image "localhost/${name}:dev" --name "${KIND_CLUSTER}"
+          done
+
+      - name: Install vibeD (dev overlay)
+        run: |
+          helm install vibed deploy/helm/vibed/ \
+            -n vibed-system --create-namespace \
+            -f deploy/helm/vibed/values-kind.yaml \
+            --wait --timeout 5m
+
+      - name: Wait for the static-nginx warm pool
+        run: |
+          for i in $(seq 1 60); do
+            ready=$(kubectl get sandboxwarmpool static-nginx -n vibed-apps \
+              -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+            echo "warm pool readyReplicas=${ready:-0}"
+            [ "${ready:-0}" -ge 1 ] && exit 0
+            sleep 3
+          done
+          echo "warm pool never became ready" >&2
+          exit 1
+
+      - name: Run cluster E2E
+        env:
+          VIBED_E2E_URL: http://localhost:18090
+        run: |
+          set -euo pipefail
+          kubectl port-forward -n vibed-system svc/vibed 18090:8080 &
+          pf=$!
+          trap 'kill $pf 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:18090/healthz >/dev/null && break
+            sleep 2
+          done
+          make e2e-cluster
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A || true
+          kubectl get vibedapp,sandboxclaim,sandboxwarmpool -n vibed-apps -o wide || true
+          kubectl describe vibedapp -n vibed-apps || true
+          kubectl logs -n vibed-system deploy/vibed-controller --tail=120 || true
+          kubectl logs -n vibed-system deploy/vibed --tail=80 || true
+          kubectl logs -n agent-sandbox-system deploy/agent-sandbox-controller --tail=80 || true
