@@ -57,6 +57,12 @@ const config = {
             position: 'left',
           },
           {
+            // Current release, shown left of the GitHub link. Bump on release.
+            href: 'https://github.com/vibed-project/vibeD/releases',
+            label: 'v0.3.1',
+            position: 'right',
+          },
+          {
             href: 'https://github.com/vibed-project/vibeD',
             label: 'GitHub',
             position: 'right',
