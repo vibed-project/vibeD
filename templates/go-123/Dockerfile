@@ -33,17 +33,23 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends tini \
  && rm -rf /var/lib/apt/lists/*
 
-# Pre-warm the build cache. The Go base image already has the toolchain;
-# we pre-download a handful of stdlib-heavy packages so first-deploy
-# compile time isn't waiting on the module proxy.
+# Pre-warm the module cache. We pre-download a handful of common web
+# frameworks so first-deploy compile time isn't waiting on the module proxy.
+#
+# Notes:
+#  - The prewarm module must live in a real subdirectory: `go` ignores a
+#    go.mod placed directly in the system temp root (/tmp), which makes
+#    `go get` fail with "not supported outside a module".
+#  - Versions are pinned (not @latest) so the build is reproducible and so a
+#    newer release can't demand a Go toolchain beyond this image's 1.23.
 ENV GOMODCACHE=/opt/go/pkg/mod GOCACHE=/opt/go/cache
-RUN mkdir -p $GOMODCACHE $GOCACHE \
- && cd /tmp && go mod init prewarm \
+RUN mkdir -p $GOMODCACHE $GOCACHE /tmp/prewarm \
+ && cd /tmp/prewarm && go mod init prewarm \
  && go get \
-      github.com/gin-gonic/gin@latest \
-      github.com/labstack/echo/v4@latest \
-      github.com/gorilla/mux@latest \
- && rm -rf /tmp/prewarm /tmp/go.mod /tmp/go.sum
+      github.com/gin-gonic/gin@v1.10.0 \
+      github.com/labstack/echo/v4@v4.12.0 \
+      github.com/gorilla/mux@v1.8.1 \
+ && cd / && rm -rf /tmp/prewarm
 
 COPY --from=agent /vibed-agent /usr/local/bin/vibed-agent
 COPY templates/go-123/entrypoint.sh /etc/vibed/entrypoint.sh
