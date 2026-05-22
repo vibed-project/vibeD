@@ -1,11 +1,24 @@
 name: Runner Images
 
 # The per-template warm-pool images (one per template under templates/). Each
-# embeds vibed-agent and is built once and pushed to GHCR — only when the
-# template definitions or the runner-agent source change, not on every merge.
+# embeds vibed-agent. On merge to main (and on demand) they are built and
+# pushed to GHCR; on a PR that touches template or agent code they are built
+# only (single-arch, no push) so a broken Dockerfile is caught before merge.
+# Path-filtered so unrelated PRs don't pay the build cost.
 
 on:
   push:
+    branches: [main]
+    paths:
+      - 'templates/**'
+      - 'cmd/vibed-agent/**'
+      - 'internal/runneragent/**'
+      - 'internal/appspec/**'
+      - 'pkg/vibedapi/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/runner-images.yaml'
+  pull_request:
     branches: [main]
     paths:
       - 'templates/**'
@@ -57,7 +70,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # On PRs we only build to validate the Dockerfile — no push, so no
+      # registry login needed (and fork PRs couldn't push anyway).
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -78,9 +94,11 @@ jobs:
         with:
           context: .
           file: ${{ matrix.runner.dockerfile }}
-          push: true
+          # PR: build-only validation. Push on merge to main / manual dispatch.
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.runner.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.runner.name }}
-          platforms: linux/amd64,linux/arm64
+          # PR: amd64 only (fast). main/dispatch: full multi-arch.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
