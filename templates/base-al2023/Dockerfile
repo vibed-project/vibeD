@@ -28,13 +28,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 
 # Stage 2: Amazon Linux 2023 with the major runtimes.
 FROM amazonlinux:2023
+ARG TARGETARCH
 
 # Single dnf transaction so the image has one big layer instead of many.
-# --setopt=install_weak_deps=False trims a few hundred MB. AL2023 ships
-# tini in `tini`, sudo in `sudo`, nodejs 20 + python3.11 + golang in the
-# default repos as of this manifest.
+# --setopt=install_weak_deps=False trims a few hundred MB. sudo, nodejs +
+# python3 + golang are all in the AL2023 default repos. (tini is NOT packaged
+# for AL2023 — we fetch the static binary below.)
 RUN dnf install -y --setopt=install_weak_deps=False \
-      tini \
       sudo \
       ca-certificates \
       shadow-utils \
@@ -45,11 +45,18 @@ RUN dnf install -y --setopt=install_weak_deps=False \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 
+# tini reaps zombies orphaned by the user process. Not in AL2023 repos, so
+# pull the static binary for the target arch from the upstream release.
+ADD https://github.com/krallin/tini/releases/download/v0.19.0/tini-static-${TARGETARCH} /usr/bin/tini
+RUN chmod +x /usr/bin/tini
+
 # Common Python + Node packages so the most-asked-for stacks need no
 # install. Lists are deliberately short — base-al2023's job is "works for
 # anything weird", not "works for every framework"; the language-specific
 # templates absorb the framework-bake load.
-RUN python3 -m pip install --no-cache-dir --break-system-packages \
+# AL2023 ships pip 21.x (Python 3.9), which neither enforces PEP 668 nor knows
+# --break-system-packages, so install straight into the system site-packages.
+RUN python3 -m pip install --no-cache-dir \
       flask fastapi "uvicorn[standard]" requests \
  && mkdir -p /opt/vibed \
  && cd /opt/vibed && npm install --no-audit --no-fund express
