@@ -33,11 +33,4 @@ No parameters required.
 }
 ```
 
-This tool is useful for AI agents to decide which `target` to pass to `deploy_artifact`. When `target` is set to `auto` (the default), vibeD uses this detection internally to pick the best target.
-
-:::note
-The [Instant Preview](../concepts/instant-preview.md) `runner` target is **not**
-listed here — it is enabled via configuration (`fastPath.enabled`), not
-auto-detected from CRDs. When enabled, eligible apps take it automatically on an
-`auto` deploy.
-:::
+This tool lists the available runtime [templates](../concepts/lanes-and-templates.md) (e.g. `node-24`, `python-313`, `static-nginx`). You normally don't pass a template — the classifier picks one — but you can override it in the deploy metadata.

@@ -46,8 +46,10 @@ Update an existing deployed artifact with new source files. Triggers a rebuild a
 
 ## What Happens
 
-1. **Validates** the artifact exists and the caller has permission
-2. **Stores** the new source files (replaces previous files)
-3. **Rebuilds** the container image — or, for an [Instant Preview](../concepts/instant-preview.md) (`mode: preview`), re-injects the source into its runner pod with no rebuild
-4. **Redeploys** with the new image (or restarts the runner process)
-5. **Creates** a version snapshot for rollback
+1. **Validates** the app exists and the caller owns it
+2. **Stores** the new source tarball (replaces the previous source)
+3. **Re-injects** the new source into the app's sandbox — no rebuild
+
+:::note
+Redeploy (`POST /v1/apps/{id}/redeploy`) is not yet fully wired in v0.3.x. The supported update path is to deploy again under the same name.
+:::

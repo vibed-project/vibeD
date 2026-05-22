@@ -47,21 +47,10 @@ The primary tool for deploying web artifacts to the cluster.
 
 ## What Happens
 
-1. **Validates** the name (DNS-safe, unique)
-2. **Stores** source files to the configured storage backend
-3. **Detects** the best deployment target
-4. **Fast path** — if the [Instant Preview](../concepts/instant-preview.md) fast
-   path is enabled and the app is eligible (Python/Node, all dependencies
-   pre-baked), vibeD **skips the build**: it claims a warm runner pod and
-   injects the source. The artifact comes back with `mode: preview`.
-5. **Builds** a container image using Buildah otherwise. If a `Dockerfile` is
-   provided in the files map, it is used directly; otherwise one is
-   auto-generated. (Static HTML/CSS/JS also skips the build, via ConfigMap +
-   nginx.)
-6. **Deploys** to the cluster (Knative Service, Sandbox, K8s Deployment, or a
-   pooled runner)
-7. **Returns** the access URL and artifact metadata
+1. **Validates** the name (DNS-safe, unique).
+2. **Stores** the source tarball to the configured [source store](../configuration/storage.md).
+3. **Classifies** the source into a [lane and template](../concepts/lanes-and-templates.md).
+4. **Creates** a [`VibedApp`](../concepts/app-lifecycle.md) and the controller **claims a warm sandbox** and injects the source — no container build on the deploy path.
+5. **Returns** the access URL once the app reaches `Ready` (or a `status_url` to poll if it took a slow path).
 
-The response includes a `mode` field — `preview` for a fast-path deploy
-(promote it with [`promote_artifact`](./promote-artifact) for a durable build),
-`built` otherwise.
+See [App lifecycle](../concepts/app-lifecycle.md) for the phases the app moves through.

@@ -4,367 +4,96 @@ sidebar_position: 1
 
 # Production Deployment
 
-This guide walks through deploying vibeD to a production Kubernetes cluster using the Helm chart.
+This guide covers the hardened, production setup. For a laptop, use the [dev overlay](../getting-started/local-dev.md).
 
 ## Prerequisites
 
-- **Kubernetes** 1.27+ cluster (EKS, GKE, AKS, or self-managed)
-- **Helm** 3.12+
-- **kubectl** configured with cluster access
-- **Container registry** (ghcr.io, ECR, GCR, ACR, or Docker Hub)
-- **cert-manager** (optional, for automated TLS certificates)
-- **Knative Serving** (optional, for serverless deployment targets)
+- Kubernetes 1.29+ with a CNI that enforces `NetworkPolicy` (Cilium, Calico, …).
+- [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) v0.4.5+ installed.
+- A **dedicated sandbox node pool** labeled `vibed.dev/sandbox-node: "true"`, running `containerd` + `containerd-shim-kata-v2`, with KVM available (bare metal, `*.metal` on AWS, or nested-virt images on GCP).
+- A **Kata RuntimeClass** — `kata-fc` (Firecracker, needs KVM) or `kata-qemu`.
+- **S3 or MinIO** for source tarballs.
+- A **DNS-01 capable** DNS provider for Caddy's wildcard cert on `*.<your-domain>`.
 
-:::tip
-For local development with Kind and Podman, see [Local Development Setup](../getting-started/local-dev.md) instead.
-:::
+## 1. Container images
 
-## Step 1: Build and Push the Container Image
+CI builds and pushes all component images to GHCR: `vibed`, `vibed-controller`, `vibed-router`, and the five template images. Pin a released tag (never `latest`) in your values.
 
-vibeD ships with a multi-stage Dockerfile that produces a minimal distroless image:
-
-```bash
-# Build the container image
-docker build -t ghcr.io/myorg/vibed:v1.0.0 .
-
-# Push to your registry
-docker push ghcr.io/myorg/vibed:v1.0.0
-```
-
-The Dockerfile uses three stages:
-1. **Node.js 22** - Builds the React dashboard frontend
-2. **Go 1.23** - Compiles the Go binary with `CGO_ENABLED=0`
-3. **distroless/static-debian12:nonroot** - Minimal runtime (no shell, non-root user)
-
-The final image exposes port 8080 and runs as a non-root user.
-
-## Step 2: Install Dependencies
-
-vibeD can deploy artifacts to Knative or plain Kubernetes. If you want Knative (recommended for serverless scaling), install it first.
-
-### Option A: testbed/knative Chart (Quick Start)
-
-The bundled `testbed/knative` chart installs Knative Serving via the Knative Operator:
-
-```bash
-helm install knative testbed/knative/ \
-  --namespace knative-system --create-namespace \
-  --set serving.ingress.kourier.serviceType=LoadBalancer
-```
-
-:::warning
-The chart's pre-install Job runs with cluster-admin to apply the Knative Operator manifest. For production clusters with an existing operator or service mesh, use Option B.
-:::
-
-### Option B: Manual Knative Installation (Recommended)
-
-For production clusters, install Knative manually for full control. See [Knative Setup for Production](./knative-setup.md) for detailed instructions.
-
-### Skipping Knative
-
-Knative is optional. Without it, vibeD deploys artifacts as standard Kubernetes Deployments with NodePort Services. Set `config.deployment.preferredTarget: "kubernetes"` in your values file. See [Deployment Targets](../concepts/deployment-targets.md) for details.
-
-## Step 3: Create Production Values File
-
-Create a `values-production.yaml` file tailored for your environment:
+## 2. Production values
 
 ```yaml
-replicaCount: 1
+image: { repository: ghcr.io/vibed-project/vibed, tag: "v0.3.1", pullPolicy: IfNotPresent }
+controller: { image: { tag: "v0.3.1" }, domain: apps.example.com }
+router:     { image: { tag: "v0.3.1" } }
 
-image:
-  repository: ghcr.io/myorg/vibed
-  tag: "v1.0.0"
-  pullPolicy: Always
+# Sandbox isolation
+runtime:
+  defaultClass: kata-fc
+  nodeSelector: { vibed.dev/sandbox-node: "true" }
+  sandboxNetworkPolicy: Unmanaged   # vibeD owns the policy (see below)
 
-resources:
-  limits:
-    cpu: "1"
-    memory: 1Gi
-  requests:
-    cpu: 250m
-    memory: 256Mi
+networkPolicy:
+  enabled: true                     # default-deny + control-plane->sandbox + DNS/S3 egress
 
-persistence:
-  enabled: true
-  size: 50Gi
-  storageClass: "gp3"     # Use your cluster's storage class
-  accessModes:
-    - ReadWriteOnce
-
+# Source store — MUST be s3 in production
 config:
-  server:
-    transport: "http"
-    httpAddr: ":8080"
-    logFormat: "json"        # Structured JSON logs for log aggregation
-    logLevel: "info"
-  deployment:
-    preferredTarget: "auto"
-    namespace: "vibed-artifacts"
-  builder:
-    engine: "buildah"
-    buildah:
-      image: "quay.io/buildah/stable:latest"
-      timeout: "10m"
-      insecure: false            # Set true for in-cluster HTTP registries
   storage:
-    backend: "local"
-    local:
-      basePath: "/data/vibed/artifacts"
-  registry:
-    enabled: true
-    url: "ghcr.io/myorg/vibed-artifacts"
-  store:
-    backend: "sqlite"        # Default — persistent across restarts
-    sqlite:
-      path: "/data/vibed.db"
-  knative:
-    domainSuffix: "vibed.example.com"
-    ingressClass: "kourier.ingress.networking.knative.dev"
+    tarball:
+      backend: s3
+      s3: { bucket: vibed-sources, region: us-east-1, presignTTL: "15m" }
+  server: { logFormat: json }
 
-metrics:
-  enabled: true
+# Wildcard TLS
+caddy:
+  tls:
+    dns01: { enabled: true, provider: cloudflare, tokenSecret: vibed-cloudflare }
 
 auth:
   enabled: true
-  mode: "apikey"
-  existingSecret: "vibed-auth"
-  tls:
-    enabled: false           # Set to true if NOT using Ingress TLS termination
+  mode: oidc        # or apikey
+  oidc: { issuer: "https://idp.example.com/...", audience: vibed, adminRole: vibed-admin }
 ```
 
-:::tip
-For Git-based storage instead of local filesystem, see [Storage Backends](../configuration/storage.md). For full configuration reference, see [Configuration Reference](../configuration/config-reference.md).
-:::
+## 3. The network model (important)
 
-## Step 4: Create Kubernetes Secrets
+agent-sandbox gives sandbox pods **no cluster-internal egress and no cluster DNS** once a NetworkPolicy is enforced — this is where enterprise data-egress controls live. Two consequences:
 
-### API Key Secret
+- **Source must come from `s3`.** A pre-signed S3/MinIO URL is reachable over the sandbox's allowed public egress; the in-cluster `served` backend is not. `served` is dev-only.
+- **vibeD must own the NetworkPolicy.** agent-sandbox's `Managed` mode allows ingress only from an `app: sandbox-router` pod it doesn't ship, and blocks all cluster egress — which breaks the controller's probe and Caddy's proxy. Set `runtime.sandboxNetworkPolicy: Unmanaged` and `networkPolicy.enabled: true`; vibeD then ships a policy that allows exactly: control-plane → sandbox `:8080`/`:9000`, DNS, and public egress (for the S3 pull), with cluster-internal CIDRs denied.
+
+## 4. Install
 
 ```bash
-kubectl create namespace vibed-system
-
-kubectl create secret generic vibed-auth \
-  --namespace vibed-system \
-  --from-literal=api-key="vibed_sk_your_production_key_here"
+helm install vibed deploy/helm/vibed/ -n vibed-system --create-namespace -f values-production.yaml
+kubectl rollout status deploy/vibed -n vibed-system
+kubectl get sandboxwarmpool -n vibed-apps
 ```
 
-### TLS Secret (if using direct TLS, not Ingress termination)
+## 5. Expose Caddy
 
-```bash
-kubectl create secret tls vibed-tls \
-  --namespace vibed-system \
-  --cert=/path/to/tls.crt \
-  --key=/path/to/tls.key
-```
-
-Then add to your values file:
-
-```yaml
-auth:
-  tls:
-    enabled: true
-    existingSecret: "vibed-tls"
-```
-
-For automated certificate management with cert-manager, see [Authentication & HTTPS](../configuration/authentication.md#https--tls).
-
-### Registry Credentials
-
-If your artifact registry requires authentication, create an image pull secret and configure Docker credentials for Buildah builds:
-
-```bash
-# For pulling the vibeD image itself
-kubectl create secret docker-registry vibed-registry \
-  --namespace vibed-system \
-  --docker-server=ghcr.io \
-  --docker-username=USERNAME \
-  --docker-password=TOKEN
-
-# For Buildah Jobs to push artifact images
-kubectl create secret generic docker-config \
-  --namespace vibed-system \
-  --from-file=config.json=$HOME/.docker/config.json
-```
-
-See [Container Registry](../configuration/registry.md) for supported registries and authentication options.
-
-## Step 5: Deploy with Helm
-
-```bash
-helm install vibed deploy/helm/vibed/ \
-  --namespace vibed-system \
-  --create-namespace \
-  -f values-production.yaml
-```
-
-### Verify the deployment
-
-```bash
-# Check pod status
-kubectl get pods -n vibed-system
-
-# Wait for readiness
-kubectl rollout status deployment/vibed -n vibed-system
-
-# Port-forward to verify locally
-kubectl port-forward svc/vibed 8080:8080 -n vibed-system
-
-# Test the health endpoint
-curl http://localhost:8080/healthz
-```
-
-## Step 6: Expose vibeD Externally
-
-### Option A: Ingress (Recommended)
-
-Create an Ingress resource to expose vibeD with TLS termination:
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: vibed
-  namespace: vibed-system
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - vibed.example.com
-      secretName: vibed-ingress-tls
-  rules:
-    - host: vibed.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: vibed
-                port:
-                  number: 8080
-```
-
-:::note
-The Helm chart includes an `ingress` values block for future use, but does not yet generate an Ingress template. Create the Ingress resource manually as shown above.
-:::
-
-### Option B: LoadBalancer Service
-
-Override the service type in your values file:
-
-```yaml
-service:
-  type: LoadBalancer
-  port: 8080
-```
-
-Then retrieve the external IP:
-
-```bash
-kubectl get svc vibed -n vibed-system -o jsonpath='{.status.loadBalancer.ingress[0]}'
-```
-
-## Step 7: Container Registry Access
-
-vibeD needs push access to a container registry for Buildah build output. The Buildah Jobs push images directly to the registry.
-
-### Cloud Workload Identity (Recommended)
-
-For cloud-managed clusters, use workload identity to avoid managing credentials:
-
-- **GKE**: [Workload Identity Federation](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity)
-- **EKS**: [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html)
-- **AKS**: [Workload Identity](https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview)
-
-### Docker Config Mount
-
-Alternatively, mount a Docker config as a volume in the pod.
-
-See [Container Registry](../configuration/registry.md) for full details.
-
-## Optional: Instant Preview Fast Path
-
-The [Instant Preview](../concepts/instant-preview.md) fast path lets Python/Node
-apps with pre-baked dependencies deploy with no container build. It is
-**disabled by default**. To enable it in production:
-
-1. **Install the agent-sandbox CRD** — the fast path runs on `Sandbox` resources
-   (the same CRD as the Sandbox deployment target). See Step 2.
-2. **Build and push the runner images** — `make runner-images` builds
-   `vibed-runner-python` / `vibed-runner-node` and CI pushes them to GHCR; or
-   build and push to your own registry. They are built once, not per request.
-3. **Enable it in your values file** under `config.fastPath`:
-
-   ```yaml
-   config:
-     fastPath:
-       enabled: true
-       namespace: vibed-runners          # dedicated namespace recommended
-       previewTTL: "1h"                  # GC reaps previews after this
-       autoPromote: false                # or true to auto-build every preview
-       runners:
-         python:
-           image: ghcr.io/vibed-project/vibed-runner-python:latest
-           poolSize: 2
-         nodejs:
-           image: ghcr.io/vibed-project/vibed-runner-node:latest
-           poolSize: 2
-   ```
-
-The warm pool keeps `poolSize` idle pods per language running at all times —
-size it against expected concurrency and your cluster's spare capacity. The
-`agentToken` is generated at startup if left unset.
-
-:::caution
-Runner pods execute untrusted user code. Run them in a dedicated namespace with
-appropriate `NetworkPolicy` and PodSecurity `restricted` enforcement.
-:::
-
-External access to previews flows through vibeD's own HTTP listener: the
-`/preview/<artifact_id>/` reverse-proxy mounts each preview under vibeD's
-`server.baseURL`. Set `baseURL` correctly so the artifact's `url` field is
-externally usable — see [Instant Preview](../concepts/instant-preview.md).
-
-## Scaling Considerations
-
-vibeD defaults to a single replica. Before scaling, consider:
-
-- **PVC Access Mode**: The default `ReadWriteOnce` PVC cannot be shared across replicas on most storage classes.
-  - For multi-replica HA, use a `ReadWriteMany` storage class (NFS, EFS, Azure Files) or switch to a Git-based storage backend (GitHub/GitLab).
-  - See [Storage Backends](../configuration/storage.md) for Git-backed storage options.
-- **Build Resources**: Buildah build Jobs are CPU and memory intensive. Size resource limits based on expected concurrent builds.
-- **Artifact Scaling**: Knative auto-scales deployed artifacts independently from vibeD itself.
+Front the `vibed-caddy` Service with a LoadBalancer or Ingress, and point your wildcard DNS record `*.apps.example.com` at it. Caddy obtains the wildcard cert via DNS-01 and routes `<id>.apps.example.com` to each app's per-app Service.
 
 ## Upgrading
 
 ```bash
-helm upgrade vibed deploy/helm/vibed/ \
-  --namespace vibed-system \
-  -f values-production.yaml
+helm upgrade vibed deploy/helm/vibed/ -n vibed-system -f values-production.yaml
 ```
 
-The Deployment template includes a `checksum/config` annotation that triggers an automatic rolling update when the ConfigMap changes. This ensures configuration changes are applied without manual pod restarts.
-
-Verify the upgrade:
+:::warning CRD upgrades are not automatic
+Helm installs CRDs from `crds/` only on first install. If the release changes the `VibedApp` schema, apply it by hand or new status fields are silently dropped:
 
 ```bash
-kubectl rollout status deployment/vibed -n vibed-system
+kubectl apply -f deploy/helm/vibed/crds/vibed.dev_vibedapps.yaml
 ```
+:::
 
-## Security Checklist
+## Security checklist
 
-Before going to production, verify:
-
-- [ ] **Authentication enabled** (`auth.enabled: true`)
-- [ ] **TLS enabled** (direct TLS or Ingress termination)
-- [ ] **API keys in Kubernetes Secrets**, not in values files
-- [ ] **Distroless non-root image** (default Dockerfile)
-- [ ] **RBAC scoped** via Helm-generated ClusterRole (not cluster-admin)
-- [ ] **Network policies** restrict pod-to-pod traffic
-- [ ] **Registry credentials** use workload identity or image pull secrets
-- [ ] **Metrics endpoint** (`/metrics`) not publicly exposed (use NetworkPolicy or firewall)
-- [ ] **Store backend** set to `sqlite` (default) or `configmap` (not `memory`)
-- [ ] **Knative domain** uses a real domain (not `localhost`)
-- [ ] **Fast-path runners** (if `fastPath.enabled`) run in a dedicated namespace with NetworkPolicy — they execute untrusted user code
+- [ ] `auth.enabled: true` before exposing the API
+- [ ] Image tags pinned to a release (not `latest`)
+- [ ] `runtime.sandboxNetworkPolicy: Unmanaged` + `networkPolicy.enabled: true`
+- [ ] `storage.tarball.backend: s3` (never `served`)
+- [ ] Sandbox node pool isolated + Kata RuntimeClass in place
+- [ ] Caddy wildcard DNS-01 TLS enabled with the provider token in a Secret
+- [ ] `controller.domain` is a real domain (not `localhost`)
+- [ ] CRD re-applied after any schema-changing upgrade

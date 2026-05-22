@@ -4,184 +4,97 @@ sidebar_position: 1
 
 # Configuration Reference
 
-vibeD is configured via a YAML file and environment variables.
+There are two layers of configuration:
 
-## Config File
+1. **Application config** (`vibed.yaml`) — runtime settings for the `vibed` server. In Kubernetes this is rendered into a ConfigMap by the Helm chart and mounted at `/etc/vibed/vibed.yaml`.
+2. **Helm values** — cluster topology: namespaces, RuntimeClass, NetworkPolicy, the controller/router/caddy components, and the warm pools.
 
-Default search paths: `./vibed.yaml`, `/etc/vibed/vibed.yaml`
+You normally set everything through Helm values; the chart renders the app config for you.
+
+## Application config (`vibed.yaml`)
 
 ```yaml
 server:
-  transport: "http"           # stdio | http | both
-  httpAddr: ":8080"           # HTTP listen address
-  logFormat: "text"           # text | json (structured JSON for log aggregation)
-  logLevel: "info"            # debug | info | warn | error
-  rateLimit:
-    enabled: false            # Enable per-client HTTP rate limiting
-    requestsPerSecond: 10     # Steady-state rate per client
-    burst: 20                 # Max burst size per client
+  transport: "http"            # stdio | http
+  httpAddr: ":8080"
+  baseURL: ""                  # public URL for share-link generation
+  rateLimit: { enabled: false, requestsPerSecond: 10, burst: 20 }
 
 auth:
-  enabled: false              # Enable authentication for /mcp/ and /api/ endpoints
-  mode: "apikey"              # apikey | oauth
-  apiKeys:
-    - key: "env:VIBED_API_KEY"  # Resolve from environment variable
-      name: "default"
-    - key: "vibed_sk_..."     # Literal API key value
-      name: "ci-pipeline"
-      scopes: ["deploy"]
-    - key: "env:ALICE_KEY"    # Per-user storage override
-      name: "alice"
-      storage:                # Optional: route this user's artifacts to a dedicated repo
-        backend: "github"     # github | gitlab
-        github:
-          owner: "alice-org"
-          repo: "alice-artifacts"
-          token: "env:ALICE_GITHUB_TOKEN"
-  tls:
-    enabled: false            # Enable HTTPS
-    certFile: ""              # Path to TLS certificate file
-    keyFile: ""               # Path to TLS private key file
-    autoTLS: false            # Auto-generate self-signed cert (dev only)
+  enabled: false               # enable before exposing the API
+  mode: "apikey"               # apikey | oidc
+  # oidc: { issuer, audience, usernameClaim, roleClaim, adminRole, ... }
 
 deployment:
-  preferredTarget: "auto"     # auto | knative | kubernetes
-  namespace: "default"        # K8s namespace for deployed artifacts
-
-builder:
-  engine: "buildah"             # Container image builder (Buildah via K8s Jobs)
-  buildah:
-    image: "quay.io/buildah/stable:latest"  # Buildah container image
-    timeout: "10m"              # Build job timeout
-    insecure: false             # Set true for HTTP registries (e.g. in-cluster)
+  namespace: "vibed-apps"      # default deploy namespace
+  appsNamespace: "vibed-apps"  # where /v1 creates VibedApps + warm pools live
+  readyTimeout: "10m"          # how long a deploy waits for Ready before failing
 
 storage:
-  backend: "local"            # local | github | gitlab
-  local:
-    basePath: "/data/vibed/artifacts"
-  github:
-    owner: ""
-    repo: ""
-    branch: "main"
-  gitlab:
-    url: "https://gitlab.com" # GitLab instance URL
-    projectID: 0              # GitLab project ID (required for gitlab backend)
-    branch: "main"
-    token: ""                 # Access token or "env:GITLAB_TOKEN" / "file:/path"
-
-registry:
-  enabled: false
-  url: ""                     # e.g. "ghcr.io/myorg/vibed"
-  insecure: false             # Use HTTP instead of HTTPS (for in-cluster registries)
+  backend: "local"
+  tarball:                     # source-blob store for /v1/deploy
+    backend: "served"          # served (DEV only) | s3 (PRODUCTION)
+    served:
+      basePath: "/data/vibed/sources"
+      publicBaseURL: ""        # empty -> in-cluster Service DNS
+    s3:
+      endpoint: ""             # empty for AWS; set for MinIO
+      bucket: ""
+      region: ""
+      presignTTL: "15m"
 
 store:
-  backend: "sqlite"           # sqlite (default) | memory | configmap
-  sqlite:
-    path: "/data/vibed.db"    # SQLite database file path
-  configmap:
-    name: "vibed-artifacts"
-    namespace: "vibed-system"
+  backend: "sqlite"            # sqlite | configmap
+  sqlite:    { path: "/data/vibed/vibed.db" }
+  configmap: { name: "vibed-artifacts" }
 
-gc:
-  enabled: true               # Enable resource garbage collector
-  interval: "1h"              # How often GC runs
-  maxAge: "24h"               # Age threshold for orphaned resources
-  dryRun: false               # Log without deleting (for testing)
-
-kubernetes:
-  kubeconfig: ""              # Empty = in-cluster config
-  context: ""                 # Specific kubeconfig context
-
-knative:
-  domainSuffix: "localhost"
-  ingressClass: "kourier.ingress.networking.knative.dev"
-  gatewayPort: 80             # External gateway port for URLs (0 or 80 = omitted from URLs)
-
-tracing:
-  enabled: false              # Enable OpenTelemetry distributed tracing
-  endpoint: ""                # OTLP gRPC endpoint (e.g. "http://jaeger:4317"); empty = stdout
-  sampleRate: 1.0             # Sampling rate 0.0-1.0 (1.0 = sample all traces)
-
-# Instant Preview fast path — see Concepts › Instant Preview.
-# Disabled by default; requires the agent-sandbox CRD in the cluster.
-fastPath:
-  enabled: false              # Master switch for the fast path
-  namespace: ""               # Namespace for warm runner pods (empty = deployment.namespace)
-  replenishInterval: "15s"    # How often the pool tops itself up
-  readyTimeout: "2m"          # How long to wait for a new runner's agent to come up
-  maxIdleAge: "1h"            # Recycle idle runners older than this
-  previewTTL: "1h"            # How long a preview lives before the GC reaps it
-  autoPromote: false          # Automatically promote every preview to a durable build
-  agentToken: ""              # Shared bearer token for the control API (empty = generated at startup)
-  runners:                    # Per-language warm runner pools
-    python:
-      image: "ghcr.io/vibed-project/vibed-runner-python:latest"
-      poolSize: 2             # Warm idle pods to maintain
-      controlPort: 9000       # Agent control API port
-      appPort: 8080           # User app port
-      # Resource defaults: requests cpu=100m / memory=128Mi,
-      # limits cpu=500m / memory=512Mi. Override per language as needed.
-      resources:
-        limits:
-          cpu: "500m"
-          memory: "512Mi"
-        requests:
-          cpu: "100m"
-          memory: "128Mi"
-    nodejs:
-      image: "ghcr.io/vibed-project/vibed-runner-node:latest"
-      poolSize: 2
+limits: { maxTotalFileSize: 52428800, maxFileCount: 500, maxLogLines: 10000 }
+tracing: { enabled: false, endpoint: "", sampleRate: 1.0 }
+gc:      { enabled: true, interval: "5m", maxAge: "1h", dryRun: false }
 ```
 
-## Environment Variables
+:::info `served` vs `s3`
+`served` keeps the source tarball on vibeD's PVC and serves it over the in-cluster Service URL — **dev only**. Once a restrictive sandbox NetworkPolicy is in place (production), sandboxes have no cluster DNS or cluster-internal egress, so the agent can only pull from a **pre-signed `s3` URL**. Use `s3` (S3 or MinIO) in production.
+:::
 
-Every config field has an environment variable override:
+## Helm values (topology)
 
-| Variable | Config Path | Example |
-|----------|-------------|---------|
-| `VIBED_SERVER_TRANSPORT` | `server.transport` | `http` |
-| `VIBED_SERVER_HTTP_ADDR` | `server.httpAddr` | `:9090` |
-| `VIBED_LOG_FORMAT` | `server.logFormat` | `json` |
-| `VIBED_LOG_LEVEL` | `server.logLevel` | `debug` |
-| `VIBED_DEPLOYMENT_PREFERRED_TARGET` | `deployment.preferredTarget` | `knative` |
-| `VIBED_DEPLOYMENT_NAMESPACE` | `deployment.namespace` | `apps` |
-| `VIBED_BUILDER_ENGINE` | `builder.engine` | `buildah` |
-| `VIBED_BUILDER_BUILDAH_IMAGE` | `builder.buildah.image` | `quay.io/buildah/stable:latest` |
-| `VIBED_BUILDER_BUILDAH_INSECURE` | `builder.buildah.insecure` | `true` |
-| `VIBED_STORAGE_BACKEND` | `storage.backend` | `github` or `gitlab` |
-| `VIBED_STORAGE_LOCAL_BASE_PATH` | `storage.local.basePath` | `/data` |
-| `VIBED_STORAGE_GITHUB_OWNER` | `storage.github.owner` | `myorg` |
-| `VIBED_STORAGE_GITHUB_REPO` | `storage.github.repo` | `vibed-artifacts` |
-| `VIBED_REGISTRY_ENABLED` | `registry.enabled` | `true` |
-| `VIBED_REGISTRY_URL` | `registry.url` | `ghcr.io/...` |
-| `VIBED_STORE_BACKEND` | `store.backend` | `sqlite` |
-| `VIBED_STORE_SQLITE_PATH` | `store.sqlite.path` | `/data/vibed.db` |
-| `VIBED_GC_ENABLED` | `gc.enabled` | `true` |
-| `VIBED_GC_INTERVAL` | `gc.interval` | `1h` |
-| `VIBED_GC_MAX_AGE` | `gc.maxAge` | `24h` |
-| `VIBED_GC_DRY_RUN` | `gc.dryRun` | `true` |
-| `VIBED_FASTPATH_ENABLED` | `fastPath.enabled` | `true` |
-| `VIBED_FASTPATH_NAMESPACE` | `fastPath.namespace` | `vibed-runners` |
-| `VIBED_FASTPATH_AUTO_PROMOTE` | `fastPath.autoPromote` | `true` |
-| `VIBED_AUTH_ENABLED` | `auth.enabled` | `true` |
-| `VIBED_AUTH_MODE` | `auth.mode` | `apikey` |
-| `VIBED_AUTH_API_KEY` | (appends API key) | `vibed_sk_...` |
-| `VIBED_TLS_ENABLED` | `auth.tls.enabled` | `true` |
-| `VIBED_TLS_CERT_FILE` | `auth.tls.certFile` | `/etc/tls/tls.crt` |
-| `VIBED_TLS_KEY_FILE` | `auth.tls.keyFile` | `/etc/tls/tls.key` |
-| `VIBED_TLS_AUTO` | `auth.tls.autoTLS` | `true` |
-| `VIBED_RATE_LIMIT_ENABLED` | `server.rateLimit.enabled` | `true` |
-| `VIBED_RATE_LIMIT_RPS` | `server.rateLimit.requestsPerSecond` | `10` |
-| `VIBED_RATE_LIMIT_BURST` | `server.rateLimit.burst` | `20` |
-| `VIBED_REGISTRY_INSECURE` | `registry.insecure` | `true` |
-| `VIBED_KNATIVE_GATEWAY_PORT` | `knative.gatewayPort` | `80` |
-| `VIBED_TRACING_ENABLED` | `tracing.enabled` | `true` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `tracing.endpoint` (also enables tracing) | `http://jaeger:4317` |
-| `VIBED_TRACING_ENDPOINT` | `tracing.endpoint` | `http://tempo:4317` |
-| `VIBED_TRACING_SAMPLE_RATE` | `tracing.sampleRate` | `0.1` |
-| `VIBED_AUTH_OIDC_ISSUER` | `auth.oidc.issuer` | `https://accounts.google.com` |
-| `VIBED_AUTH_OIDC_AUDIENCE` | `auth.oidc.audience` | `vibed` |
-| `VIBED_AUTH_OIDC_ADMIN_ROLE` | `auth.oidc.adminRole` | `vibed-admin` |
-| `KUBECONFIG` | `kubernetes.kubeconfig` | `~/.kube/config` |
-| `GITHUB_TOKEN` | (GitHub storage auth) | `ghp_...` |
-| `GITLAB_TOKEN` | (GitLab storage auth) | `glpat-...` |
+```yaml
+namespaces:
+  apps: vibed-apps             # VibedApps + claims + templates + warm pools (one namespace)
+
+runtime:
+  defaultClass: kata-qemu      # kata-qemu (dev / no nested virt) | kata-fc (KVM)
+  installRuntimeClass: false   # let Helm own the RuntimeClass
+  nodeSelector: {}             # e.g. { vibed.dev/sandbox-node: "true" }
+  sandboxNetworkPolicy: Managed  # Managed (agent-sandbox owns it) | Unmanaged (vibeD owns it)
+
+networkPolicy:
+  enabled: false               # vibeD-owned sandbox NetworkPolicy (prod: pair with Unmanaged)
+
+controller:
+  domain: vibed.example.com    # DNS suffix for app URLs
+  urlScheme: https             # http in dev
+  urlPort: ""                  # dev: the host port reaching Caddy (e.g. "18080")
+
+router: { enabled: true }
+caddy:
+  enabled: true
+  tls:
+    dns01: { enabled: false, provider: cloudflare, tokenSecret: "" }  # wildcard TLS in prod
+
+workerd: { enabled: false, replicas: 3 }   # fast-lane V8 isolates
+
+warmPools:                     # one SandboxTemplate + SandboxWarmPool per template
+  node-24:      { enabled: true, lane: general, image: "...", replicas: 50 }
+  python-313:   { enabled: true, lane: general, image: "...", replicas: 50 }
+  go-123:       { enabled: true, lane: general, image: "...", replicas: 20 }
+  base-al2023:  { enabled: true, lane: general, image: "...", replicas: 30 }
+  static-nginx: { enabled: true, lane: fast,    image: "...", replicas: 30 }
+```
+
+See `deploy/helm/vibed/values.yaml` for the fully-documented defaults and `values-kind.yaml` for the dev overlay.
+
+## Environment overrides
+
+Most app-config fields have a `VIBED_*` environment override (e.g. `VIBED_SERVER_TRANSPORT`, `VIBED_AUTH_ENABLED`, `VIBED_TRACING_ENDPOINT`). `KUBECONFIG` selects the cluster when running outside it. The controller takes flags (`--vibed-domain`, `--app-url-scheme`, `--app-url-port`, `--pool-namespace`) which the chart wires from the values above.

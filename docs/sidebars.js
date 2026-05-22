@@ -10,7 +10,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Concepts',
-      items: ['concepts/architecture', 'concepts/deployment-targets', 'concepts/artifact-lifecycle', 'concepts/instant-preview'],
+      items: ['concepts/architecture', 'concepts/lanes-and-templates', 'concepts/app-lifecycle'],
     },
     {
       type: 'category',
@@ -22,7 +22,6 @@ const sidebars = {
       label: 'Deployment',
       items: [
         'deployment/production-guide',
-        'deployment/knative-setup',
         'deployment/monitoring',
         'deployment/troubleshooting',
       ],
@@ -36,7 +35,6 @@ const sidebars = {
         'mcp-tools/list-artifacts',
         'mcp-tools/get-artifact-status',
         'mcp-tools/update-artifact',
-        'mcp-tools/promote-artifact',
         'mcp-tools/delete-artifact',
         'mcp-tools/get-artifact-logs',
         'mcp-tools/list-deployment-targets',

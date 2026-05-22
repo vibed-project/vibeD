@@ -62,9 +62,9 @@ The `type` label values are: `job`, `configmap`, `deployment`, `service`,
 
 The GC runs periodically (default: every 1 hour) and removes orphaned Kubernetes resources whose artifact no longer exists in the store. See [Configuration Reference](../configuration/config-reference.md) for GC settings.
 
-### Fast Path / Runner Pool Metrics
+### Warm Pool Metrics
 
-Emitted when the [Instant Preview](../concepts/instant-preview.md) fast path is enabled.
+Emitted by the [warm pools](../concepts/lanes-and-templates.md) that back the deploy path.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|

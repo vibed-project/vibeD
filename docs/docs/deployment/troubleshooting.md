@@ -4,278 +4,67 @@ sidebar_position: 4
 
 # Troubleshooting
 
-Common issues and their solutions when running vibeD in production.
+Common issues, mostly drawn from real cluster bring-up.
 
-## vibeD Pod Not Starting
+## A new status field is always empty on-cluster
 
-### CrashLoopBackOff
+You changed the `VibedApp` CRD and `helm upgrade`d, but a new `status.*` field never persists.
 
-Check the pod logs for the root cause:
+**Cause:** Helm installs CRDs from `crds/` only on *first install* and never on upgrade, so the live CRD lacks the new field and the apiserver silently strips it from writes.
 
-```bash
-kubectl logs -n vibed-system deploy/vibed
-```
-
-**Common causes:**
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `failed to load config` | Invalid `vibed.yaml` | Check YAML syntax in ConfigMap |
-| `failed to connect to kubernetes` | RBAC issue | Verify ServiceAccount and ClusterRoleBinding exist |
-| `address already in use` | Port conflict | Ensure nothing else is on port 8080 |
-| `unknown storage backend` | Typo in config | Valid backends: `local`, `github`, `gitlab` |
-
-### Readiness Probe Failing
-
-The `/readyz` endpoint returns 503 when a component is unhealthy:
+**Fix:** apply the CRD by hand.
 
 ```bash
-# Check readiness response
-kubectl port-forward -n vibed-system deploy/vibed 8080:8080
-curl -s http://localhost:8080/readyz | jq
+kubectl apply -f deploy/helm/vibed/crds/vibed.dev_vibedapps.yaml
+# verify the field is in the schema:
+kubectl get crd vibedapps.vibed.dev -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.status.properties.<field>}'
 ```
 
-The response includes per-component status. Fix the failing component:
-
-| Component | Common Cause | Fix |
-|-----------|-------------|-----|
-| `store` | ConfigMap not accessible | Check RBAC for ConfigMap read/write |
-| `kubernetes` | API server unreachable | Check ServiceAccount token mounting |
-
-## Builds Failing
-
-### Builder Image Pull Failure
-
-**Symptom:** Build Job hangs or fails with timeout pulling `quay.io/buildah/stable:latest`.
-
-**Fixes:**
-- Ensure the cluster has internet access or pre-pull the Buildah image
-- Use a registry mirror: set `config.builder.buildah.image` to a mirrored copy
-- If behind a proxy, configure the container runtime's proxy settings
-- For Kind clusters: `docker pull quay.io/buildah/stable:latest && kind load docker-image quay.io/buildah/stable:latest`
-
-### Registry Push Authentication Failure
-
-**Symptom:** Build succeeds but push fails with `UNAUTHORIZED` or `denied`.
-
-**Fixes:**
-- Verify `config.registry.enabled: true` and `config.registry.url` are set
-- Check Docker credential chain is available inside the pod
-- For cloud registries, verify workload identity is configured
-- See [Container Registry](../configuration/registry.md) for auth details
-
-### Build Runs Out of Memory
-
-**Symptom:** Build Job pod is OOMKilled during Buildah execution.
-
-The default memory limit is 512Mi, but Buildah with VFS storage driver can use 1-2Gi depending on the project.
-
-**Fix:** Increase the memory limit in your Helm values:
-
-```yaml
-resources:
-  limits:
-    memory: 2Gi
-  requests:
-    memory: 512Mi
-```
-
-## Deployments Failing
-
-### Knative Service Not Becoming Ready
+## App stuck in `Starting`
 
 ```bash
-# Check Knative Service status
-kubectl get ksvc -A
-
-# Check for detailed conditions
-kubectl describe ksvc <artifact-name> -n <namespace>
-
-# Check Knative controller logs
-kubectl logs -n knative-serving deploy/controller
-
-# Check Kourier logs
-kubectl logs -n kourier-system deploy/3scale-kourier-control
+kubectl get vibedapp <name> -n vibed-apps -o jsonpath='{range .status.conditions[*]}{.type}={.reason}: {.message}{"\n"}{end}'
 ```
 
-**Common causes:**
-- Image pull failure in the artifact pod (registry credentials not propagated)
-- Insufficient resources in the cluster for the new pod
-- Knative domain not configured correctly
+- **`InjectFailed … context deadline exceeded`** — the sandbox agent couldn't pull the source tarball. The usual cause in dev is a stale `storage.tarball.served.publicBaseURL` (e.g. a hardcoded Service ClusterIP that changed on reinstall). Leave it empty so it defaults to the Service DNS name. In production, this means `served` is being used where `s3` is required — switch to `s3`.
+- **`AgentUnreachable`** — the controller can't reach the sandbox agent on `:9000`. Check the sandbox NetworkPolicy: `Managed` mode blocks the control plane. Use `runtime.sandboxNetworkPolicy: Unmanaged` + `networkPolicy.enabled: true`.
 
-### Artifact URL Not Reachable
+## App is `Ready` but the URL 502s / isn't reachable
 
-**Knative deployments:**
-- Verify DNS resolution: `nslookup <artifact-name>.default.vibed.example.com`
-- Verify Kourier LoadBalancer has an external IP: `kubectl get svc -n kourier-system`
-- Check that the wildcard DNS record points to the correct IP
+- **502 after a sandbox pod restart** — the route follows a per-app `Service`, and the controller re-injects source on pod recreation, so this self-heals within a reconcile. If it persists, check the Service has endpoints: `kubectl get endpoints vibed-app-<label> -n vibed-apps`.
+- **`https://<label>.localhost` won't open (dev)** — dev Caddy serves plain HTTP behind a port-forward. Use the URL vibeD actually returns: `http://<label>.localhost:18080`. `*.localhost` resolves in Chrome/Firefox; in Safari add a `/etc/hosts` entry or use Chrome.
+- **Caddy route missing** — check `vibed-router` logs and the Caddy admin API:
 
-**Kubernetes deployments:**
-- Check NodePort allocation: `kubectl get svc -n <artifact-namespace>`
-- Verify firewall rules allow traffic to the NodePort range (30000-32767)
+  ```bash
+  kubectl exec -n vibed-system deploy/vibed-caddy -- wget -qO- http://localhost:2019/config/apps/http/servers
+  ```
 
-### Instant Preview Not Used (deploy went through Buildah instead)
+## App deployed but not in the dashboard
 
-A deploy you expected to be a fast-path preview (`mode: preview`) instead built
-a container image. The [dependency gate](../concepts/instant-preview.md#the-dependency-gate)
-silently falls back to the build path when an app isn't eligible. Check:
-
-- **Fast path enabled?** `config.fastPath.enabled: true` and a `runners` entry
-  for the language.
-- **Dependency not pre-baked?** Every dependency in `requirements.txt` /
-  `package.json` must be in the runner image's manifest
-  (`internal/prebaked/manifests/*.yaml`). One unknown dependency → full build.
-- **Un-analyzable `requirements.txt`?** Lines like `-r other.txt`, VCS installs
-  (`git+https://…`), or local paths make the file un-analyzable → full build.
-- To force the fast path and get a clear error instead of a silent fallback,
-  pass `target: "runner"` explicitly to `deploy_artifact`.
-
-### Instant Preview Stuck or Failing
+The dashboard lists apps via `/v1/apps`. Confirm the API returns it:
 
 ```bash
-# The runner pool runs on Sandbox CRs — confirm the CRD is installed
-kubectl get crd sandboxes.agents.x-k8s.io
-
-# Inspect the warm pool (idle + claimed runner pods)
-kubectl get sandboxes -n <fastPath.namespace> -l app.kubernetes.io/component=runner-pool
-
-# vibeD logs show pool churn, claims, and warmup failures
-kubectl logs -n vibed-system deploy/vibed | grep -iE "runner|pool"
+curl http://localhost:18090/v1/apps
 ```
 
-**Common causes:**
-- **agent-sandbox CRD missing** — without it the pool can't create runners; the
-  RunnerDeployer isn't registered and deploys fall back to the build path.
-- **Runner image not pullable** — pooled pods stay un-Ready; vibeD discards them
-  after `fastPath.readyTimeout` and `vibed_pool_runners_created_total{status="failed"}`
-  climbs. Verify the `runners.<lang>.image` ref and registry credentials.
-- **Pool exhausted** — every claim is `cold` in `vibed_pool_claims_total`; raise
-  `poolSize` or check why runners aren't replenishing.
-- **Preview URL points at `*.svc.cluster.local`** — `server.baseURL` is unset,
-  so vibeD couldn't construct an external proxy URL. Set
-  `config.server.baseURL` to the externally reachable vibeD URL (e.g.
-  `http://localhost:31808`) and redeploy / restart vibeD; subsequent previews'
-  `artifact.url` will be `<baseURL>/preview/<id>/`.
-- **`/preview/<id>/` returns 502 Bad Gateway** — vibeD reached the proxy but
-  the runner agent isn't responding. Check the runner pod is `Ready` and the
-  agent's `/healthz` is up: `kubectl exec` into the pod and curl
-  `http://localhost:9000/healthz`.
-- **Preview asset 404s under the proxy** (e.g. `<img src="/logo.png">`) — the
-  app is emitting absolute paths that don't resolve under `/preview/<id>/`.
-  See the sub-path caveat in [Instant Preview](../concepts/instant-preview.md);
-  the long-term answer is to promote the preview to its own subdomain.
+If it's there but not in the UI, hard-refresh the browser to drop a stale cached bundle. Note that auth scopes the list to the caller's `owner`; with auth disabled everything is owned by `admin`.
 
-## Authentication Issues
-
-### 401 Unauthorized
-
-**Check the API key matches:**
+## Warm pool empty / claims time out
 
 ```bash
-# View the stored key
-kubectl get secret vibed-auth -n vibed-system \
-  -o jsonpath='{.data.api-key}' | base64 -d
-
-# Verify the key works
-curl -H "Authorization: Bearer <your-key>" \
-  https://vibed.example.com/healthz
+kubectl get sandboxwarmpool -n vibed-apps
+kubectl get pods -n vibed-apps
 ```
 
-**Common causes:**
-- Key mismatch between client and secret
-- Missing `Authorization: Bearer` header prefix
-- TLS issues (connecting via HTTP when TLS is enabled)
-- Secret name doesn't match `auth.existingSecret` in values
+- Template image not pullable → warm sandboxes never become Ready. Check the `warmPools.<template>.image` ref and registry credentials.
+- agent-sandbox controller not running → no binding happens. Confirm it's installed and healthy.
 
-For full auth configuration, see [Authentication & HTTPS](../configuration/authentication.md).
-
-## Storage Issues
-
-### PVC Stuck in Pending
-
-```bash
-kubectl get pvc -n vibed-system
-kubectl describe pvc vibed-data -n vibed-system
-```
-
-**Common causes:**
-
-| Cause | Fix |
-|-------|-----|
-| No default StorageClass | Set `persistence.storageClass` explicitly |
-| StorageClass doesn't exist | Create it or use an existing one: `kubectl get sc` |
-| No available PVs (static provisioning) | Create a PV matching the PVC spec |
-| Quota exceeded | Check resource quotas: `kubectl get quota -n vibed-system` |
-
-### Artifacts Lost After Restart
-
-If artifact metadata disappears after a pod restart, you are likely using the in-memory store.
-
-**Fix:** Switch to ConfigMap-backed store:
-
-```yaml
-config:
-  store:
-    backend: "configmap"
-    configmap:
-      name: "vibed-artifacts"
-```
-
-:::warning
-The `memory` store backend is for development only. Always use `configmap` in production.
-:::
-
-### GitHub/GitLab Storage Failures
-
-**Symptom:** Deploy succeeds locally but fails to push to Git storage.
-
-**Check:**
-- Token has required scopes (`repo` for GitHub, `api` for GitLab)
-- Token hasn't expired
-- Repository exists and is accessible
-- Token is correctly resolved: check `env:VAR_NAME` variable is set in the pod
-
-See [Storage Backends](../configuration/storage.md) for configuration details.
-
-## Helm Upgrade Issues
-
-### ConfigMap Changes Not Applied
-
-The Deployment template includes a `checksum/config` annotation that triggers a rolling update when the ConfigMap content changes. If your config changes are not being applied:
-
-```bash
-# Check if rollout happened
-kubectl rollout status deployment/vibed -n vibed-system
-
-# Force a rollout if needed
-kubectl rollout restart deployment/vibed -n vibed-system
-
-# Verify the ConfigMap content
-kubectl get configmap vibed-config -n vibed-system -o yaml
-```
-
-**Common cause:** Using `helm upgrade` without the correct values file. Always pass all values:
-
-```bash
-helm upgrade vibed deploy/helm/vibed/ \
-  --namespace vibed-system \
-  -f values-production.yaml
-```
-
-## Diagnostic Commands
-
-Quick reference for common debugging commands:
+## Diagnostic commands
 
 | Command | Purpose |
-|---------|---------|
-| `kubectl get pods -n vibed-system` | Check pod status |
-| `kubectl logs -n vibed-system deploy/vibed` | View vibeD logs |
-| `kubectl logs -n vibed-system deploy/vibed --previous` | View logs from crashed pod |
-| `kubectl describe pod -n vibed-system -l app.kubernetes.io/name=vibed` | Detailed pod info |
-| `kubectl get events -n vibed-system --sort-by=.lastTimestamp` | Recent events |
-| `kubectl get ksvc -A` | List Knative Services |
-| `kubectl get pvc -n vibed-system` | Check persistent volumes |
-| `kubectl get secret -n vibed-system` | List secrets |
-| `curl -s http://localhost:8080/healthz \| jq` | Liveness check (via port-forward) |
-| `curl -s http://localhost:8080/readyz \| jq` | Readiness check (via port-forward) |
-| `curl -s http://localhost:8080/metrics \| grep vibed_` | View Prometheus metrics |
+|---|---|
+| `kubectl get pods -n vibed-system` | Control-plane status |
+| `kubectl logs -n vibed-system deploy/vibed-controller` | Reconcile / claim / inject logs |
+| `kubectl logs -n vibed-system deploy/vibed-router` | Route programming |
+| `kubectl get vibedapp -A` | All apps + phase + URL |
+| `curl -s localhost:18090/metrics \| grep vibed_` | Prometheus metrics |

@@ -44,8 +44,6 @@ Returns the full artifact object:
 }
 ```
 
-The `mode` field is `built` for a normal artifact or `preview` for an
-ephemeral [Instant Preview](../concepts/instant-preview.md) running on a
-pooled runner.
+The status reflects the app's [phase](../concepts/app-lifecycle.md) (`Pending` → `Claiming` → `Starting` → `Ready`, or `Failed`) along with its URL and the bound sandbox.
 
 Note: `secret_refs` shows only the reference (`secret-name:key`), never the actual secret value.
