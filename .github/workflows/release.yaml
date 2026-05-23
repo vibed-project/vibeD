@@ -49,15 +49,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.image }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
+      # Compute tags in shell rather than docker/metadata-action: that action
+      # makes a GitHub API call to enrich OCI labels which intermittently
+      # returns "Bad credentials" and hard-fails the build. Shell is
+      # deterministic and needs no API.
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          img="${REGISTRY}/${ORG}/${{ matrix.image }}"
+          v="${GITHUB_REF_NAME#v}"
+          {
+            echo "tags<<EOF"
+            echo "${img}:${v}"
+            # major.minor only for a clean (non-prerelease) semver tag
+            if [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "${img}:${v%.*}"; fi
+            echo "${img}:sha-${GITHUB_SHA::7}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v7
@@ -65,8 +74,10 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           platforms: linux/amd64,linux/arm64
