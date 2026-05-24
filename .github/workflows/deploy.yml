@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+    # Only redeploy the site when docs (or this workflow) change — avoids
+    # rebuilding GitHub Pages on pure-code pushes.
+    paths:
+      - 'docs/**'
+      - '.github/workflows/deploy.yml'
     # Review gh actions docs if you want to further define triggers, paths, etc
     # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#on
 
