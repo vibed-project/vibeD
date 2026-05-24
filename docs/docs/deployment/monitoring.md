@@ -102,6 +102,19 @@ The SSE endpoint (`GET /api/events`) streams real-time artifact lifecycle events
 
 The `client_type` label is `apikey` when the client is authenticated or `ip` when identified by IP address. See [Configuration Reference](../configuration/config-reference.md) for rate limit settings.
 
+### Governance Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `vibed_quota_rejections_total` | Counter | `scope` | Deploys rejected by [quota](../configuration/quotas.md), by the ceiling that tripped (`owner` or `department`) |
+| `vibed_audit_events_total` | Counter | `action`, `outcome` | [Audit](../configuration/audit-log.md) events recorded, by action (`deploy`/`delete`/`rollback`) and outcome (`ok`/`denied`/`error`) |
+
+These are served on the main server's `/metrics` (:8080). The bring-your-own base-image validator emits one more, but on the **controller's** metrics endpoint (:8081):
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `vibed_template_validation` | Gauge | `template`, `result` | Per-slot [base-image validation](../configuration/custom-base-images.md) state; alert on `vibed_template_validation{result="invalid"} == 1` |
+
 ### Label Values
 
 | Label | Possible Values |
