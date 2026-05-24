@@ -50,6 +50,7 @@ func main() {
 		domain               string
 		urlScheme            string
 		urlPort              string
+		validateImages       bool
 		poolNamespace        string
 		agentToken           string
 		workerdReplicas      int
@@ -68,6 +69,8 @@ func main() {
 		"URL scheme for published app URLs. Set 'http' in dev (Caddy serves plain HTTP).")
 	flag.StringVar(&urlPort, "app-url-port", "",
 		"Optional port appended to app URLs (dev: the host port reaching Caddy, e.g. 18080). Empty in prod.")
+	flag.BoolVar(&validateImages, "validate-images", true,
+		"Validate warm-pool base images (BYO contract) and hard-gate deploys whose image is invalid. Disable for trusted/air-gapped installs.")
 	flag.StringVar(&poolNamespace, "pool-namespace", "vibed-pools",
 		"Namespace where SandboxWarmPool / SandboxTemplate live (matches templates/*/template.yaml).")
 	flag.StringVar(&agentToken, "agent-token", "",
@@ -110,7 +113,9 @@ func main() {
 		Injector: controller.NewHTTPInjector(agentToken),
 		Services: &controller.K8sServiceManager{Client: mgr.GetClient(), AppPort: 8080},
 		Router:   controller.DeterministicRouter{Domain: domain, Scheme: urlScheme, Port: urlPort},
-		Gate:     &controller.ConfigMapTemplateGate{Client: mgr.GetClient(), Namespace: poolNamespace},
+	}
+	if validateImages {
+		reconciler.Gate = &controller.ConfigMapTemplateGate{Client: mgr.GetClient(), Namespace: poolNamespace}
 	}
 	// Fast lane: wire the workerd loader client only when replicas are
 	// configured. Otherwise the default DummyFastLaneDeployer rejects
@@ -137,26 +142,29 @@ func main() {
 
 	// Periodically validate the base image backing each warm-pool slot (BYO
 	// base-image feature) and persist results for the claim-path gate. Runs
-	// after the cache syncs; an initial pass happens immediately.
-	validator := &templatevalidate.Validator{
-		Client:    mgr.GetClient(),
-		Namespace: poolNamespace,
-		Probe:     templatevalidate.HTTPInfoProbe{Token: agentToken},
-	}
-	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		runValidation(ctx, validator, logger)
-		t := time.NewTicker(2 * time.Minute)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-t.C:
-				runValidation(ctx, validator, logger)
-			}
+	// after the cache syncs; an initial pass happens immediately. Skipped when
+	// --validate-images=false (trusted/air-gapped installs).
+	if validateImages {
+		validator := &templatevalidate.Validator{
+			Client:    mgr.GetClient(),
+			Namespace: poolNamespace,
+			Probe:     templatevalidate.HTTPInfoProbe{Token: agentToken},
 		}
-	})); err != nil {
-		fatal(logger, "add image validator", err)
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			runValidation(ctx, validator, logger)
+			t := time.NewTicker(2 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-t.C:
+					runValidation(ctx, validator, logger)
+				}
+			}
+		})); err != nil {
+			fatal(logger, "add image validator", err)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

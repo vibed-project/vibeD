@@ -40,6 +40,11 @@ spec:
       runtimeClassName: {{ . }}
       {{- end }}
       automountServiceAccountToken: false
+      {{- with $cfg.imagePullSecret }}
+      # Pull secret for a private bring-your-own base image.
+      imagePullSecrets:
+        - name: {{ . }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

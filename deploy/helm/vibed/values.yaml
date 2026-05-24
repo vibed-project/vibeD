@@ -95,6 +95,14 @@ runtime:
   #               policy = fully open.)
   sandboxNetworkPolicy: Managed
 
+# -- Bring-your-own base-image validation. When enabled (default), the
+#    controller periodically boots-checks each warm-pool image (agent /info +
+#    language match + runtime probe) and hard-gates deploys whose image is
+#    known-invalid. Disable for air-gapped/offline installs where you trust
+#    your images and want no preflight.
+templateValidation:
+  enabled: true
+
 # -- vibeD-owned sandbox NetworkPolicy (the production posture). Default-deny,
 #    then allow the control plane -> sandbox (:8080/:9000) and DNS + public
 #    egress (for the agent's pre-signed S3 source pull) while blocking
