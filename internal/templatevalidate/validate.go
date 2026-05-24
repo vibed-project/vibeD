@@ -218,6 +218,24 @@ func (v *Validator) Persist(ctx context.Context, results []Result) error {
 	return v.Client.Update(ctx, cm)
 }
 
+// LoadAll reads every slot's validation result from the ConfigMap (for the
+// `vibed validate-images` status report). Returns an empty slice when the
+// ConfigMap exists but is empty; an error only when it can't be read.
+func LoadAll(ctx context.Context, c client.Client, namespace string) ([]Result, error) {
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ConfigMapName}, cm); err != nil {
+		return nil, err
+	}
+	out := make([]Result, 0, len(cm.Data))
+	for _, raw := range cm.Data {
+		var r Result
+		if json.Unmarshal([]byte(raw), &r) == nil {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
 // LoadResult reads one slot's validation result from the ConfigMap. found is
 // false when the slot hasn't been validated yet (treated as "not yet known").
 func LoadResult(ctx context.Context, c client.Client, namespace, slot string) (Result, bool, error) {

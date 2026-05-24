@@ -145,6 +145,7 @@ func main() {
 	// after the cache syncs; an initial pass happens immediately. Skipped when
 	// --validate-images=false (trusted/air-gapped installs).
 	if validateImages {
+		templatevalidate.RegisterMetrics()
 		validator := &templatevalidate.Validator{
 			Client:    mgr.GetClient(),
 			Namespace: poolNamespace,
@@ -195,6 +196,7 @@ func runValidation(ctx context.Context, v *templatevalidate.Validator, logger *s
 			logger.Warn("template image invalid", "template", r.Template, "image", r.Image, "reason", r.Reason)
 		}
 	}
+	templatevalidate.RecordResults(results)
 	if err := v.Persist(ctx, results); err != nil {
 		logger.Warn("persisting template validation results failed", "error", err)
 	}

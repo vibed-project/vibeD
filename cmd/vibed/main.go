@@ -46,6 +46,11 @@ import (
 )
 
 func main() {
+	// Subcommands (must be handled before flag.Parse, which can't see them).
+	if len(os.Args) > 1 && os.Args[1] == "validate-images" {
+		os.Exit(runValidateImages(os.Args[2:]))
+	}
+
 	var (
 		configPath string
 		transport  string

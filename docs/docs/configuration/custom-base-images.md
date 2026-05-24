@@ -74,11 +74,20 @@ warmPools:
     replicas: 30
 ```
 
-`imagePullSecret` must reference a `kubernetes.io/dockerconfigjson` Secret in the workloads namespace (`vibed-apps`). After `helm upgrade`, the controller validates the new image on its next pass; check the result:
+`imagePullSecret` must reference a `kubernetes.io/dockerconfigjson` Secret in the workloads namespace (`vibed-apps`). After `helm upgrade`, the controller validates the new image on its next pass. Check the result with the CLI:
+
+```bash
+vibed validate-images
+# TEMPLATE  VALID  IMAGE                              DETAIL
+# node-24   yes    your-registry/hardened-node...     node
+```
+
+or the raw status / metric:
 
 ```bash
 kubectl get configmap vibed-template-validation -n vibed-apps -o jsonpath='{.data.node-24}'
 # {"template":"node-24","image":"...","language":"node","valid":true,"checkedAt":"..."}
+# Prometheus (controller :8081): vibed_template_validation{template="node-24",result="invalid"}
 ```
 
 ## Deactivating default images
