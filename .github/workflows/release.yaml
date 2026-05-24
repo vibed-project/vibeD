@@ -59,6 +59,7 @@ jobs:
           set -euo pipefail
           img="${REGISTRY}/${ORG}/${{ matrix.image }}"
           v="${GITHUB_REF_NAME#v}"
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
           {
             echo "tags<<EOF"
             echo "${img}:${v}"
@@ -81,6 +82,30 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           platforms: linux/amd64,linux/arm64
+          # Attach an SBOM attestation to each image in the registry (BuildKit
+          # generates it per platform). Discoverable via
+          # `docker buildx imagetools inspect` / cosign / the OCI referrers API.
+          sbom: true
+
+      # Also emit a standalone SPDX file per image and ship it as a workflow
+      # artifact so chart-release can attach downloadable SBOMs to the GitHub
+      # Release. syft pulls the just-pushed image from GHCR (docker login above
+      # provides the registry credentials it reads from the docker config).
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate image SBOM (SPDX)
+        run: |
+          set -euo pipefail
+          syft "registry:${REGISTRY}/${ORG}/${{ matrix.image }}:${{ steps.tags.outputs.version }}" \
+            -o spdx-json="${{ matrix.image }}.spdx.json"
+
+      - name: Upload image SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.image }}
+          path: ${{ matrix.image }}.spdx.json
+          retention-days: 7
 
   # Package the Helm chart at the release version, push it to GHCR as an OCI
   # artifact, and publish the GitHub Release with the chart attached.
@@ -110,12 +135,30 @@ jobs:
       - name: Push chart to GHCR
         run: helm push dist/vibed-${{ steps.ver.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts
 
+      # Collect the per-image SBOMs produced by the images job and add a source
+      # SBOM (Go modules + repo deps), so the release ships a complete,
+      # downloadable bill of materials alongside the in-registry attestations.
+      - name: Download image SBOMs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-*
+          path: dist/sbom
+          merge-multiple: true
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate source SBOM (SPDX)
+        run: syft dir:. -o spdx-json=dist/sbom/vibed-source.spdx.json
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           append_body: true
-          files: dist/vibed-${{ steps.ver.outputs.version }}.tgz
+          files: |
+            dist/vibed-${{ steps.ver.outputs.version }}.tgz
+            dist/sbom/*.spdx.json
           body: |
             ## Install
 
@@ -129,3 +172,9 @@ jobs:
             vibed, vibed-controller, vibed-router, vibed-workerd-loader, and the
             template images (vibed-runner-node, vibed-runner-python,
             vibed-template-go-123, vibed-template-base-al2023, vibed-template-static-nginx).
+
+            ### Software Bill of Materials
+            SPDX SBOMs (`*.spdx.json`) for every image plus the source tree are
+            attached below. Each image also carries an SBOM attestation in the
+            registry — inspect with
+            `docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.ORG }}/vibed:${{ steps.ver.outputs.version }} --format '{{ json .SBOM }}'`.
