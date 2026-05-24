@@ -287,6 +287,19 @@ config:
     maxFileCount: 500
     # -- Max log lines per request (default: 10000).
     maxLogLines: 10000
+  # -- Deploy quotas: cap concurrent apps per owner / per department
+  #     (enterprise governance). New deploys exceeding a ceiling get a 429;
+  #     redeploys don't count. Per-department needs store.backend=sqlite +
+  #     users assigned to departments. See docs/configuration/quotas.
+  quotas:
+    enabled: false
+    # -- Per-user concurrent-app ceiling (0 = unlimited).
+    maxAppsPerOwner: 0
+    # -- Per-department aggregate concurrent-app ceiling (0 = unlimited).
+    maxAppsPerDepartment: 0
+    # -- Override the department ceiling by department name, e.g.
+    #     perDepartment: { platform: 50, contractors: 3 }
+    perDepartment: {}
   # -- OpenTelemetry distributed tracing configuration.
   tracing:
     enabled: false

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
@@ -17,7 +18,7 @@ import (
 // agree on one backend, so MCP never goes split-brain. The remaining tools
 // (update, logs, versions, rollback, share) stay on the orchestrator
 // pending a follow-up.
-func RegisterTools(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, limits config.LimitsConfig, userStore store.UserStore) {
+func RegisterTools(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, limits config.LimitsConfig, userStore store.UserStore, auditRec *audit.Recorder) {
 	registerDeployTool(server, orch, deploySvc, limits)
 	registerListTool(server, orch, deploySvc)
 	registerStatusTool(server, orch, deploySvc)
@@ -26,7 +27,7 @@ func RegisterTools(server *mcp.Server, orch *orchestrator.Orchestrator, deploySv
 	registerTargetsTool(server, orch)
 	registerUpdateTool(server, orch, limits)
 	registerListVersionsTool(server, orch)
-	registerRollbackTool(server, orch)
+	registerRollbackTool(server, orch, auditRec)
 	registerShareTool(server, orch)
 	registerUnshareTool(server, orch)
 	registerCreateShareLinkTool(server, orch)

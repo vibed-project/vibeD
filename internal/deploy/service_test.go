@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -234,5 +235,120 @@ func TestGetListDeleteOwnership(t *testing.T) {
 	}
 	if _, err := svc.Get(context.Background(), "alice", "a"); err != ErrNotFound {
 		t.Errorf("app should be gone after delete")
+	}
+}
+
+// ---- quota + audit wiring ----
+
+type fakeQuota struct {
+	dept    string
+	deny    bool
+	lastNew bool
+}
+
+func (q *fakeQuota) Authorize(_ context.Context, _ string, isNew bool) (string, error) {
+	q.lastNew = isNew
+	if q.deny {
+		return q.dept, &fakeQuotaErr{}
+	}
+	return q.dept, nil
+}
+
+type fakeQuotaErr struct{}
+
+func (e *fakeQuotaErr) Error() string       { return "quota exceeded" }
+func (e *fakeQuotaErr) QuotaExceeded() bool { return true }
+
+type fakeAuditor struct {
+	mu     sync.Mutex
+	events []string // "action:outcome"
+}
+
+func (a *fakeAuditor) Record(_ context.Context, action, _, outcome, _ string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, action+":"+outcome)
+}
+
+func (a *fakeAuditor) got() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.events...)
+}
+
+func TestDeployQuotaDeniesNewApp(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	store := newFakeStore()
+	svc := newService(c, store)
+	aud := &fakeAuditor{}
+	svc.Quota = &fakeQuota{deny: true}
+	svc.Audit = aud
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "denied-app",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	})
+	var qe interface{ QuotaExceeded() bool }
+	if !errors.As(err, &qe) {
+		t.Fatalf("want a quota error, got %v", err)
+	}
+	if store.puts() != 0 {
+		t.Errorf("a rejected deploy must not store source, got %d puts", store.puts())
+	}
+	if got := aud.got(); len(got) != 1 || got[0] != "deploy:denied" {
+		t.Errorf("audit = %v, want [deploy:denied]", got)
+	}
+}
+
+func TestDeployStampsLabelsAndAudits(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	aud := &fakeAuditor{}
+	svc.Quota = &fakeQuota{dept: "platform"}
+	svc.Audit = aud
+	markReady(c, "labeled", "vibed-apps", 20*time.Millisecond)
+
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "labeled",
+		Owner:   "alice@x.io",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+
+	app := &vibedv1.VibedApp{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "labeled", Namespace: "vibed-apps"}, app)
+	if app.Labels[vibedv1.LabelOwner] != vibedv1.SanitizeLabel("alice@x.io") {
+		t.Errorf("owner label = %q", app.Labels[vibedv1.LabelOwner])
+	}
+	if app.Labels[vibedv1.LabelDepartment] != "platform" {
+		t.Errorf("department label = %q, want platform", app.Labels[vibedv1.LabelDepartment])
+	}
+	if got := aud.got(); len(got) != 1 || got[0] != "deploy:ok" {
+		t.Errorf("audit = %v, want [deploy:ok]", got)
+	}
+}
+
+func TestRedeployPassesIsNewFalse(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).
+		WithObjects(&vibedv1.VibedApp{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: "vibed-apps"},
+			Spec:       vibedv1.VibedAppSpec{Owner: "alice"},
+		}).Build()
+	svc := newService(c, newFakeStore())
+	q := &fakeQuota{}
+	svc.Quota = q
+	markReady(c, "existing", "vibed-apps", 20*time.Millisecond)
+
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "existing",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if q.lastNew {
+		t.Error("a redeploy must pass isNew=false to the quota enforcer")
 	}
 }

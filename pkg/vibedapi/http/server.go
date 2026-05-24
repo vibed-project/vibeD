@@ -150,6 +150,11 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 
 	res, err := s.Deploy.Deploy(r.Context(), req)
 	if err != nil {
+		var qe interface{ QuotaExceeded() bool }
+		if errors.As(err, &qe) {
+			writeJSON(w, http.StatusTooManyRequests, Error{Code: "quota_exceeded", Message: err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, Error{Code: "deploy_failed", Message: err.Error()})
 		return
 	}

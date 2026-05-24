@@ -99,6 +99,18 @@ data:
       maxTotalFileSize: {{ int .Values.config.limits.maxTotalFileSize }}
       maxFileCount: {{ int .Values.config.limits.maxFileCount }}
       maxLogLines: {{ int .Values.config.limits.maxLogLines }}
+    {{- with .Values.config.quotas }}
+    quotas:
+      enabled: {{ .enabled | default false }}
+      maxAppsPerOwner: {{ int (.maxAppsPerOwner | default 0) }}
+      maxAppsPerDepartment: {{ int (.maxAppsPerDepartment | default 0) }}
+      {{- with .perDepartment }}
+      perDepartment:
+        {{- range $name, $limit := . }}
+        {{ $name }}: {{ int $limit }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
     tracing:
       enabled: {{ .Values.config.tracing.enabled | default false }}
       endpoint: {{ .Values.config.tracing.endpoint | default "" | quote }}

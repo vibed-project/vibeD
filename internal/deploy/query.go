@@ -57,9 +57,11 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 		return err
 	}
 	if derr := s.Client.Delete(ctx, app); derr != nil && !apierrors.IsNotFound(derr) {
+		s.record(ctx, "delete", id, "error", derr.Error())
 		return fmt.Errorf("delete VibedApp: %w", derr)
 	}
 	// Best-effort tarball cleanup; the CR is already gone either way.
 	_ = s.Store.Delete(ctx, id)
+	s.record(ctx, "delete", id, "ok", "")
 	return nil
 }

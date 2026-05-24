@@ -43,6 +43,23 @@ type Service struct {
 	DeployTimeout time.Duration
 	// PollInterval is how often Deploy re-reads the CR while waiting.
 	PollInterval time.Duration
+
+	// Quota, when set, gates NEW deploys against per-owner/per-department
+	// ceilings and resolves the owner's department for labeling. nil disables
+	// quota enforcement.
+	Quota Quota
+	// Audit, when set, records deploy/delete actions. nil disables auditing.
+	Audit Auditor
+}
+
+// Quota gates new deploys and resolves the owner's department (for labeling).
+type Quota interface {
+	Authorize(ctx context.Context, owner string, isNew bool) (department string, err error)
+}
+
+// Auditor records a mutating action; implementations read the actor from ctx.
+type Auditor interface {
+	Record(ctx context.Context, action, target, outcome, detail string)
 }
 
 // Request is one deploy. Tarball is consumed fully (and capped) by Deploy.
@@ -120,63 +137,84 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		}
 	}
 
+	// New vs redeploy: a redeploy reuses the CR (so the controller can
+	// snapshot-restore later) and is never quota-gated.
+	key := types.NamespacedName{Name: req.Name, Namespace: s.Namespace}
+	existing := &vibedv1.VibedApp{}
+	getErr := s.Client.Get(ctx, key, existing)
+	isNew := apierrors.IsNotFound(getErr)
+	if getErr != nil && !isNew {
+		return nil, fmt.Errorf("get VibedApp: %w", getErr)
+	}
+
+	// Quota gates new deploys and tells us the owner's department for labeling.
+	var department string
+	if s.Quota != nil {
+		dept, qerr := s.Quota.Authorize(ctx, req.Owner, isNew)
+		if qerr != nil {
+			s.record(ctx, "deploy", req.Name, "denied", qerr.Error())
+			return nil, qerr
+		}
+		department = dept
+	}
+
 	// Store the tarball so the agent can pull it.
 	refURL, err := s.Store.Put(ctx, req.Name, bytes.NewReader(buf))
 	if err != nil {
+		s.record(ctx, "deploy", req.Name, "error", err.Error())
 		return nil, fmt.Errorf("store source: %w", err)
 	}
 
-	app := &vibedv1.VibedApp{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      req.Name,
-			Namespace: s.Namespace,
-			Labels:    map[string]string{"vibed.dev/owner": sanitizeLabel(req.Owner)},
-		},
-		Spec: vibedv1.VibedAppSpec{
-			Owner:  req.Owner,
-			Source: vibedv1.Source{TarballRef: refURL},
-			Runtime: vibedv1.Runtime{
-				Lane:       lane,
-				Template:   template,
-				Entrypoint: req.Entrypoint,
-				Env:        req.Env,
-			},
-			Egress: vibedv1.Egress{AllowedHosts: req.AllowedHosts},
-			TTL:    req.TTL,
-		},
+	labels := map[string]string{vibedv1.LabelOwner: vibedv1.SanitizeLabel(req.Owner)}
+	if department != "" {
+		labels[vibedv1.LabelDepartment] = vibedv1.SanitizeLabel(department)
 	}
 
-	if err := s.upsert(ctx, app); err != nil {
-		// Best-effort: don't leave an orphan blob if the CR write failed.
-		_ = s.Store.Delete(ctx, req.Name)
-		return nil, err
+	spec := vibedv1.VibedAppSpec{
+		Owner:  req.Owner,
+		Source: vibedv1.Source{TarballRef: refURL},
+		Runtime: vibedv1.Runtime{
+			Lane:       lane,
+			Template:   template,
+			Entrypoint: req.Entrypoint,
+			Env:        req.Env,
+		},
+		Egress: vibedv1.Egress{AllowedHosts: req.AllowedHosts},
+		TTL:    req.TTL,
 	}
 
+	if isNew {
+		app := &vibedv1.VibedApp{
+			ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.Namespace, Labels: labels},
+			Spec:       spec,
+		}
+		if cerr := s.Client.Create(ctx, app); cerr != nil {
+			_ = s.Store.Delete(ctx, req.Name) // don't leave an orphan blob
+			s.record(ctx, "deploy", req.Name, "error", cerr.Error())
+			return nil, fmt.Errorf("create VibedApp: %w", cerr)
+		}
+	} else {
+		existing.Spec = spec
+		if existing.Labels == nil {
+			existing.Labels = map[string]string{}
+		}
+		for k, v := range labels {
+			existing.Labels[k] = v
+		}
+		if uerr := s.Client.Update(ctx, existing); uerr != nil {
+			s.record(ctx, "deploy", req.Name, "error", uerr.Error())
+			return nil, fmt.Errorf("update VibedApp: %w", uerr)
+		}
+	}
+
+	s.record(ctx, "deploy", req.Name, "ok", "")
 	return s.waitReady(ctx, req.Name)
 }
 
-// upsert creates the VibedApp, or updates the spec of an existing one (a
-// redeploy under the same name reuses the CR so the controller can
-// snapshot-restore later).
-func (s *Service) upsert(ctx context.Context, app *vibedv1.VibedApp) error {
-	existing := &vibedv1.VibedApp{}
-	key := types.NamespacedName{Name: app.Name, Namespace: app.Namespace}
-	err := s.Client.Get(ctx, key, existing)
-	switch {
-	case apierrors.IsNotFound(err):
-		if cerr := s.Client.Create(ctx, app); cerr != nil {
-			return fmt.Errorf("create VibedApp: %w", cerr)
-		}
-		return nil
-	case err != nil:
-		return fmt.Errorf("get VibedApp: %w", err)
-	default:
-		existing.Spec = app.Spec
-		existing.Labels = app.Labels
-		if uerr := s.Client.Update(ctx, existing); uerr != nil {
-			return fmt.Errorf("update VibedApp: %w", uerr)
-		}
-		return nil
+// record emits an audit event when an Auditor is configured (else no-op).
+func (s *Service) record(ctx context.Context, action, target, outcome, detail string) {
+	if s.Audit != nil {
+		s.Audit.Record(ctx, action, target, outcome, detail)
 	}
 }
 
@@ -220,23 +258,4 @@ func readCapped(r io.Reader, max int64) ([]byte, error) {
 		return nil, fmt.Errorf("source is empty")
 	}
 	return buf, nil
-}
-
-// sanitizeLabel makes an owner identity safe as a label value (≤63 chars,
-// alnum/-/_/. only). Used only for filtering; the authoritative owner is
-// spec.owner.
-func sanitizeLabel(s string) string {
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
-			out = append(out, r)
-		default:
-			out = append(out, '_')
-		}
-	}
-	if len(out) > 63 {
-		out = out[:63]
-	}
-	return string(out)
 }

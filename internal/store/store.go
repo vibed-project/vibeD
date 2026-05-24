@@ -31,6 +31,24 @@ type ShareLinkStore interface {
 	RevokeShareLink(ctx context.Context, token string) error
 }
 
+// AuditQuery filters an audit-log read. Empty string fields are ignored;
+// Limit 0 means the implementation's default cap.
+type AuditQuery struct {
+	Actor  string
+	Action string
+	Target string
+	Limit  int
+}
+
+// AuditStore is an append-only governance audit log. Implemented by the
+// SQLite and in-memory stores; the ConfigMap store does not implement it (the
+// server falls back to an in-memory audit log there).
+type AuditStore interface {
+	AppendAudit(ctx context.Context, e *api.AuditEvent) error
+	// ListAudit returns events matching q, newest first.
+	ListAudit(ctx context.Context, q AuditQuery) ([]api.AuditEvent, error)
+}
+
 // ListOptions configures artifact list queries.
 type ListOptions struct {
 	StatusFilter string

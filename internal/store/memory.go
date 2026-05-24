@@ -14,6 +14,7 @@ type MemoryStore struct {
 	artifacts map[string]*api.Artifact          // keyed by ID
 	byName    map[string]string                 // name -> ID
 	versions  map[string][]*api.ArtifactVersion // artifactID -> sorted versions
+	audit     []api.AuditEvent                  // append-only audit log (oldest first)
 }
 
 // NewMemoryStore creates a new in-memory artifact store.

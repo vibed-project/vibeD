@@ -21,8 +21,21 @@ type Config struct {
 	Store        StoreConfig        `yaml:"store"`
 	Kubernetes   KubernetesConfig   `yaml:"kubernetes"`
 	Limits       LimitsConfig       `yaml:"limits"`
+	Quotas       QuotasConfig       `yaml:"quotas"`
 	GC           GCConfig           `yaml:"gc"`
 	Tracing      TracingConfig      `yaml:"tracing"`
+}
+
+// QuotasConfig caps how many concurrent apps an owner / department may deploy
+// (enterprise governance). Disabled by default; a new deploy is hard-gated
+// when it would exceed either ceiling. Counts are over live VibedApps (by the
+// vibed.dev/owner and vibed.dev/department labels); redeploys of an existing
+// app don't count. A limit of 0 means "unlimited" for that axis.
+type QuotasConfig struct {
+	Enabled              bool           `yaml:"enabled"`
+	MaxAppsPerOwner      int            `yaml:"maxAppsPerOwner"`      // per-user ceiling (0 = unlimited)
+	MaxAppsPerDepartment int            `yaml:"maxAppsPerDepartment"` // per-department aggregate ceiling (0 = unlimited)
+	PerDepartment        map[string]int `yaml:"perDepartment"`        // override the department ceiling by department name
 }
 
 // TracingConfig configures OpenTelemetry distributed tracing.

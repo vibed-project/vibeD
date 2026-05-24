@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -10,9 +11,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/vibed-project/vibeD/internal/audit"
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/builder"
 	"github.com/vibed-project/vibeD/internal/classifier"
@@ -29,6 +32,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/middleware"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/quota"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tarball"
@@ -214,6 +218,18 @@ func main() {
 	}
 	checker.SetReady("store")
 
+	// Governance audit trail: reuse the persistent store when it implements
+	// AuditStore (SQLite), else fall back to an in-memory log (memory/configmap
+	// backends don't persist audit events).
+	var auditStore store.AuditStore
+	if as, ok := st.(store.AuditStore); ok {
+		auditStore = as
+	} else {
+		auditStore = store.NewMemoryStore()
+		logger.Warn("audit trail is in-memory and won't survive restarts", "backend", cfg.Store.Backend)
+	}
+	auditRec := audit.New(auditStore, logger)
+
 	// Bootstrap API key users into user store
 	if userStore != nil && cfg.Auth.Enabled && (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "") {
 		bootstrapAPIKeyUsers(cfg.Auth.APIKeys, userStore, logger)
@@ -278,9 +294,22 @@ func main() {
 		logger.Warn("VibedApp deploy path disabled; falling back to orchestrator", "error", derr)
 		deploySvc = nil
 	}
+	if deploySvc != nil {
+		deploySvc.Audit = auditRec
+		if cfg.Quotas.Enabled {
+			ns := deploySvc.Namespace
+			if ns == "" {
+				ns = "vibed-apps"
+			}
+			deploySvc.Quota = quota.NewEnforcer(deploySvc.Client, userStore, ns, cfg.Quotas)
+			logger.Info("deploy quotas enabled",
+				"maxAppsPerOwner", cfg.Quotas.MaxAppsPerOwner,
+				"maxAppsPerDepartment", cfg.Quotas.MaxAppsPerDepartment)
+		}
+	}
 
 	// Create MCP server
-	mcpServer := mcppkg.NewServer(orch, deploySvc, cfg.Limits, userStore)
+	mcpServer := mcppkg.NewServer(orch, deploySvc, cfg.Limits, userStore, auditRec)
 
 	// Initialize authentication middleware
 	authMiddleware, err := vibedauth.Middleware(cfg.Auth, userStore, logger)
@@ -312,9 +341,9 @@ func main() {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
+		runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, auditRec, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, auditRec, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -327,7 +356,7 @@ func main() {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, auditRec *audit.Recorder, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
 	mux := http.NewServeMux()
 
 	// /v1/* HTTP API + /healthz, /readyz, /metrics are mounted via
@@ -355,6 +384,11 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 		}
 	}
 	vibedhttp.HandlerFromMux(vibedAPI, mux)
+
+	// Governance audit trail (admin-only). Not part of the generated OpenAPI
+	// surface, so it's mounted directly; SkipAuthPaths still authenticates
+	// /v1/* and the handler enforces the admin role.
+	mux.HandleFunc("GET /v1/audit", auditHandler(auditRec, logger))
 
 	// MCP HTTP endpoint
 	mcpHandler := mcp.NewStreamableHTTPHandler(
@@ -536,6 +570,37 @@ func newLogger(cfg config.ServerConfig) *slog.Logger {
 		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 	return slog.New(handler)
+}
+
+// auditHandler serves GET /v1/audit (admin only): the governance audit trail,
+// newest first, filterable by actor/action/app and capped by limit.
+func auditHandler(rec *audit.Recorder, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !vibedauth.IsAdmin(r.Context()) {
+			http.Error(w, "admin role required", http.StatusForbidden)
+			return
+		}
+		q := store.AuditQuery{
+			Actor:  r.URL.Query().Get("actor"),
+			Action: r.URL.Query().Get("action"),
+			Target: r.URL.Query().Get("app"),
+		}
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, err := strconv.Atoi(l); err == nil && n > 0 {
+				q.Limit = n
+			}
+		}
+		events, err := rec.List(r.Context(), q)
+		if err != nil {
+			logger.Warn("audit list failed", "error", err)
+			http.Error(w, "audit query failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Events []api.AuditEvent `json:"events"`
+		}{Events: events})
+	}
 }
 
 // securityHeadersMiddleware adds standard security headers to all responses.
