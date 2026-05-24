@@ -280,6 +280,8 @@ components:
           maxLength: 63
         runtime:
           $ref: '#/components/schemas/RuntimeOverride'
+        egress:
+          $ref: '#/components/schemas/EgressPolicy'
         env:
           type: array
           items: { $ref: '#/components/schemas/EnvVar' }
@@ -302,6 +304,18 @@ components:
           type: string
         entrypoint:
           type: string
+
+    EgressPolicy:
+      type: object
+      description: |
+        Per-app outbound allow-list. The egress proxy default-denies; only
+        these hosts (plus vibeD's system hosts) are reachable. Omitting it (or
+        an empty list) means no external egress.
+      properties:
+        allowed_hosts:
+          type: array
+          description: 'Destination hostnames, e.g. "api.openai.com" or "*.example.com".'
+          items: { type: string }
 
     EnvVar:
       type: object

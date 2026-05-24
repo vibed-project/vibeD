@@ -54,6 +54,18 @@ type Source struct {
 	GitRef string `json:"gitRef,omitempty"`
 }
 
+// Egress is the per-app outbound network policy. The egress proxy default-
+// denies; only hosts listed here (plus vibeD's system hosts, e.g. the source
+// store) are reachable. Empty AllowedHosts means the app can reach no external
+// hosts at all.
+type Egress struct {
+	// AllowedHosts are the destination hostnames the app may reach, e.g.
+	// "api.openai.com". A leading "*." wildcard matches one or more leading
+	// labels ("*.example.com" matches "a.example.com"). Matched on the CONNECT
+	// host / HTTP Host by the egress proxy.
+	AllowedHosts []string `json:"allowedHosts,omitempty"`
+}
+
 // Runtime selects the lane and template, plus per-deploy runtime overrides.
 type Runtime struct {
 	// Lane is the runtime track; the classifier picks this and the user
@@ -94,6 +106,9 @@ type VibedAppSpec struct {
 
 	// Runtime selects the lane and template.
 	Runtime Runtime `json:"runtime"`
+
+	// Egress is the per-app outbound allow-list enforced by the egress proxy.
+	Egress Egress `json:"egress,omitempty"`
 
 	// Resources caps CPU/memory for the user process.
 	Resources Resources `json:"resources,omitempty"`

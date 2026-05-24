@@ -21,13 +21,14 @@ type deployArtifactOutput struct {
 }
 
 type deployArtifactInput struct {
-	Name       string            `json:"name" jsonschema:"Unique name for the artifact (lowercase and DNS-safe)"`
-	Files      map[string]string `json:"files" jsonschema:"Map of relative file path to file content. Tip: Provide a 'Dockerfile' at the root to completely customize the build environment. If no Dockerfile is provided, a standard one is generated."`
-	Language   string            `json:"language,omitempty" jsonschema:"Language/framework hint (e.g. nodejs python go static)"`
-	Target     string            `json:"target,omitempty" jsonschema:"Deployment target: sandbox, kubernetes, or auto (default: auto). Use 'sandbox' for isolated, stateful workloads."`
-	EnvVars    map[string]string `json:"env_vars,omitempty" jsonschema:"Environment variables for the deployed artifact"`
-	SecretRefs map[string]string `json:"secret_refs,omitempty" jsonschema:"Map of env var name to Kubernetes Secret reference in format 'secret-name:key'. The secret must exist in the deployment namespace. Example: {\"DB_PASSWORD\": \"my-db-creds:password\"}"`
-	Port       int               `json:"port,omitempty" jsonschema:"Port the application listens on (auto-detected if not set)"`
+	Name         string            `json:"name" jsonschema:"Unique name for the artifact (lowercase and DNS-safe)"`
+	Files        map[string]string `json:"files" jsonschema:"Map of relative file path to file content. Tip: Provide a 'Dockerfile' at the root to completely customize the build environment. If no Dockerfile is provided, a standard one is generated."`
+	Language     string            `json:"language,omitempty" jsonschema:"Language/framework hint (e.g. nodejs python go static)"`
+	Target       string            `json:"target,omitempty" jsonschema:"Deployment target: sandbox, kubernetes, or auto (default: auto). Use 'sandbox' for isolated, stateful workloads."`
+	EnvVars      map[string]string `json:"env_vars,omitempty" jsonschema:"Environment variables for the deployed artifact"`
+	SecretRefs   map[string]string `json:"secret_refs,omitempty" jsonschema:"Map of env var name to Kubernetes Secret reference in format 'secret-name:key'. The secret must exist in the deployment namespace. Example: {\"DB_PASSWORD\": \"my-db-creds:password\"}"`
+	Port         int               `json:"port,omitempty" jsonschema:"Port the application listens on (auto-detected if not set)"`
+	AllowedHosts []string          `json:"allowed_hosts,omitempty" jsonschema:"Outbound hostnames the app may reach (egress allow-list), e.g. [\"api.openai.com\",\"*.example.com\"]. Default-deny: omit for no external egress."`
 }
 
 func registerDeployTool(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, limits config.LimitsConfig) {
@@ -73,9 +74,10 @@ func registerDeployTool(server *mcp.Server, orch *orchestrator.Orchestrator, dep
 			return nil, nil, err
 		}
 		req := deploy.Request{
-			Name:    input.Name,
-			Owner:   ownerFromContext(ctx),
-			Tarball: tar,
+			Name:         input.Name,
+			Owner:        ownerFromContext(ctx),
+			Tarball:      tar,
+			AllowedHosts: input.AllowedHosts,
 		}
 		for k, v := range input.EnvVars {
 			req.Env = append(req.Env, vibedv1.EnvVar{Name: k, Value: v})

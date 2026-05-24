@@ -58,6 +58,10 @@ type Request struct {
 	Entrypoint       string
 	Env              []vibedv1.EnvVar
 	TTL              string
+
+	// AllowedHosts is the per-app egress allow-list (hostnames the app may
+	// reach through the egress proxy). Empty = no external egress.
+	AllowedHosts []string
 }
 
 // Result is what the API returns. Ready reports whether the app reached
@@ -137,7 +141,8 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 				Entrypoint: req.Entrypoint,
 				Env:        req.Env,
 			},
-			TTL: req.TTL,
+			Egress: vibedv1.Egress{AllowedHosts: req.AllowedHosts},
+			TTL:    req.TTL,
 		},
 	}
 

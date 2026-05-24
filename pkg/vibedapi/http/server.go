@@ -135,6 +135,9 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 			req.Entrypoint = *meta.Runtime.Entrypoint
 		}
 	}
+	if meta.Egress != nil && meta.Egress.AllowedHosts != nil {
+		req.AllowedHosts = *meta.Egress.AllowedHosts
+	}
 	if meta.Env != nil {
 		for _, e := range *meta.Env {
 			ev := vibedv1.EnvVar{Name: e.Name}

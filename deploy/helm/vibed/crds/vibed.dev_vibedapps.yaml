@@ -54,6 +54,20 @@ spec:
           spec:
             description: VibedAppSpec is the desired state of a VibedApp.
             properties:
+              egress:
+                description: Egress is the per-app outbound allow-list enforced by
+                  the egress proxy.
+                properties:
+                  allowedHosts:
+                    description: |-
+                      AllowedHosts are the destination hostnames the app may reach, e.g.
+                      "api.openai.com". A leading "*." wildcard matches one or more leading
+                      labels ("*.example.com" matches "a.example.com"). Matched on the CONNECT
+                      host / HTTP Host by the egress proxy.
+                    items:
+                      type: string
+                    type: array
+                type: object
               owner:
                 description: |-
                   Owner is the authenticated user identity (email or OIDC subject) that
