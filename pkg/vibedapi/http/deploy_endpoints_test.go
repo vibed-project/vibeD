@@ -9,12 +9,15 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -212,5 +215,104 @@ func TestGetAndListAndDelete(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/apps/seeded", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("after delete, get status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRedeployUnknownApp404(t *testing.T) {
+	h, _ := newDeployRouter(t, "alice")
+	body, ct := multipartDeploy(t, "ignored", map[string]string{"index.html": "<h1>x</h1>"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/apps/ghost/redeploy", body)
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("redeploy unknown app = %d, want 404", rec.Code)
+	}
+}
+
+func TestRedeployOwnedApp(t *testing.T) {
+	h, c := newDeployRouter(t, "alice")
+	if err := c.Create(context.Background(), &vibedv1.VibedApp{
+		ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: "vibed-apps"},
+		Spec:       vibedv1.VibedAppSpec{Owner: "alice"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, ct := multipartDeploy(t, "ignored", map[string]string{"index.html": "<h1>x</h1>"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/apps/mine/redeploy", body)
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	// No markReady, so the deploy is still pending: 202 (or 200 if it raced Ready).
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("redeploy owned app = %d, want 200/202", rec.Code)
+	}
+}
+
+func TestRedeployHidesOtherOwnersApp(t *testing.T) {
+	h, c := newDeployRouter(t, "alice")
+	if err := c.Create(context.Background(), &vibedv1.VibedApp{
+		ObjectMeta: metav1.ObjectMeta{Name: "bobs", Namespace: "vibed-apps"},
+		Spec:       vibedv1.VibedAppSpec{Owner: "bob"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, ct := multipartDeploy(t, "ignored", map[string]string{"index.html": "<h1>x</h1>"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/apps/bobs/redeploy", body)
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("redeploy of another owner's app = %d, want 404 (not 403, to avoid leaking existence)", rec.Code)
+	}
+}
+
+func TestStreamLogsUnknownApp404(t *testing.T) {
+	h, _ := newDeployRouter(t, "alice")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/apps/ghost/logs", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("logs for unknown app = %d, want 404", rec.Code)
+	}
+}
+
+func TestStreamLogsSSE(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := vibedv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	app := &vibedv1.VibedApp{
+		ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: "vibed-apps"},
+		Spec:       vibedv1.VibedAppSpec{Owner: "alice"},
+		Status:     vibedv1.VibedAppStatus{PodIP: "10.0.0.9"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).Build()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "mine-pod", Namespace: "vibed-apps",
+			Labels: map[string]string{"agents.x-k8s.io/claim-uid": "u1"},
+		},
+		Status: corev1.PodStatus{PodIP: "10.0.0.9"},
+	}
+
+	srv := New(nil, nil, nil, nil)
+	srv.Deploy = &deploy.Service{Client: c, Clientset: k8sfake.NewSimpleClientset(pod), Namespace: "vibed-apps"}
+	mux := http.NewServeMux()
+	HandlerFromMux(srv, mux)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(vibedauth.WithUserID(r.Context(), "alice")))
+	})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/apps/mine/logs", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logs status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("content-type = %q, want text/event-stream", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "data:") {
+		t.Fatalf("expected SSE data frames, got: %q", rec.Body.String())
 	}
 }

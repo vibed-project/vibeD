@@ -543,6 +543,7 @@ func buildDeployService(cfg *config.Config, k8sClients *k8s.Clients, logger *slo
 	}
 	return &deploy.Service{
 		Client:     c,
+		Clientset:  k8sClients.Clientset,
 		Store:      store,
 		Classifier: classifier.Classifier{},
 		Namespace:  appsNS,

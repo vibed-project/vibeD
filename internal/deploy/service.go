@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vibed-project/vibeD/internal/classifier"
@@ -34,6 +35,10 @@ type Service struct {
 	Client     client.Client
 	Store      tarball.Store
 	Classifier classifier.Classifier
+
+	// Clientset streams pod logs for StreamLogs (the controller-runtime client
+	// can't read the pods/log subresource). nil disables log streaming.
+	Clientset kubernetes.Interface
 
 	// Namespace is where VibedApp CRs are created.
 	Namespace string

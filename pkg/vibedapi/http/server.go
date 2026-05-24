@@ -5,21 +5,23 @@
 // file implements ServerInterface and is the single place hand-written code
 // lives — everything else flows through the spec.
 //
-// During milestone A2 most endpoints are deliberately stubbed with
-// 501 Not Implemented. The handlers light up as later milestones land:
-//   - milestone B (vibed-controller + agent) → deploy, get, list, delete,
-//     redeploy, suspend, logs
-//   - milestone C (classifier + templates)    → templates
-//
-// `/healthz`, `/readyz`, `/metrics` are wired to real handlers passed in at
-// construction time so they work today.
+// Live endpoints: deploy, get, list, delete, redeploy, and logs (SSE) run
+// against the VibedApp deploy service; templates returns an empty list pending
+// the classifier enumeration; ops (`/healthz`, `/readyz`, `/metrics`) delegate
+// to handlers passed in at construction. Suspend remains 501 until the
+// snapshot/restore milestone (F1) lands. When the deploy service isn't
+// configured the deploy-backed endpoints return 501 so vibeD still boots in
+// ops-only mode.
 package vibedhttp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/deploy"
@@ -89,7 +91,14 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
 		return
 	}
+	// forcedName "" → take the name from metadata (a first-time deploy).
+	s.runDeploy(w, r, owner, "")
+}
 
+// runDeploy parses a multipart deploy (source tarball + optional metadata) and
+// runs it through the deploy service, writing the 200/202/4xx response. When
+// forcedName is set (a redeploy of an existing app) it overrides metadata.name.
+func (s *Server) runDeploy(w http.ResponseWriter, r *http.Request, owner, forcedName string) {
 	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Code: "bad_multipart", Message: err.Error()})
 		return
@@ -103,7 +112,11 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if meta.Name == "" {
+	name := forcedName
+	if name == "" {
+		name = meta.Name
+	}
+	if name == "" {
 		writeJSON(w, http.StatusBadRequest, Error{Code: "missing_name", Message: "metadata.name is required"})
 		return
 	}
@@ -117,7 +130,7 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	req := deploy.Request{
-		Name:    meta.Name,
+		Name:    name,
 		Owner:   owner,
 		Tarball: file,
 	}
@@ -276,7 +289,26 @@ func toAPIApp(app *vibedv1.VibedApp) App {
 func strPtr(s string) *string { return &s }
 
 func (s *Server) RedeployApp(w http.ResponseWriter, r *http.Request, appID AppID) {
-	notImplemented(w, "redeploy_app", "wired in milestone B (vibed-controller)")
+	if s.Deploy == nil {
+		notImplemented(w, "redeploy_app", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+	// Confirm the caller owns an existing app before mutating it — a redeploy
+	// reuses the named CR, so without this an unrelated caller could clobber it.
+	if _, err := s.Deploy.Get(r.Context(), owner, appID); err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "get_failed", Message: err.Error()})
+		return
+	}
+	s.runDeploy(w, r, owner, appID)
 }
 
 func (s *Server) SuspendApp(w http.ResponseWriter, r *http.Request, appID AppID) {
@@ -284,7 +316,49 @@ func (s *Server) SuspendApp(w http.ResponseWriter, r *http.Request, appID AppID)
 }
 
 func (s *Server) StreamAppLogs(w http.ResponseWriter, r *http.Request, appID AppID) {
-	notImplemented(w, "stream_app_logs", "wired in milestone B (vibed-controller)")
+	if s.Deploy == nil {
+		notImplemented(w, "stream_app_logs", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+	// Resolve ownership/existence up front so we can return a clean 404 before
+	// switching the response into an SSE stream.
+	if _, err := s.Deploy.Get(r.Context(), owner, appID); err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "get_failed", Message: err.Error()})
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "no_streaming", Message: "response writer does not support streaming"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	err := s.Deploy.StreamLogs(r.Context(), owner, appID, true, 200, func(line string) error {
+		if _, werr := fmt.Fprintf(w, "data: %s\n\n", line); werr != nil {
+			return werr
+		}
+		flusher.Flush()
+		return nil
+	})
+	// A cancelled context is the client disconnecting — not an error to report.
+	if err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		flusher.Flush()
+	}
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
