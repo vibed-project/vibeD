@@ -173,12 +173,38 @@ func waitPhase(t *testing.T, c client.Client, name string, timeout time.Duration
 	}
 }
 
+// waitTemplateValid blocks until the BYO validator records slot as valid. The
+// validator's first pass runs at controller start — before the warm-pool pods
+// are Ready — and marks every slot invalid ("no Ready warm-pool pod"); a later
+// pass (every 2m) flips a healthy slot to valid once its pod is up. A
+// happy-path deploy must wait for that, or the claim hard-gate fails it.
+// Mirrors the invalid-poll in TestClusterInvalidImageIsGated.
+func waitTemplateValid(t *testing.T, c client.Client, slot string, timeout time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(timeout)
+	for {
+		r, found, err := templatevalidate.LoadResult(ctx, c, appsNamespace, slot)
+		if err == nil && found && r.Valid {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("template %q never validated valid within %s (found=%v)", slot, timeout, found)
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
 // TestClusterDeployReachesReady is the happy path: a static site deploys to a
 // valid slot and reaches Ready with a URL.
 func TestClusterDeployReachesReady(t *testing.T) {
 	base := requireServer(t)
 	const name = "e2e-static"
 	c := k8sClient(t)
+
+	// Don't race the validator's warm-up pass: wait for the static-nginx slot
+	// to be marked valid before deploying, else the claim gate fails the app.
+	waitTemplateValid(t, c, "static-nginx", 3*time.Minute)
 
 	deployApp(t, base, name, map[string]string{"index.html": "<!doctype html><h1>cluster e2e</h1>"})
 	t.Cleanup(func() { deleteApp(base, name) })
