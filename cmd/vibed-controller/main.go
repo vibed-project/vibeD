@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -25,9 +26,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/vibed-project/vibeD/internal/controller"
+	"github.com/vibed-project/vibeD/internal/templatevalidate"
 	"github.com/vibed-project/vibeD/internal/workerd"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
@@ -107,6 +110,7 @@ func main() {
 		Injector: controller.NewHTTPInjector(agentToken),
 		Services: &controller.K8sServiceManager{Client: mgr.GetClient(), AppPort: 8080},
 		Router:   controller.DeterministicRouter{Domain: domain, Scheme: urlScheme, Port: urlPort},
+		Gate:     &controller.ConfigMapTemplateGate{Client: mgr.GetClient(), Namespace: poolNamespace},
 	}
 	// Fast lane: wire the workerd loader client only when replicas are
 	// configured. Otherwise the default DummyFastLaneDeployer rejects
@@ -131,6 +135,30 @@ func main() {
 		fatal(logger, "reconciler setup", err)
 	}
 
+	// Periodically validate the base image backing each warm-pool slot (BYO
+	// base-image feature) and persist results for the claim-path gate. Runs
+	// after the cache syncs; an initial pass happens immediately.
+	validator := &templatevalidate.Validator{
+		Client:    mgr.GetClient(),
+		Namespace: poolNamespace,
+		Probe:     templatevalidate.HTTPInfoProbe{Token: agentToken},
+	}
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		runValidation(ctx, validator, logger)
+		t := time.NewTicker(2 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-t.C:
+				runValidation(ctx, validator, logger)
+			}
+		}
+	})); err != nil {
+		fatal(logger, "add image validator", err)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		fatal(logger, "add healthz", err)
 	}
@@ -142,6 +170,25 @@ func main() {
 	log.FromContext(ctx).Info("starting vibed-controller", "metrics", metricsAddr, "probes", probeAddr, "leader-elect", enableLeaderElection)
 	if err := mgr.Start(ctx); err != nil {
 		fatal(logger, "manager run", err)
+	}
+}
+
+// runValidation validates every warm-pool image once and persists the results
+// for the claim-path gate. Logs (never fatal) — a transient validation error
+// must not take the controller down.
+func runValidation(ctx context.Context, v *templatevalidate.Validator, logger *slog.Logger) {
+	results, err := v.ValidateAll(ctx)
+	if err != nil {
+		logger.Warn("template image validation failed", "error", err)
+		return
+	}
+	for _, r := range results {
+		if !r.Valid {
+			logger.Warn("template image invalid", "template", r.Template, "image", r.Image, "reason", r.Reason)
+		}
+	}
+	if err := v.Persist(ctx, results); err != nil {
+		logger.Warn("persisting template validation results failed", "error", err)
 	}
 }
 

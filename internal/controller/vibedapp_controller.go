@@ -60,6 +60,7 @@ const (
 	ReasonAgentUnreachable = "AgentUnreachable"
 	ReasonInjectFailed     = "InjectFailed"
 	ReasonServiceFailed    = "ServiceFailed"
+	ReasonTemplateInvalid  = "TemplateInvalid"
 )
 
 // Claimer obtains a Sandbox for a VibedApp by creating (or reading) a
@@ -126,6 +127,10 @@ type Reconciler struct {
 	Router   Router
 	FastLane FastLaneDeployer
 
+	// Gate hard-gates claims on bring-your-own base-image validation; the
+	// default allows everything (no validation wired).
+	Gate TemplateGate
+
 	// RequeueDelay is how often to re-check transitional phases when no
 	// external signal triggers a reconcile. Defaults to 2s.
 	RequeueDelay time.Duration
@@ -186,6 +191,9 @@ func (r *Reconciler) applyDefaults() {
 	if r.FastLane == nil {
 		r.FastLane = DummyFastLaneDeployer{}
 	}
+	if r.Gate == nil {
+		r.Gate = AllowAllTemplateGate{}
+	}
 	if r.RequeueDelay == 0 {
 		r.RequeueDelay = 2 * time.Second
 	}
@@ -243,6 +251,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return r.finish(ctx, &app, before, true)
 
 	case vibedv1.PhaseClaiming:
+		// Hard-gate on BYO base-image validation: refuse to claim a sandbox
+		// whose image is known to have failed validation (wrong language /
+		// missing runtime / no agent). Terminal — the user must fix the image
+		// or the operator the slot config.
+		if ok, reason := r.Gate.Allowed(ctx, app.Spec.Runtime.Template); !ok {
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonTemplateInvalid,
+				fmt.Sprintf("template %q image failed validation: %s", app.Spec.Runtime.Template, reason))
+			app.Status.Phase = vibedv1.PhaseFailed
+			logger.Info("blocking claim: template image invalid", "template", app.Spec.Runtime.Template, "reason", reason)
+			return r.finish(ctx, &app, before, false)
+		}
 		bound, sandboxRef, podIP, err := r.Claimer.EnsureClaim(ctx, &app)
 		if err != nil {
 			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonClaimFailed, err.Error())

@@ -211,6 +211,33 @@ func TestReadyStaysWhenPodIPUnchanged(t *testing.T) {
 	}
 }
 
+// denyGate fails every template, for the BYO validation hard-gate test.
+type denyGate struct{ reason string }
+
+func (g denyGate) Allowed(context.Context, string) (bool, string) { return false, g.reason }
+
+// TestClaimingBlockedByInvalidTemplate: a slot whose image failed BYO
+// validation hard-gates the claim — the app goes Failed with TemplateInvalid
+// rather than claiming a sandbox of a broken image.
+func TestClaimingBlockedByInvalidTemplate(t *testing.T) {
+	app := validApp("badimg")
+	app.Status.Phase = vibedv1.PhaseClaiming
+	r := newReconciler(t, app, func(r *Reconciler) {
+		r.Gate = denyGate{reason: "expected language \"node\" but image declares \"python\""}
+	})
+
+	got, res := runOnce(t, r, app)
+	if got.Status.Phase != vibedv1.PhaseFailed {
+		t.Fatalf("phase=%q want Failed", got.Status.Phase)
+	}
+	if !hasConditionWithReason(got, ConditionReady, metav1.ConditionFalse, ReasonTemplateInvalid) {
+		t.Errorf("expected Ready=False/TemplateInvalid, got %+v", got.Status.Conditions)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("terminal Failed should not requeue, got %v", res.RequeueAfter)
+	}
+}
+
 func TestMissingSourceFails(t *testing.T) {
 	app := validApp("no-source")
 	app.Spec.Source = vibedv1.Source{} // neither tarball nor git
