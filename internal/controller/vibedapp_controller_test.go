@@ -158,6 +158,8 @@ func (c stubClaimer) EnsureClaim(context.Context, *vibedv1.VibedApp) (bool, stri
 	return true, c.sandboxRef, c.podIP, nil
 }
 
+func (stubClaimer) ReleaseClaim(context.Context, *vibedv1.VibedApp) error { return nil }
+
 // TestReadyReinjectsOnPodRecreation: a Ready app whose bound claim now reports
 // a different pod IP (the Sandbox pod was recreated) drops back to Starting so
 // the controller re-probes + re-injects into the fresh, empty workspace. The
@@ -244,6 +246,8 @@ type missingTemplateClaimer struct{}
 func (missingTemplateClaimer) EnsureClaim(context.Context, *vibedv1.VibedApp) (bool, string, string, error) {
 	return false, "", "", ErrTemplateNotFound
 }
+
+func (missingTemplateClaimer) ReleaseClaim(context.Context, *vibedv1.VibedApp) error { return nil }
 
 // TestClaimingFailsWhenTemplateMissing: a deploy routed to a slot with no
 // SandboxTemplate fails fast (Failed/TemplateMissing) instead of retrying
@@ -384,6 +388,8 @@ func (f failingClaimer) EnsureClaim(_ context.Context, _ *vibedv1.VibedApp) (boo
 	return false, "", "", f.err
 }
 
+func (failingClaimer) ReleaseClaim(context.Context, *vibedv1.VibedApp) error { return nil }
+
 // pendingClaimer mimics agent-sandbox not having bound a pod yet: returns
 // no error, but bound=false. The reconciler should stay in Claiming and
 // requeue without writing a sandboxRef.
@@ -392,6 +398,8 @@ type pendingClaimer struct{}
 func (pendingClaimer) EnsureClaim(_ context.Context, _ *vibedv1.VibedApp) (bool, string, string, error) {
 	return false, "", "", nil
 }
+
+func (pendingClaimer) ReleaseClaim(context.Context, *vibedv1.VibedApp) error { return nil }
 
 type staticProbe struct {
 	ready bool

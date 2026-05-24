@@ -312,7 +312,36 @@ func (s *Server) RedeployApp(w http.ResponseWriter, r *http.Request, appID AppID
 }
 
 func (s *Server) SuspendApp(w http.ResponseWriter, r *http.Request, appID AppID) {
-	notImplemented(w, "suspend_app", "wired in milestone F1 (snapshot/restore)")
+	s.setSuspended(w, r, appID, true)
+}
+
+func (s *Server) ResumeApp(w http.ResponseWriter, r *http.Request, appID AppID) {
+	s.setSuspended(w, r, appID, false)
+}
+
+// setSuspended backs the suspend/resume endpoints: it toggles the app's
+// desired state (ownership-checked) and returns 202 + the App. The controller
+// reconciles the actual release/re-claim asynchronously.
+func (s *Server) setSuspended(w http.ResponseWriter, r *http.Request, appID AppID, suspended bool) {
+	if s.Deploy == nil {
+		notImplemented(w, "suspend_app", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+	app, err := s.Deploy.SetSuspended(r.Context(), owner, appID, suspended)
+	if err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "suspend_failed", Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toAPIApp(app))
 }
 
 func (s *Server) StreamAppLogs(w http.ResponseWriter, r *http.Request, appID AppID) {

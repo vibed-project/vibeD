@@ -98,6 +98,19 @@ func (c *SandboxClaimer) EnsureClaim(ctx context.Context, app *vibedv1.VibedApp)
 	}
 }
 
+// ReleaseClaim deletes the app's SandboxClaim, which agent-sandbox interprets
+// as returning the bound pod to the warm pool. Idempotent — a missing claim is
+// treated as already released.
+func (c *SandboxClaimer) ReleaseClaim(ctx context.Context, app *vibedv1.VibedApp) error {
+	claim := newClaim()
+	claim.SetName(app.Name)
+	claim.SetNamespace(app.Namespace)
+	if err := c.Client.Delete(ctx, claim); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete SandboxClaim %s/%s: %w", app.Namespace, app.Name, err)
+	}
+	return nil
+}
+
 func (c *SandboxClaimer) buildClaim(app *vibedv1.VibedApp, template string) *unstructured.Unstructured {
 	u := newClaim()
 	u.SetName(app.Name)

@@ -352,3 +352,47 @@ func TestRedeployPassesIsNewFalse(t *testing.T) {
 		t.Error("a redeploy must pass isNew=false to the quota enforcer")
 	}
 }
+
+func TestSetSuspendedTogglesAndAudits(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).
+		WithObjects(&vibedv1.VibedApp{
+			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "vibed-apps"},
+			Spec:       vibedv1.VibedAppSpec{Owner: "alice"},
+		}).Build()
+	svc := newService(c, newFakeStore())
+	aud := &fakeAuditor{}
+	svc.Audit = aud
+
+	app, err := svc.SetSuspended(context.Background(), "alice", "a", true)
+	if err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if !app.Spec.Suspended {
+		t.Error("expected spec.suspended=true after suspend")
+	}
+
+	app, err = svc.SetSuspended(context.Background(), "alice", "a", false)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if app.Spec.Suspended {
+		t.Error("expected spec.suspended=false after resume")
+	}
+
+	if got := aud.got(); len(got) != 2 || got[0] != "suspend:ok" || got[1] != "resume:ok" {
+		t.Errorf("audit = %v, want [suspend:ok resume:ok]", got)
+	}
+}
+
+func TestSetSuspendedOwnership(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).
+		WithObjects(&vibedv1.VibedApp{
+			ObjectMeta: metav1.ObjectMeta{Name: "bobs", Namespace: "vibed-apps"},
+			Spec:       vibedv1.VibedAppSpec{Owner: "bob"},
+		}).Build()
+	svc := newService(c, newFakeStore())
+
+	if _, err := svc.SetSuspended(context.Background(), "alice", "bobs", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-owner SetSuspended = %v, want ErrNotFound", err)
+	}
+}

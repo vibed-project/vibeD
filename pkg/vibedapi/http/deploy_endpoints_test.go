@@ -316,3 +316,46 @@ func TestStreamLogsSSE(t *testing.T) {
 		t.Fatalf("expected SSE data frames, got: %q", rec.Body.String())
 	}
 }
+
+func TestSuspendAndResumeEndpoints(t *testing.T) {
+	h, c := newDeployRouter(t, "alice")
+	if err := c.Create(context.Background(), &vibedv1.VibedApp{
+		ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: "vibed-apps"},
+		Spec:       vibedv1.VibedAppSpec{Owner: "alice"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Suspend -> 202, spec.suspended=true.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/apps/mine/suspend", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("suspend = %d, want 202", rec.Code)
+	}
+	got := &vibedv1.VibedApp{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "mine", Namespace: "vibed-apps"}, got)
+	if !got.Spec.Suspended {
+		t.Error("expected spec.suspended=true after suspend endpoint")
+	}
+
+	// Resume -> 202, spec.suspended=false.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/apps/mine/resume", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("resume = %d, want 202", rec.Code)
+	}
+	got = &vibedv1.VibedApp{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "mine", Namespace: "vibed-apps"}, got)
+	if got.Spec.Suspended {
+		t.Error("expected spec.suspended=false after resume endpoint")
+	}
+}
+
+func TestSuspendUnknownApp404(t *testing.T) {
+	h, _ := newDeployRouter(t, "alice")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/apps/ghost/suspend", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("suspend unknown app = %d, want 404", rec.Code)
+	}
+}

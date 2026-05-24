@@ -118,6 +118,12 @@ type VibedAppSpec struct {
 	//
 	// +kubebuilder:default="30m"
 	TTL string `json:"ttl,omitempty"`
+
+	// Suspended is the desired-state toggle for suspend/restore. When true the
+	// controller releases the app's warm-pool pod and parks it in the Suspended
+	// phase; setting it back to false re-claims a pod and re-injects source.
+	// In-memory state is not preserved (release & re-materialize).
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // VibedAppStatus is the observed state of a VibedApp.

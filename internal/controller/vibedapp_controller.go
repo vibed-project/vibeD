@@ -62,6 +62,7 @@ const (
 	ReasonServiceFailed    = "ServiceFailed"
 	ReasonTemplateInvalid  = "TemplateInvalid"
 	ReasonTemplateMissing  = "TemplateMissing"
+	ReasonSuspended        = "Suspended"
 )
 
 // Claimer obtains a Sandbox for a VibedApp by creating (or reading) a
@@ -75,6 +76,10 @@ const (
 // (transient API errors, etc.).
 type Claimer interface {
 	EnsureClaim(ctx context.Context, app *vibedv1.VibedApp) (bound bool, sandboxRef string, podIP string, err error)
+	// ReleaseClaim deletes the app's SandboxClaim, returning its bound pod to
+	// the warm pool. Used to suspend an app (free its compute). Idempotent: a
+	// missing claim is not an error.
+	ReleaseClaim(ctx context.Context, app *vibedv1.VibedApp) error
 }
 
 // AgentProbe checks whether vibed-agent at target ("host:port") has
@@ -235,6 +240,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 	setCondition(&app, ConditionSourceValid, metav1.ConditionTrue, "Valid", "")
 
+	// Suspend/restore intent. spec.suspended is the declarative desired state:
+	// when set, the backing compute is released and the app parked in
+	// Suspended; clearing it re-enters the normal claim/deploy machine. Handled
+	// before the lane split because both lanes can be suspended.
+	if handled, res, err := r.reconcileSuspension(ctx, &app, before); handled {
+		return res, err
+	}
+
 	// Fast lane (workerd): there's no warm-pool claim or agent — the loader
 	// injects the worker script directly — so the whole lifecycle collapses
 	// into one deploy step handled separately from the general-lane state
@@ -392,6 +405,62 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	logger.Info("unknown phase; treating as Pending", "phase", app.Status.Phase)
 	app.Status.Phase = vibedv1.PhasePending
 	return r.finish(ctx, &app, before, true)
+}
+
+// reconcileSuspension drives the declarative spec.suspended toggle. It returns
+// handled=true (and the reconcile result) when it owns this pass:
+//   - suspended and not yet Suspended → release the backing compute (the
+//     SandboxClaim, or the workerd worker), clear the pod/route status, and
+//     park in Suspended.
+//   - suspended and already Suspended → steady state, nothing to do.
+//   - not suspended but currently Suspended → flip to Claiming so the normal
+//     machine re-claims a pod and re-injects source (restore).
+//
+// When the app is neither suspended nor currently Suspended it returns
+// handled=false and the caller continues normal reconciliation.
+func (r *Reconciler) reconcileSuspension(ctx context.Context, app *vibedv1.VibedApp, before *vibedv1.VibedAppStatus) (bool, reconcile.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if app.Spec.Suspended {
+		if app.Status.Phase == vibedv1.PhaseSuspended {
+			return true, reconcile.Result{}, nil // already parked
+		}
+		// Release the backing compute. Lane-aware: workerd has a loader-managed
+		// worker, the general lane a warm-pool SandboxClaim.
+		var relErr error
+		if isWorkerdFastLane(app) {
+			relErr = r.FastLane.Remove(ctx, app)
+		} else {
+			relErr = r.Claimer.ReleaseClaim(ctx, app)
+		}
+		if relErr != nil {
+			setCondition(app, ConditionReady, metav1.ConditionFalse, ReasonSuspended, "releasing compute: "+relErr.Error())
+			if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
+				return true, reconcile.Result{}, perr
+			}
+			return true, reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		}
+		app.Status.PodIP = ""
+		app.Status.SandboxRef = ""
+		app.Status.RouteTarget = ""
+		app.Status.Phase = vibedv1.PhaseSuspended
+		setCondition(app, ConditionReady, metav1.ConditionFalse, ReasonSuspended, "app suspended; compute released")
+		logger.Info("suspended app; released compute")
+		res, err := r.finish(ctx, app, before, false)
+		return true, res, err
+	}
+
+	// Not suspended. If we're parked in Suspended, restore by re-entering the
+	// claim machine; otherwise let normal reconciliation proceed.
+	if app.Status.Phase == vibedv1.PhaseSuspended {
+		app.Status.Phase = vibedv1.PhaseClaiming
+		setCondition(app, ConditionReady, metav1.ConditionFalse, ReasonClaiming, "restoring; re-claiming warm pool")
+		logger.Info("restoring suspended app; re-claiming")
+		res, err := r.finish(ctx, app, before, true)
+		return true, res, err
+	}
+
+	return false, reconcile.Result{}, nil
 }
 
 // WorkerdTemplate is the template name the classifier emits for fast-lane
@@ -568,6 +637,8 @@ type DummyClaimer struct{}
 func (DummyClaimer) EnsureClaim(_ context.Context, app *vibedv1.VibedApp) (bool, string, string, error) {
 	return true, fmt.Sprintf("dummy-sandbox-%s", app.UID), "10.0.0.1", nil
 }
+
+func (DummyClaimer) ReleaseClaim(_ context.Context, _ *vibedv1.VibedApp) error { return nil }
 
 // DummyAgentProbe always reports ready. The real HTTP probe lives in
 // internal/controller/probe.go.
