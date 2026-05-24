@@ -16,7 +16,8 @@ import (
 type Lane string
 
 const (
-	// LaneFast is workerd/Spin: V8/WASM isolates for trusted-language workloads.
+	// LaneFast is workerd + static nginx: V8 isolates / static serving for
+	// trusted-language workloads (Spin/WASM is planned, not yet shipped).
 	LaneFast Lane = "fast"
 	// LaneGeneral is Kata+Firecracker microVM isolation for arbitrary code.
 	LaneGeneral Lane = "general"

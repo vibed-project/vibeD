@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -11,8 +12,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/vibed-project/vibeD/internal/templatevalidate"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
+
+// ErrTemplateNotFound is returned by EnsureClaim when no SandboxTemplate backs
+// the app's slot — a terminal condition (the claim could never bind). The
+// reconciler maps it to Failed/TemplateMissing rather than retrying forever.
+var ErrTemplateNotFound = errors.New("no SandboxTemplate for template")
 
 // SandboxClaimGVK identifies the agent-sandbox SandboxClaim CR vibeD
 // targets. Pinned to v1alpha1 per the kubernetes-sigs/agent-sandbox v0.4.5
@@ -52,6 +59,20 @@ func (c *SandboxClaimer) EnsureClaim(ctx context.Context, app *vibedv1.VibedApp)
 	template := app.Spec.Runtime.Template
 	if template == "" {
 		return false, "", "", fmt.Errorf("VibedApp %s/%s: spec.runtime.template is required to claim", app.Namespace, app.Name)
+	}
+
+	// Fail fast when no warm pool backs this slot. The classifier can pick a
+	// destination that isn't deployed (e.g. "spin"), or an operator can typo a
+	// custom template; without this the SandboxClaim would never bind and the
+	// app would sit in Claiming forever. The SandboxTemplate is resolved in the
+	// claim's (= app's) namespace.
+	tmpl := &unstructured.Unstructured{}
+	tmpl.SetGroupVersionKind(templatevalidate.SandboxTemplateGVK)
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: template, Namespace: app.Namespace}, tmpl); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, "", "", fmt.Errorf("%w %q (no warm pool configured for it)", ErrTemplateNotFound, template)
+		}
+		return false, "", "", fmt.Errorf("get SandboxTemplate %s/%s: %w", app.Namespace, template, err)
 	}
 
 	key := types.NamespacedName{Name: app.Name, Namespace: app.Namespace}

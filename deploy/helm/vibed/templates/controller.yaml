@@ -90,6 +90,12 @@ spec:
       labels:
         {{- include "vibed.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: controller
+      annotations:
+        # Annotation-based scrape of the controller's metrics (incl.
+        # vibed_template_validation). Matches how the server pod is scraped.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: {{ $sa }}
       securityContext:

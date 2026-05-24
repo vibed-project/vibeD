@@ -61,6 +61,7 @@ const (
 	ReasonInjectFailed     = "InjectFailed"
 	ReasonServiceFailed    = "ServiceFailed"
 	ReasonTemplateInvalid  = "TemplateInvalid"
+	ReasonTemplateMissing  = "TemplateMissing"
 )
 
 // Claimer obtains a Sandbox for a VibedApp by creating (or reading) a
@@ -263,6 +264,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			return r.finish(ctx, &app, before, false)
 		}
 		bound, sandboxRef, podIP, err := r.Claimer.EnsureClaim(ctx, &app)
+		if errors.Is(err, ErrTemplateNotFound) {
+			// No warm pool backs this slot — terminal, don't retry forever.
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonTemplateMissing, err.Error())
+			app.Status.Phase = vibedv1.PhaseFailed
+			logger.Info("no warm pool for template; failing", "template", app.Spec.Runtime.Template)
+			return r.finish(ctx, &app, before, false)
+		}
 		if err != nil {
 			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonClaimFailed, err.Error())
 			logger.Info("claim failed; will retry", "error", err)

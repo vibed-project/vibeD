@@ -58,6 +58,10 @@ spec:
       labels:
         {{- include "vibed.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: router
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8083"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: {{ $sa }}
       securityContext:

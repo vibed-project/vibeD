@@ -238,6 +238,33 @@ func TestClaimingBlockedByInvalidTemplate(t *testing.T) {
 	}
 }
 
+// missingTemplateClaimer reports the slot has no warm pool.
+type missingTemplateClaimer struct{}
+
+func (missingTemplateClaimer) EnsureClaim(context.Context, *vibedv1.VibedApp) (bool, string, string, error) {
+	return false, "", "", ErrTemplateNotFound
+}
+
+// TestClaimingFailsWhenTemplateMissing: a deploy routed to a slot with no
+// SandboxTemplate fails fast (Failed/TemplateMissing) instead of retrying
+// Claiming forever.
+func TestClaimingFailsWhenTemplateMissing(t *testing.T) {
+	app := validApp("nopool")
+	app.Status.Phase = vibedv1.PhaseClaiming
+	r := newReconciler(t, app, func(r *Reconciler) { r.Claimer = missingTemplateClaimer{} })
+
+	got, res := runOnce(t, r, app)
+	if got.Status.Phase != vibedv1.PhaseFailed {
+		t.Fatalf("phase=%q want Failed", got.Status.Phase)
+	}
+	if !hasConditionWithReason(got, ConditionReady, metav1.ConditionFalse, ReasonTemplateMissing) {
+		t.Errorf("expected Ready=False/TemplateMissing, got %+v", got.Status.Conditions)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("terminal Failed should not requeue, got %v", res.RequeueAfter)
+	}
+}
+
 func TestMissingSourceFails(t *testing.T) {
 	app := validApp("no-source")
 	app.Spec.Source = vibedv1.Source{} // neither tarball nor git
