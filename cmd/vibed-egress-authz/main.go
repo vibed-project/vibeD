@@ -38,6 +38,12 @@ func init() {
 }
 
 func main() {
+	// Subcommand: run as Squid's external_acl helper (bridges Squid's stdin
+	// protocol to this service's /authz endpoint). Must precede flag.Parse.
+	if len(os.Args) > 1 && os.Args[1] == "squid-helper" {
+		os.Exit(runSquidHelper(os.Args[2:]))
+	}
+
 	var addr, metricsAddr, namespace, systemHostsCSV string
 	flag.StringVar(&addr, "addr", ":8090", "authz HTTP listen address")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "metrics address (0 disables)")
@@ -83,6 +89,18 @@ func main() {
 		logger.Error("manager run failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// runSquidHelper runs the external_acl helper loop (stdin/stdout), querying the
+// authz service. Used as Squid's external_acl_type program inside the proxy pod.
+func runSquidHelper(args []string) int {
+	fs := flag.NewFlagSet("squid-helper", flag.ExitOnError)
+	authzURL := fs.String("authz-url", "http://vibed-egress-authz:8090", "base URL of the egress authz service")
+	_ = fs.Parse(args)
+	if err := egressauthz.RunSquidHelper(context.Background(), os.Stdin, os.Stdout, *authzURL); err != nil {
+		return 1
+	}
+	return 0
 }
 
 func splitCSV(s string) []string {

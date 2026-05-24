@@ -1,0 +1,95 @@
+{{- if .Values.egressControl.enabled }}
+{{- $fullName := include "vibed.fullname" . }}
+{{- $sa := printf "%s-egress-authz" $fullName }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-authz
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullName }}-egress-authz
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+rules:
+  # Resolve a source pod IP -> the owning VibedApp's egress allow-list.
+  - apiGroups: ["vibed.dev"]
+    resources: ["vibedapps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullName }}-egress-authz
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullName }}-egress-authz
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-egress-authz
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-authz
+spec:
+  replicas: {{ .Values.egressControl.authz.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "vibed.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: egress-authz
+  template:
+    metadata:
+      labels:
+        {{- include "vibed.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: egress-authz
+    spec:
+      serviceAccountName: {{ $sa }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: authz
+          image: "{{ .Values.egressControl.authz.image.repository }}:{{ .Values.egressControl.authz.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.egressControl.authz.image.pullPolicy | default "IfNotPresent" }}
+          args:
+            - --namespace={{ .Values.namespaces.apps }}
+            - --system-hosts={{ join "," .Values.egressControl.systemHosts }}
+          ports:
+            - { name: authz, containerPort: 8090 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-egress-authz
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "vibed.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-authz
+  ports:
+    - { name: authz, port: 8090, targetPort: authz }
+{{- end }}

@@ -112,6 +112,30 @@ networkPolicy:
   enabled: false
   extraEgress: []   # additional egress rules (e.g. an in-cluster MinIO CIDR)
 
+# -- Per-app egress control. When enabled, a sandbox can reach ONLY the hosts on
+#    its VibedApp's spec.egress.allowedHosts (plus systemHosts) — enforced by a
+#    Squid forward proxy that the sandbox NetworkPolicy forces all egress
+#    through (vibed-egress-authz authorizes each connection). Pair with
+#    runtime.sandboxNetworkPolicy=Unmanaged + networkPolicy.enabled so vibeD
+#    owns the locked-down policy.
+egressControl:
+  enabled: false
+  # Hosts always reachable regardless of an app's allow-list — most importantly
+  # the object-store (S3/MinIO) endpoint the agent pulls source from.
+  systemHosts: []
+  proxy:
+    replicaCount: 1
+    image:
+      repository: ghcr.io/vibed-project/vibed-egress-proxy
+      tag: ""              # empty -> chart appVersion
+      pullPolicy: IfNotPresent
+  authz:
+    replicaCount: 1
+    image:
+      repository: ghcr.io/vibed-project/vibed-egress-authz
+      tag: ""              # empty -> chart appVersion
+      pullPolicy: IfNotPresent
+
 # -- vibed-controller: reconciles VibedApp -> SandboxClaim / workerd.
 controller:
   enabled: true

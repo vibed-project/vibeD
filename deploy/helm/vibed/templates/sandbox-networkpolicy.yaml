@@ -40,13 +40,29 @@ spec:
         - { protocol: TCP, port: 9000 }
         - { protocol: TCP, port: 8080 }
   egress:
-    # DNS (sandboxes get public resolvers, but allow 53 either way).
+    # DNS — sandboxes need to resolve the egress proxy's Service (and, without
+    # egress control, any allowed public host).
     - ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
-    # Public internet for the agent's pre-signed S3 source pull + the user
-    # app's outbound calls — but never cluster-internal services (the §7.4
-    # data-egress control). Narrow these CIDRs further per environment.
+    {{- if .Values.egressControl.enabled }}
+    # Egress control ON: the ONLY permitted egress is to the egress proxy
+    # (:3128) in the control-plane namespace. The proxy authorizes each
+    # connection per app (vibed-egress-authz) and makes the real outbound call,
+    # so untrusted code can't reach anything off its allow-list — there is no
+    # direct internet path from the sandbox.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: egress-proxy
+      ports:
+        - { protocol: TCP, port: 3128 }
+    {{- else }}
+    # Egress control OFF: public internet allowed, cluster-internal denied (the
+    # §7.4 baseline). Enable egressControl for per-app hostname allow-listing.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -55,6 +71,7 @@ spec:
               - 172.16.0.0/12
               - 192.168.0.0/16
               - 169.254.0.0/16
+    {{- end }}
     {{- with .Values.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

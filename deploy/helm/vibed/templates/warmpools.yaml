@@ -54,6 +54,20 @@ spec:
         - name: runtime
           image: {{ $cfg.image | quote }}
           imagePullPolicy: IfNotPresent
+          {{- if $root.Values.egressControl.enabled }}
+          # Route outbound HTTP(S) through the egress proxy — the NetworkPolicy
+          # blocks every other egress path, so this is the only way out and the
+          # proxy authorizes it against the app's allow-list. lower+upper case
+          # since libraries differ on which they read.
+          {{- $proxy := printf "http://%s-egress-proxy.%s:3128" (include "vibed.fullname" $root) $root.Release.Namespace }}
+          env:
+            - { name: HTTP_PROXY,  value: {{ $proxy | quote }} }
+            - { name: HTTPS_PROXY, value: {{ $proxy | quote }} }
+            - { name: NO_PROXY,    value: "localhost,127.0.0.1" }
+            - { name: http_proxy,  value: {{ $proxy | quote }} }
+            - { name: https_proxy, value: {{ $proxy | quote }} }
+            - { name: no_proxy,    value: "localhost,127.0.0.1" }
+          {{- end }}
           ports:
             - { name: control, containerPort: 9000 }
             - { name: http,    containerPort: 8080 }

@@ -1,0 +1,95 @@
+{{- if .Values.egressControl.enabled }}
+{{- $fullName := include "vibed.fullname" . }}
+{{- $authz := printf "http://%s-egress-authz.%s:8090" $fullName .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-egress-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+data:
+  squid.conf: |
+    http_port 3128
+    # Don't advertise the proxy or leak the client.
+    via off
+    forwarded_for delete
+    httpd_suppress_version_string on
+
+    # Per-connection authorization: ask vibed-egress-authz whether this source
+    # pod may reach the requested host. %SRC = client IP, %>ru = requested URL
+    # (host:port for CONNECT). Fail-closed.
+    external_acl_type vibed_egress ttl=5 negative_ttl=5 grace=0 %SRC %>ru /usr/local/bin/vibed-egress-authz squid-helper --authz-url={{ $authz }}
+    acl vibed_egress_ok external vibed_egress
+
+    acl CONNECT method CONNECT
+    acl Safe_ports port 80 443
+    acl SSL_ports port 443
+    http_access deny !Safe_ports
+    http_access deny CONNECT !SSL_ports
+
+    # The gate: allow only what the authz service permits, then default-deny.
+    http_access allow vibed_egress_ok
+    http_access deny all
+
+    # Filtering proxy, not a cache.
+    cache deny all
+    access_log stdio:/dev/stdout
+    cache_log stdio:/dev/stderr
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-egress-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+spec:
+  replicas: {{ .Values.egressControl.proxy.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "vibed.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: egress-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "vibed.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: egress-proxy
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: squid
+          image: "{{ .Values.egressControl.proxy.image.repository }}:{{ .Values.egressControl.proxy.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.egressControl.proxy.image.pullPolicy | default "IfNotPresent" }}
+          command: ["squid", "-N", "-f", "/etc/squid/squid.conf"]
+          ports:
+            - { name: proxy, containerPort: 3128 }
+          volumeMounts:
+            - { name: conf, mountPath: /etc/squid/squid.conf, subPath: squid.conf }
+            - { name: spool, mountPath: /var/spool/squid }
+            - { name: run, mountPath: /var/run }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: "1", memory: 256Mi }
+      volumes:
+        - name: conf
+          configMap: { name: {{ $fullName }}-egress-proxy }
+        - { name: spool, emptyDir: {} }
+        - { name: run, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-egress-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "vibed.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-proxy
+  ports:
+    - { name: proxy, port: 3128, targetPort: proxy }
+{{- end }}
