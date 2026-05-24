@@ -46,6 +46,13 @@ type Config struct {
 	StopGrace time.Duration
 	// Logger is the agent's own logger (not the user process's output).
 	Logger *slog.Logger
+
+	// Language is the image's declared template language (VIBED_TEMPLATE_LANGUAGE),
+	// reported verbatim by GET /info for bring-your-own base-image validation.
+	Language string
+	// RuntimeProbe is a command (VIBED_RUNTIME_PROBE), e.g. "node --version",
+	// that GET /info runs once to prove the language runtime is present.
+	RuntimeProbe string
 }
 
 func (c *Config) applyDefaults() {
@@ -87,6 +94,9 @@ type Agent struct {
 	command  []string
 	appPort  int
 	lastErr  string
+
+	infoOnce sync.Once    // the runtime probe runs at most once
+	infoResp InfoResponse // cached /info result
 }
 
 // New returns a ready-to-Run Agent.
@@ -105,6 +115,7 @@ func New(cfg Config) *Agent {
 func (a *Agent) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(PathHealthz, a.handleHealthz) // unauthenticated liveness probe
+	mux.HandleFunc(PathInfo, a.handleInfo)       // unauthenticated image metadata (BYO validation)
 	mux.HandleFunc(PathInject, a.auth(a.handleInject))
 	mux.HandleFunc(PathStatus, a.auth(a.handleStatus))
 	mux.HandleFunc(PathLogs, a.auth(a.handleLogs))
@@ -162,6 +173,35 @@ func (a *Agent) auth(next http.HandlerFunc) http.HandlerFunc {
 func (a *Agent) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, "ok\n")
+}
+
+func (a *Agent) handleInfo(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, a.info())
+}
+
+// info reports the image's declared language and runs the runtime probe once
+// (cached) to confirm the language runtime is actually present. Used by
+// vibeD's bring-your-own base-image validation.
+func (a *Agent) info() InfoResponse {
+	a.infoOnce.Do(func() {
+		resp := InfoResponse{
+			Language:      a.cfg.Language,
+			AgentContract: AgentContract,
+			RuntimeProbe:  a.cfg.RuntimeProbe,
+		}
+		if probe := strings.TrimSpace(a.cfg.RuntimeProbe); probe != "" {
+			// Run via `sh -c` so images can use compound probes (e.g. the
+			// kitchen-sink base checking node + python + go). All vibeD images
+			// have a shell; the entrypoint contract already requires one.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(ctx, "sh", "-c", probe).CombinedOutput()
+			resp.RuntimeProbeOutput = strings.TrimSpace(string(out))
+			resp.RuntimeProbeOK = err == nil
+		}
+		a.infoResp = resp
+	})
+	return a.infoResp
 }
 
 func (a *Agent) handleInject(w http.ResponseWriter, r *http.Request) {

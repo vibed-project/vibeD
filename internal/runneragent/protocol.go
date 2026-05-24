@@ -12,7 +12,36 @@ const (
 	PathLogs    = "/logs"
 	PathStop    = "/stop"
 	PathHealthz = "/healthz"
+	PathInfo    = "/info"
 )
+
+// AgentContract is the base-image contract version this agent implements.
+// Reported by GET /info so vibeD can reject images built against an
+// incompatible contract. Bump when the contract (env vars, paths, ports)
+// changes incompatibly.
+const AgentContract = "1"
+
+// InfoResponse is the body of GET /info — static metadata about the image the
+// agent is baked into, used by vibeD to validate bring-your-own base images:
+// it confirms the image declares the expected language and that the language
+// runtime is actually present. Unauthenticated (read-only metadata, in-cluster
+// control port only), like /healthz.
+type InfoResponse struct {
+	// Language is the image's declared template language (from the
+	// VIBED_TEMPLATE_LANGUAGE env), e.g. "node", "python", "go", "static".
+	Language string `json:"language"`
+	// AgentContract is the contract version the agent implements (AgentContract).
+	AgentContract string `json:"agentContract"`
+	// RuntimeProbe is the command (VIBED_RUNTIME_PROBE) the agent ran to prove
+	// the language runtime exists, e.g. "node --version". Empty if the image
+	// declared none — which BYO validation treats as a contract failure.
+	RuntimeProbe string `json:"runtimeProbe,omitempty"`
+	// RuntimeProbeOK is true when the probe command ran and exited 0.
+	RuntimeProbeOK bool `json:"runtimeProbeOK"`
+	// RuntimeProbeOutput is the probe's combined stdout/stderr, trimmed (e.g.
+	// "v24.1.0"). Surfaced so validation failures are debuggable.
+	RuntimeProbeOutput string `json:"runtimeProbeOutput,omitempty"`
+}
 
 // Process states reported by the agent.
 const (

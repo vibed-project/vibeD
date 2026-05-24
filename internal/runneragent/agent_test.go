@@ -68,6 +68,47 @@ func waitState(t *testing.T, srv *httptest.Server, token, want string) StatusRes
 	return last
 }
 
+func TestInfoReportsLanguageAndRuntimeProbe(t *testing.T) {
+	a := New(Config{Workdir: t.TempDir(), Language: "node", RuntimeProbe: "echo v24.1.0"})
+	srv := httptest.NewServer(a.handler())
+	defer srv.Close()
+
+	// /info must be reachable WITHOUT a token (read-only metadata).
+	resp, data := do(t, srv, http.MethodGet, PathInfo, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/info status = %d: %s", resp.StatusCode, data)
+	}
+	var info InfoResponse
+	if err := json.Unmarshal(data, &info); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if info.Language != "node" {
+		t.Errorf("language = %q, want node", info.Language)
+	}
+	if info.AgentContract != AgentContract {
+		t.Errorf("agentContract = %q, want %q", info.AgentContract, AgentContract)
+	}
+	if !info.RuntimeProbeOK {
+		t.Errorf("runtimeProbeOK = false, want true (out=%q)", info.RuntimeProbeOutput)
+	}
+	if info.RuntimeProbeOutput != "v24.1.0" {
+		t.Errorf("runtimeProbeOutput = %q, want v24.1.0", info.RuntimeProbeOutput)
+	}
+}
+
+func TestInfoRuntimeProbeFails(t *testing.T) {
+	a := New(Config{Workdir: t.TempDir(), Language: "node", RuntimeProbe: "vibed-no-such-binary --version"})
+	srv := httptest.NewServer(a.handler())
+	defer srv.Close()
+
+	_, data := do(t, srv, http.MethodGet, PathInfo, "", nil)
+	var info InfoResponse
+	_ = json.Unmarshal(data, &info)
+	if info.RuntimeProbeOK {
+		t.Errorf("runtimeProbeOK = true for a missing binary, want false")
+	}
+}
+
 func TestInjectRunsAndStops(t *testing.T) {
 	a, srv := newTestAgent(t, "")
 

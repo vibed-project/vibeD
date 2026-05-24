@@ -62,6 +62,13 @@ ENV VIBED_AGENT_WORKDIR=/workspace \
     VIBED_AGENT_CONTROL_ADDR=:9000 \
     VIBED_AGENT_APP_PORT=8080
 
+# Bring-your-own base-image contract: the language vibeD routes here, plus a
+# probe it runs via GET /info to confirm the runtime is actually present.
+LABEL dev.vibed.template.language="node" \
+      dev.vibed.agent.contract="1"
+ENV VIBED_TEMPLATE_LANGUAGE=node \
+    VIBED_RUNTIME_PROBE="node --version"
+
 # 9000: in-cluster control API (never exposed publicly). 8080: the user app.
 EXPOSE 9000 8080
 
