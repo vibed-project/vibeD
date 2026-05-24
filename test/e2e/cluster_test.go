@@ -243,6 +243,70 @@ func TestClusterInvalidImageIsGated(t *testing.T) {
 	}
 }
 
+// deployAppEgress deploys with a per-app egress allow-list and returns the app id.
+func deployAppEgress(t *testing.T, base, name string, files map[string]string, allowedHosts []string) string {
+	t.Helper()
+	hosts, _ := json.Marshal(allowedHosts)
+	meta := `{"name":"` + name + `","egress":{"allowed_hosts":` + string(hosts) + `}}`
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	src, _ := mw.CreateFormFile("source", "source.tar.gz")
+	if _, err := src.Write(buildTarball(t, files)); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	f, _ := mw.CreateFormField("metadata")
+	f.Write([]byte(meta))
+	mw.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/deploy", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/deploy: %v", err)
+	}
+	resp.Body.Close()
+	return name
+}
+
+// TestClusterEgressAuthz validates the per-app egress decision end-to-end: a
+// deployed app's bound pod IP is authorized for its allow-listed host and
+// denied for anything else, as the Squid proxy would see it. Needs the
+// egress-authz service reachable — set VIBED_E2E_AUTHZ_URL (e.g. via
+// `kubectl port-forward svc/vibed-egress-authz 8090:8090`).
+func TestClusterEgressAuthz(t *testing.T) {
+	authzURL := os.Getenv("VIBED_E2E_AUTHZ_URL")
+	if authzURL == "" {
+		t.Skip("set VIBED_E2E_AUTHZ_URL (port-forward the egress-authz service) to run")
+	}
+	base := requireServer(t)
+	c := k8sClient(t)
+	const name = "e2e-egress"
+
+	deployAppEgress(t, base, name, map[string]string{"index.html": "<h1>egress</h1>"}, []string{"example.com"})
+	t.Cleanup(func() { deleteApp(base, name) })
+
+	app := waitPhase(t, c, name, 120*time.Second, vibedv1.PhaseReady, vibedv1.PhaseFailed)
+	if app.Status.PodIP == "" {
+		t.Fatalf("no bound pod IP (phase %q)", app.Status.Phase)
+	}
+
+	assertAuthz(t, authzURL, app.Status.PodIP, "example.com", http.StatusOK)        // allow-listed
+	assertAuthz(t, authzURL, app.Status.PodIP, "exfil.example.net", http.StatusForbidden) // not listed
+}
+
+func assertAuthz(t *testing.T, authzURL, src, host string, want int) {
+	t.Helper()
+	resp, err := http.Get(authzURL + "/authz?src=" + src + "&host=" + host)
+	if err != nil {
+		t.Fatalf("authz GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != want {
+		t.Errorf("authz(src=%s host=%s) = %d, want %d", src, host, resp.StatusCode, want)
+	}
+}
+
 func deleteApp(base, name string) {
 	req, _ := http.NewRequest(http.MethodDelete, base+"/v1/apps/"+name, nil)
 	if r, err := http.DefaultClient.Do(req); err == nil {

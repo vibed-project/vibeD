@@ -15,7 +15,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Configuration',
-      items: ['configuration/config-reference', 'configuration/authentication', 'configuration/storage', 'configuration/custom-base-images', 'configuration/registry'],
+      items: ['configuration/config-reference', 'configuration/authentication', 'configuration/storage', 'configuration/custom-base-images', 'configuration/egress-control', 'configuration/registry'],
     },
     {
       type: 'category',
