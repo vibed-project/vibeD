@@ -1,0 +1,15 @@
+# E2E overlay — layered on top of values-kind.yaml in the cluster E2E
+# (.github/workflows/e2e-cluster.yaml). It enables a deliberately MIS-IMAGED
+# node-24 slot: the image is the static-nginx one, which declares language
+# "static", not "node". This lets the E2E prove bring-your-own validation gates
+# a wrong-language image — a Node deploy routed to node-24 must end up Failed
+# with TemplateInvalid. NOT for real use.
+warmPools:
+  node-24:
+    enabled: true
+    lane: general
+    image: "localhost/vibed-template-static-nginx:dev"
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 32Mi }
+      limits: { cpu: 200m, memory: 128Mi }

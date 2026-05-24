@@ -97,11 +97,12 @@ jobs:
             kind load docker-image "localhost/${name}:dev" --name "${KIND_CLUSTER}"
           done
 
-      - name: Install vibeD (dev overlay)
+      - name: Install vibeD (dev overlay + e2e mis-imaged slot)
         run: |
           helm install vibed deploy/helm/vibed/ \
             -n vibed-system --create-namespace \
             -f deploy/helm/vibed/values-kind.yaml \
+            -f deploy/helm/vibed/values-e2e.yaml \
             --wait --timeout 5m
 
       - name: Wait for the static-nginx warm pool
