@@ -33,6 +33,21 @@ function HomepageHeader() {
             Installation
           </Link>
         </div>
+        <video
+          controls
+          preload="metadata"
+          style={{
+            display: 'block',
+            margin: '2.5rem auto 0',
+            width: '100%',
+            maxWidth: 880,
+            borderRadius: 12,
+            boxShadow: '0 8px 30px rgba(0, 0, 0, 0.2)',
+          }}>
+          <source src={useBaseUrl('/video/vibeD-0.3.1-example.mp4')} type="video/mp4" />
+          Your browser can't play this video.{' '}
+          <a href={useBaseUrl('/video/vibeD-0.3.1-example.mp4')}>Download the demo</a>.
+        </video>
       </div>
     </header>
   );
