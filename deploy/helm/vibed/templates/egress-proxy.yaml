@@ -18,13 +18,12 @@ data:
     httpd_suppress_version_string on
 
     # Per-connection authorization: ask vibed-egress-authz whether this source
-    # pod may reach the requested host. %SRC = client IP, %URI = full request
-    # URL (host:port for CONNECT). Note: %>ru is a log_format token, NOT an
-    # external_acl_type token — Squid silently substitutes "-" for it and
-    # shifts the rest, so the helper saw {URL, "-"} instead of {SRC, URL}
-    # and every request was denied with host="-". Use %URI for external_acl.
-    # Fail-closed.
-    external_acl_type vibed_egress ttl=5 negative_ttl=5 grace=0 %SRC %URI /usr/local/bin/vibed-egress-authz squid-helper --authz-url={{ $authz }}
+    # pod may reach the requested host. %SRC = client IP, %DST = destination
+    # hostname (works for both forward GET and CONNECT). %>ru and %URI both
+    # silently substituted "-" in practice on ubuntu/squid:edge (5.x) — the
+    # docs claim they work for external_acl_type but the deployed Squid
+    # returns the placeholder; %DST is what's reliably populated. Fail-closed.
+    external_acl_type vibed_egress ttl=5 negative_ttl=5 grace=0 %SRC %DST /usr/local/bin/vibed-egress-authz squid-helper --authz-url={{ $authz }}
     acl vibed_egress_ok external vibed_egress
 
     acl CONNECT method CONNECT
@@ -98,6 +97,15 @@ spec:
           image: "{{ .Values.egressControl.proxy.image.repository }}:{{ .Values.egressControl.proxy.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.egressControl.proxy.image.pullPolicy | default "IfNotPresent" }}
           command: ["squid", "-N", "-f", "/etc/squid/squid.conf"]
+          env:
+            # Dump every raw stdin line Squid sends the external_acl helper
+            # to stderr — invaluable when an external_acl_type format token
+            # produces an unexpected value ("-") and we're guessing what
+            # arrived. Toggle off (egressControl.debug=false) once the
+            # config is verified working in CI.
+            {{- if .Values.egressControl.debug | default true }}
+            - { name: VIBED_SQUID_HELPER_DEBUG, value: "1" }
+            {{- end }}
           ports:
             - { name: proxy, containerPort: 3128 }
           volumeMounts:

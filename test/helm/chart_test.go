@@ -88,25 +88,30 @@ func TestSquidConfigHasRebindingMitigation(t *testing.T) {
 	)
 }
 
-// TestSquidExternalAclFormatUsesURI pins the format tokens Squid passes to
-// the authz helper. %>ru is a log_format token, NOT an external_acl_type
-// token — Squid substitutes "-" for it and shifts the remaining tokens, so
-// the helper sees the URL in %SRC's slot and host="-". Every request gets
-// denied. Use %URI, which is the documented external_acl token. This
-// regressed once in v0.4.0 e2e; the test makes it a build-time failure.
-func TestSquidExternalAclFormatUsesURI(t *testing.T) {
+// TestSquidExternalAclFormatUsesDST pins the format tokens Squid passes to
+// the authz helper. Both %>ru (log_format-only) and %URI (documented for
+// external_acl but practically returns "-" without credentials on
+// ubuntu/squid:edge) silently substituted the placeholder "-", which the
+// helper then sent as host="-" → authz denies every request. %DST is the
+// destination-hostname token that's reliably populated and is exactly what
+// we want to authorize on. The test makes this regression a build failure.
+func TestSquidExternalAclFormatUsesDST(t *testing.T) {
 	r := helmTemplate(t, "egressControl.enabled=true")
 	containsAll(t, "Squid external_acl format", r,
 		"external_acl_type vibed_egress",
-		"%SRC %URI",
+		"%SRC %DST",
 	)
-	// The string ">ru " (token followed by a space) appears only on the
-	// active external_acl_type line, never in our comment block — which
-	// only mentions "%>ru" with quotes/punctuation around it.
+	// Scan only the active external_acl_type line; comments above it can
+	// legitimately mention old tokens for context.
 	for _, line := range strings.Split(r, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "external_acl_type") && strings.Contains(trimmed, "%>ru") {
-			t.Errorf("external_acl_type still uses '>ru' (log_format token); use 'URI' instead. Line: %s", trimmed)
+		if !strings.HasPrefix(trimmed, "external_acl_type") {
+			continue
+		}
+		for _, bad := range []string{"%>ru", "%URI"} {
+			if strings.Contains(trimmed, bad) {
+				t.Errorf("external_acl_type still uses %q (returns '-' in practice). Use '%%DST'. Line: %s", bad, trimmed)
+			}
 		}
 	}
 }

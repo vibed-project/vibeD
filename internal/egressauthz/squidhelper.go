@@ -7,9 +7,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
+
+// debug is enabled when VIBED_SQUID_HELPER_DEBUG=1. When on, every raw stdin
+// line from Squid is dumped to stderr so kubectl logs reveals exactly what
+// format Squid is producing — invaluable when an external_acl_type format
+// token silently substitutes "-" and the helper's downstream parsing looks
+// wrong. Off by default so production logs stay quiet.
+var debug = os.Getenv("VIBED_SQUID_HELPER_DEBUG") == "1"
 
 // RunSquidHelper runs the Squid external_acl helper loop. Squid (configured
 // `external_acl_type ... %SRC %>ru .../vibed-egress-authz squid-helper`) writes
@@ -28,9 +36,16 @@ func RunSquidHelper(ctx context.Context, in io.Reader, out io.Writer, authzURL s
 		if line == "" {
 			continue
 		}
+		if debug {
+			fmt.Fprintf(os.Stderr, "squid-helper: input %q\n", line)
+		}
 		id, src, uri := parseHelperLine(line)
+		host := hostFromURI(uri)
+		if debug {
+			fmt.Fprintf(os.Stderr, "squid-helper: parsed id=%q src=%q uri=%q host=%q\n", id, src, uri, host)
+		}
 		decision := "ERR"
-		if allowEgress(ctx, hc, authzURL, src, hostFromURI(uri)) {
+		if allowEgress(ctx, hc, authzURL, src, host) {
 			decision = "OK"
 		}
 		if id != "" {
