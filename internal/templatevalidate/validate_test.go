@@ -46,7 +46,10 @@ func TestEvaluate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := evaluate(tt.slot, "img:tag", tt.info, tt.probeErr, fixedNow)
+			r := evaluate(tt.slot, "img:tag", "docker-pullable://img@sha256:deadbeef", tt.info, tt.probeErr, fixedNow)
+			if r.ImageID != "docker-pullable://img@sha256:deadbeef" {
+				t.Errorf("imageID propagation failed: got %q", r.ImageID)
+			}
 			if r.Valid != tt.wantValid {
 				t.Errorf("valid = %v, want %v (reason: %q)", r.Valid, tt.wantValid, r.Reason)
 			}

@@ -56,8 +56,16 @@ func ExpectedLanguage(slot string) (string, bool) {
 
 // Result is the validation outcome for one template slot.
 type Result struct {
-	Template  string `json:"template"`
-	Image     string `json:"image"`
+	Template string `json:"template"`
+	// Image is the spec.image string from the SandboxTemplate (often a
+	// mutable tag like "ghcr.io/.../vibed-runner-node:0.3.1"). Kept for
+	// diagnostics and the `vibed validate-images` report.
+	Image string `json:"image"`
+	// ImageID is the resolved image identity from the warm pod's container
+	// status (e.g. "docker-pullable://ghcr.io/.../vibed-runner-node@sha256:…").
+	// This is what the gate compares against the live pod's current ImageID
+	// to detect a mutable-tag content swap between validator runs.
+	ImageID   string `json:"imageID,omitempty"`
 	Language  string `json:"language,omitempty"` // language the agent reported
 	Valid     bool   `json:"valid"`
 	Reason    string `json:"reason,omitempty"`
@@ -87,8 +95,8 @@ type Validator struct {
 //   - expected known & mismatch → invalid (wrong-language image)
 //   - !RuntimeProbeOK            → invalid (runtime missing)
 //   - no VIBED_RUNTIME_PROBE     → invalid (image doesn't meet the contract)
-func evaluate(slot, image string, info *runneragent.InfoResponse, probeErr error, now time.Time) Result {
-	r := Result{Template: slot, Image: image, CheckedAt: now.UTC().Format(time.RFC3339)}
+func evaluate(slot, image, imageID string, info *runneragent.InfoResponse, probeErr error, now time.Time) Result {
+	r := Result{Template: slot, Image: image, ImageID: imageID, CheckedAt: now.UTC().Format(time.RFC3339)}
 	if probeErr != nil {
 		r.Reason = fmt.Sprintf("agent /info unreachable (image may not embed vibed-agent or failed to start): %v", probeErr)
 		return r
@@ -139,7 +147,7 @@ func (v *Validator) ValidateAll(ctx context.Context) ([]Result, error) {
 		slot := t.GetName()
 		image := firstContainerImage(t.Object)
 
-		podIP, ok := v.readyPodIP(ctx, slot)
+		podIP, imageID, ok := v.readyPod(ctx, slot)
 		if !ok {
 			results = append(results, Result{
 				Template:  slot,
@@ -150,33 +158,62 @@ func (v *Validator) ValidateAll(ctx context.Context) ([]Result, error) {
 			continue
 		}
 		info, err := v.Probe.Info(ctx, fmt.Sprintf("%s:%d", podIP, port))
-		results = append(results, evaluate(slot, image, info, err, v.Now()))
+		results = append(results, evaluate(slot, image, imageID, info, err, v.Now()))
 	}
 	return results, nil
 }
 
-// readyPodIP finds a Running, Ready warm-pool pod for the slot and returns its
-// IP. The warm pods carry the vibed.dev/template label (set by warmpools.yaml).
-func (v *Validator) readyPodIP(ctx context.Context, slot string) (string, bool) {
+// readyPod finds a Running, Ready warm-pool pod for the slot and returns its
+// IP and resolved container ImageID. Warm pods carry the vibed.dev/template
+// label (set by warmpools.yaml). ImageID is what the gate compares against
+// the live pod's identity to detect a mutable-tag content swap.
+func (v *Validator) readyPod(ctx context.Context, slot string) (podIP, imageID string, ok bool) {
 	pods := &corev1.PodList{}
 	if err := v.Client.List(ctx, pods,
 		client.InNamespace(v.Namespace),
 		client.MatchingLabels{"vibed.dev/template": slot},
 	); err != nil {
-		return "", false
+		return "", "", false
 	}
 	for i := range pods.Items {
 		p := &pods.Items[i]
 		if p.Status.Phase != corev1.PodRunning || p.Status.PodIP == "" || p.DeletionTimestamp != nil {
 			continue
 		}
+		ready := false
 		for _, c := range p.Status.Conditions {
 			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-				return p.Status.PodIP, true
+				ready = true
+				break
 			}
 		}
+		if !ready {
+			continue
+		}
+		return p.Status.PodIP, firstContainerImageID(p), true
 	}
-	return "", false
+	return "", "", false
+}
+
+// firstContainerImageID returns the kubelet-resolved imageID of the first
+// container in the pod's status, or "" when not reported yet. The string is
+// typically "docker-pullable://repo@sha256:…" or "sha256:…" depending on the
+// container runtime.
+func firstContainerImageID(p *corev1.Pod) string {
+	if len(p.Status.ContainerStatuses) == 0 {
+		return ""
+	}
+	return p.Status.ContainerStatuses[0].ImageID
+}
+
+// CurrentImageID returns the resolved imageID the warm-pool pod for slot is
+// currently running, or ("", false) when no Ready pod exists yet. The gate
+// calls this at claim-time (strict mode) to verify the live pod still runs
+// the image content the validator approved.
+func CurrentImageID(ctx context.Context, c client.Client, namespace, slot string) (string, bool) {
+	v := &Validator{Client: c, Namespace: namespace}
+	_, imageID, ok := v.readyPod(ctx, slot)
+	return imageID, ok
 }
 
 // firstContainerImage digs spec.podTemplate.spec.containers[0].image out of an

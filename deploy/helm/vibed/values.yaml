@@ -100,8 +100,15 @@ runtime:
 #    language match + runtime probe) and hard-gates deploys whose image is
 #    known-invalid. Disable for air-gapped/offline installs where you trust
 #    your images and want no preflight.
+#
+#    strict (default false): flip the gate from fail-open to fail-closed
+#    during the warm-up window AND compare the live warm-pool pod's resolved
+#    ImageID to the validated digest, so a mutable-tag content swap forces
+#    re-validation before any new claim binds. Use in production where
+#    deploys must never race ahead of validation.
 templateValidation:
   enabled: true
+  strict: false
 
 # -- vibeD-owned sandbox NetworkPolicy (the production posture). Default-deny,
 #    then allow the control plane -> sandbox (:8080/:9000) and DNS + public

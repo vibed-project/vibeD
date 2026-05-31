@@ -114,6 +114,7 @@ spec:
             - --app-url-port={{ .Values.controller.urlPort }}
             {{- end }}
             - --validate-images={{ .Values.templateValidation.enabled | default true }}
+            - --template-validation-strict={{ .Values.templateValidation.strict | default false }}
             {{- if .Values.workerd.enabled }}
             - --workerd-replicas={{ .Values.workerd.replicas }}
             - --workerd-control-port={{ .Values.workerd.controlPort }}

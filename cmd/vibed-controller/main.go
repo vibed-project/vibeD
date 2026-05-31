@@ -51,6 +51,7 @@ func main() {
 		urlScheme            string
 		urlPort              string
 		validateImages       bool
+		strictValidation     bool
 		poolNamespace        string
 		agentToken           string
 		workerdReplicas      int
@@ -71,6 +72,8 @@ func main() {
 		"Optional port appended to app URLs (dev: the host port reaching Caddy, e.g. 18080). Empty in prod.")
 	flag.BoolVar(&validateImages, "validate-images", true,
 		"Validate warm-pool base images (BYO contract) and hard-gate deploys whose image is invalid. Disable for trusted/air-gapped installs.")
+	flag.BoolVar(&strictValidation, "template-validation-strict", false,
+		"Strict gate: deny claims for slots without a Valid recorded result AND when the warm-pool pod's current ImageID drifts from the validated digest (mutable-tag bypass guard). Default fail-open during the 2-minute warmup.")
 	flag.StringVar(&poolNamespace, "pool-namespace", "vibed-pools",
 		"Namespace where SandboxWarmPool / SandboxTemplate live (matches templates/*/template.yaml).")
 	flag.StringVar(&agentToken, "agent-token", "",
@@ -115,7 +118,14 @@ func main() {
 		Router:   controller.DeterministicRouter{Domain: domain, Scheme: urlScheme, Port: urlPort},
 	}
 	if validateImages {
-		reconciler.Gate = &controller.ConfigMapTemplateGate{Client: mgr.GetClient(), Namespace: poolNamespace}
+		reconciler.Gate = &controller.ConfigMapTemplateGate{
+			Client:    mgr.GetClient(),
+			Namespace: poolNamespace,
+			Strict:    strictValidation,
+		}
+		if strictValidation {
+			logger.Info("BYO template validation in STRICT mode: unvalidated or content-changed slots are denied")
+		}
 	}
 	// Fast lane: wire the workerd loader client only when replicas are
 	// configured. Otherwise the default DummyFastLaneDeployer rejects
