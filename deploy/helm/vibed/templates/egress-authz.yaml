@@ -68,7 +68,23 @@ spec:
           imagePullPolicy: {{ .Values.egressControl.authz.image.pullPolicy | default "IfNotPresent" }}
           args:
             - --namespace={{ .Values.namespaces.apps }}
-            - --system-hosts={{ join "," .Values.egressControl.systemHosts }}
+            {{- /*
+              systemHosts: operator-declared always-allowed hosts (S3 endpoint,
+              package mirrors, etc.). When tarball.backend=served the in-cluster
+              source store is reached through the egress proxy too — same
+              HTTP_PROXY env path as everything else — so auto-include the
+              served Service DNS unless the operator already listed it. Without
+              this, served + egressControl quietly 403s every source pull and
+              deploys never leave Starting.
+            */}}
+            {{- $systemHosts := .Values.egressControl.systemHosts | default list }}
+            {{- if eq (.Values.config.storage.tarball.backend | default "served") "served" }}
+              {{- $servedHost := printf "%s.%s.svc.cluster.local" (include "vibed.fullname" .) .Release.Namespace }}
+              {{- if not (has $servedHost $systemHosts) }}
+                {{- $systemHosts = append $systemHosts $servedHost }}
+              {{- end }}
+            {{- end }}
+            - --system-hosts={{ join "," $systemHosts }}
           ports:
             - { name: authz, containerPort: 8090 }
           securityContext:

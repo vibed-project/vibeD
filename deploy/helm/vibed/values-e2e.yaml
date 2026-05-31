@@ -27,8 +27,19 @@ warmPools:
 # Enable the egress proxy + authz so TestClusterEgressAuthz has something
 # to talk to in CI. The workflow builds + loads the two egress images and
 # port-forwards the authz service as VIBED_E2E_AUTHZ_URL.
+#
+# When egressControl is on, every warm-pool runtime gets HTTP_PROXY/HTTPS_PROXY
+# pointing at the Squid proxy (templates/warmpools.yaml). That includes the
+# runner-agent's source pull from the in-cluster served store, so the
+# served-store DNS name needs to be in systemHosts or Squid 403s the request
+# and the deploy gets stuck in Starting forever. The chart auto-adds it now
+# (egress-authz.yaml), but we set it explicitly here so the e2e configuration
+# is self-documenting and survives any later chart refactor that drops the
+# auto-derivation.
 egressControl:
   enabled: true
+  systemHosts:
+    - vibed.vibed-system.svc.cluster.local
   proxy:
     image:
       repository: localhost/vibed-egress-proxy
