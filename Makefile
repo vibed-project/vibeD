@@ -174,6 +174,36 @@ load-static-nginx-image: image-static-nginx
 	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-template-static-nginx-dev.tar --name $(KIND_CLUSTER)
 	@rm -f /tmp/vibed-template-static-nginx-dev.tar
 
+## Opt-in warm pools beyond static-nginx. install-vibed enables only the
+## static pool by default (the kind overlay disables the rest so the dev
+## install stays fast and small). These targets build + load the slot's
+## image and helm-upgrade to flip the pool on without changing the chart.
+enable-python-pool: load-runner-images
+	helm upgrade --install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		-f deploy/helm/vibed/values-kind.yaml \
+		--reuse-values \
+		--set warmPools.python-313.enabled=true \
+		--set warmPools.python-313.lane=general \
+		--set warmPools.python-313.image=$(RUNNER_PYTHON_IMAGE) \
+		--set warmPools.python-313.replicas=1 \
+		--wait --timeout 3m
+	@kubectl rollout restart -n vibed-system deploy/vibed-controller
+	@echo "python-313 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
+
+enable-node-pool: load-runner-images
+	helm upgrade --install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		-f deploy/helm/vibed/values-kind.yaml \
+		--reuse-values \
+		--set warmPools.node-24.enabled=true \
+		--set warmPools.node-24.lane=general \
+		--set warmPools.node-24.image=$(RUNNER_NODE_IMAGE) \
+		--set warmPools.node-24.replicas=1 \
+		--wait --timeout 3m
+	@kubectl rollout restart -n vibed-system deploy/vibed-controller
+	@echo "node-24 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
+
 ## Runner Images (Instant Preview fast path — see FAST-PATH.md)
 ## Build context is the repo root: the Dockerfiles compile the runner agent
 ## from the Go source tree. Built once, not per request.
