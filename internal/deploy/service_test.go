@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -271,6 +273,25 @@ func (a *fakeAuditor) Record(_ context.Context, action, _, outcome, _ string) er
 	return nil
 }
 
+// failClosedAuditor models a fail-closed Recorder whose store has gone away:
+// pre-action records (denied/error) are swallowed (the service is already
+// returning an error), but success-path records bubble the error up.
+type failClosedAuditor struct {
+	mu     sync.Mutex
+	events []string
+	err    error // returned only when outcome == "ok"
+}
+
+func (a *failClosedAuditor) Record(_ context.Context, action, _, outcome, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, action+":"+outcome)
+	if outcome == "ok" {
+		return a.err
+	}
+	return nil
+}
+
 func (a *fakeAuditor) got() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -329,6 +350,80 @@ func TestDeployStampsLabelsAndAudits(t *testing.T) {
 	if got := aud.got(); len(got) != 1 || got[0] != "deploy:ok" {
 		t.Errorf("audit = %v, want [deploy:ok]", got)
 	}
+}
+
+// TestDeployFailsClosedWhenAuditWriteFails locks in the fail-closed contract:
+// when the post-success audit Record returns an error, Deploy surfaces that
+// error to the caller. The VibedApp is already created and the controller
+// will reconcile it; the API just tells the caller "we couldn't durably
+// record this," so they retry (deploy is idempotent) or alert.
+func TestDeployFailsClosedWhenAuditWriteFails(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	store := newFakeStore()
+	svc := newService(c, store)
+	aud := &failClosedAuditor{err: errors.New("audit store: disk full")}
+	svc.Audit = aud
+	markReady(c, "myapp", "vibed-apps", 20*time.Millisecond)
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "myapp",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"go.mod": "module x\n"})),
+	})
+	if err == nil {
+		t.Fatal("Deploy must return error when fail-closed audit write fails")
+	}
+	if !strings.Contains(err.Error(), "audit failed") {
+		t.Errorf("error %q must mention audit failure", err.Error())
+	}
+
+	// Side-effect contract: the VibedApp WAS created (the deploy succeeded
+	// pre-audit). The error tells the caller to retry/alert, not that the
+	// workload is missing.
+	got := &vibedv1.VibedApp{}
+	if gerr := c.Get(context.Background(), types.NamespacedName{Name: "myapp", Namespace: "vibed-apps"}, got); gerr != nil {
+		t.Fatalf("VibedApp should exist despite audit failure: %v", gerr)
+	}
+
+	// And the recorder saw exactly the success record (no pre-action error event).
+	if want := []string{"deploy:ok"}; !reflect.DeepEqual(aud.events, want) {
+		t.Errorf("audit events = %v, want %v", aud.events, want)
+	}
+}
+
+// TestDeployPreActionAuditFailureIsSwallowed covers the inverse of fail-closed:
+// when the deploy is already being denied (quota), the Recorder's error on
+// that pre-action audit must NOT mask the original quota error.
+func TestDeployPreActionAuditFailureIsSwallowed(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Quota = &fakeQuota{deny: true}
+	// Force the audit Record to error on EVERY outcome — pre-action calls
+	// must still swallow it, only the success path bubbles.
+	failAll := &failClosedAuditor{err: errors.New("store down")}
+	failAll.events = nil
+	failAll.err = errors.New("store down")
+	svc.Audit = &alwaysFailAuditor{}
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "myapp",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"go.mod": "module x\n"})),
+	})
+	if err == nil {
+		t.Fatal("expected the quota-exceeded error to propagate")
+	}
+	var qe interface{ QuotaExceeded() bool }
+	if !errors.As(err, &qe) {
+		t.Errorf("error %q does not satisfy QuotaExceeded() — pre-action audit failure masked the original cause", err.Error())
+	}
+}
+
+// alwaysFailAuditor errors on every Record call, regardless of outcome.
+type alwaysFailAuditor struct{}
+
+func (alwaysFailAuditor) Record(context.Context, string, string, string, string) error {
+	return errors.New("audit store down")
 }
 
 func TestRedeployPassesIsNewFalse(t *testing.T) {

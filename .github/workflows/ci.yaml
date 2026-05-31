@@ -48,6 +48,24 @@ jobs:
       - name: Test
         run: go test ./... -short -count=1
 
+  # Race-detector pass over the packages that touch shared state (rate
+  # limiter, log-stream cap counter, audit recorder, deploy service). Runs
+  # in parallel with build so it doesn't add wall-clock time to the critical
+  # path. Skips e2e + cmd because they don't exercise the racy code paths
+  # the unit tests cover.
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test with race detector
+        # -race requires cgo; default Ubuntu runners have it.
+        run: go test -race -count=1 -short ./internal/... ./pkg/...
+
   # Build and push the control-plane images on merge to main (not on PRs).
   # Template/runner images are built separately in runner-images.yaml.
   container:

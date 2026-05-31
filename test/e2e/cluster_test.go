@@ -49,7 +49,25 @@ func baseURL() string {
 	return "http://localhost:18090"
 }
 
-// requireServer skips unless the vibed server answers /healthz.
+// requireStrict reports whether the test environment demands that setup
+// problems be hard failures, not skips. CI sets VIBED_E2E_REQUIRE=1 so a
+// dead port-forward or unreachable service trips a failing job instead of
+// silently passing. Local developers leave it unset and get the original
+// "skip when not configured" behavior.
+func requireStrict() bool { return os.Getenv("VIBED_E2E_REQUIRE") == "1" }
+
+// failOrSkip is t.Fatalf in strict mode (CI), t.Skipf otherwise (local).
+// Centralized so every E2E precondition follows the same policy.
+func failOrSkip(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if requireStrict() {
+		t.Fatalf("VIBED_E2E_REQUIRE=1 but precondition failed: "+format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
+// requireServer fails (strict) or skips (local) unless the vibed server
+// answers /healthz.
 func requireServer(t *testing.T) string {
 	t.Helper()
 	base := baseURL()
@@ -58,22 +76,26 @@ func requireServer(t *testing.T) string {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Skipf("skipping cluster E2E: vibed not reachable at %s: %v", base, err)
+		failOrSkip(t, "vibed not reachable at %s: %v", base, err)
+		return base
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Skipf("skipping cluster E2E: %s/healthz returned %d", base, resp.StatusCode)
+		failOrSkip(t, "%s/healthz returned %d", base, resp.StatusCode)
+		return base
 	}
 	return base
 }
 
 // k8sClient builds a controller-runtime client (corev1 + VibedApp) from the
-// ambient kubeconfig, skipping when none is available.
+// ambient kubeconfig. Fails (strict) or skips (local) when no kubeconfig is
+// available — CI must have one provisioned by the kind step.
 func k8sClient(t *testing.T) client.Client {
 	t.Helper()
 	cfg, err := ctrlcfg.GetConfig()
 	if err != nil {
-		t.Skipf("skipping: no kubeconfig: %v", err)
+		failOrSkip(t, "no kubeconfig: %v", err)
+		return nil
 	}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -82,7 +104,8 @@ func k8sClient(t *testing.T) client.Client {
 	}
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
-		t.Skipf("skipping: cannot build client: %v", err)
+		failOrSkip(t, "cannot build client: %v", err)
+		return nil
 	}
 	return c
 }
@@ -303,7 +326,8 @@ func deployAppEgress(t *testing.T, base, name string, files map[string]string, a
 func TestClusterEgressAuthz(t *testing.T) {
 	authzURL := os.Getenv("VIBED_E2E_AUTHZ_URL")
 	if authzURL == "" {
-		t.Skip("set VIBED_E2E_AUTHZ_URL (port-forward the egress-authz service) to run")
+		failOrSkip(t, "set VIBED_E2E_AUTHZ_URL (port-forward the egress-authz service) to run")
+		return
 	}
 	base := requireServer(t)
 	c := k8sClient(t)

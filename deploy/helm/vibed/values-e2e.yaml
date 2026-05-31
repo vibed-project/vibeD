@@ -13,3 +13,17 @@ warmPools:
     resources:
       requests: { cpu: 50m, memory: 32Mi }
       limits: { cpu: 200m, memory: 128Mi }
+
+# Enable the egress proxy + authz so TestClusterEgressAuthz has something
+# to talk to in CI. The workflow builds + loads the two egress images and
+# port-forwards the authz service as VIBED_E2E_AUTHZ_URL.
+egressControl:
+  enabled: true
+  proxy:
+    image:
+      repository: localhost/vibed-egress-proxy
+      tag: dev
+  authz:
+    image:
+      repository: localhost/vibed-egress-authz
+      tag: dev

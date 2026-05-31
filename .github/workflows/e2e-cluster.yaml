@@ -82,6 +82,8 @@ jobs:
             "vibed-controller:cmd/vibed-controller/Dockerfile"
             "vibed-router:cmd/vibed-router/Dockerfile"
             "vibed-template-static-nginx:templates/static-nginx/Dockerfile"
+            "vibed-egress-authz:cmd/vibed-egress-authz/Dockerfile"
+            "vibed-egress-proxy:deploy/egress-proxy/Dockerfile"
           )
           for b in "${builds[@]}"; do
             name="${b%%:*}"; dockerfile="${b#*:}"
@@ -93,7 +95,7 @@ jobs:
       - name: Load images into kind
         run: |
           set -euo pipefail
-          for name in vibed vibed-controller vibed-router vibed-template-static-nginx; do
+          for name in vibed vibed-controller vibed-router vibed-template-static-nginx vibed-egress-authz vibed-egress-proxy; do
             kind load docker-image "localhost/${name}:dev" --name "${KIND_CLUSTER}"
           done
 
@@ -120,11 +122,24 @@ jobs:
       - name: Run cluster E2E
         env:
           VIBED_E2E_URL: http://localhost:18090
+          # Fail loudly instead of skipping when a precondition isn't met —
+          # in CI, a dead port-forward or unreachable service must turn the
+          # job red, not silently green. Local devs leave this unset to keep
+          # the original skip behavior.
+          VIBED_E2E_REQUIRE: "1"
+          # Egress authz port-forward enables TestClusterEgressAuthz to run
+          # in CI; without this it would skip and we'd ship a broken proxy.
+          VIBED_E2E_AUTHZ_URL: http://localhost:18091
         run: |
           set -euo pipefail
           kubectl port-forward -n vibed-system svc/vibed 18090:8080 &
-          pf=$!
-          trap 'kill $pf 2>/dev/null || true' EXIT
+          pf_vibed=$!
+          # The egress-authz service only exists when egressControl is on.
+          # values-e2e.yaml enables it; if not, this background job exits
+          # and the test will fail-loud as intended.
+          kubectl port-forward -n vibed-system svc/vibed-egress-authz 18091:8090 >/dev/null 2>&1 &
+          pf_authz=$!
+          trap 'kill $pf_vibed $pf_authz 2>/dev/null || true' EXIT
           for i in $(seq 1 30); do
             curl -sf http://localhost:18090/healthz >/dev/null && break
             sleep 2
