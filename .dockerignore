@@ -1,0 +1,24 @@
+# Keep the build context small. The Go build inside the container compiles
+# its own binaries from source, so anything in bin/ from a host `go build`
+# is dead weight — and podman on macOS can OOM listing xattrs across the
+# ~500 MB of stale binaries that accumulate there.
+bin/
+
+# Local kind cluster state, node_modules, and editor cruft never belong in
+# the image and only invalidate cache.
+**/node_modules/
+.git/
+.github/
+.idea/
+.vscode/
+.DS_Store
+**/.DS_Store
+
+# Build outputs that are regenerated inside the container.
+docs/build/
+web/dist/
+
+# Test scratch + ephemeral data dirs.
+testbed/data/
+*.tar
+/tmp/
