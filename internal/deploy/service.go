@@ -63,8 +63,11 @@ type Quota interface {
 }
 
 // Auditor records a mutating action; implementations read the actor from ctx.
+// Returning a non-nil error means the recorder is fail-closed and the caller
+// must abort the action it was about to log (preferring availability loss
+// over an untraceable mutation). nil errors mean the caller can proceed.
 type Auditor interface {
-	Record(ctx context.Context, action, target, outcome, detail string)
+	Record(ctx context.Context, action, target, outcome, detail string) error
 }
 
 // Request is one deploy. Tarball is consumed fully (and capped) by Deploy.
@@ -157,7 +160,7 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	if s.Quota != nil {
 		dept, qerr := s.Quota.Authorize(ctx, req.Owner, isNew)
 		if qerr != nil {
-			s.record(ctx, "deploy", req.Name, "denied", qerr.Error())
+			_ = s.record(ctx, "deploy", req.Name, "denied", qerr.Error())
 			return nil, qerr
 		}
 		department = dept
@@ -166,7 +169,7 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	// Store the tarball so the agent can pull it.
 	refURL, err := s.Store.Put(ctx, req.Name, bytes.NewReader(buf))
 	if err != nil {
-		s.record(ctx, "deploy", req.Name, "error", err.Error())
+		_ = s.record(ctx, "deploy", req.Name, "error", err.Error())
 		return nil, fmt.Errorf("store source: %w", err)
 	}
 
@@ -195,7 +198,7 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		}
 		if cerr := s.Client.Create(ctx, app); cerr != nil {
 			_ = s.Store.Delete(ctx, req.Name) // don't leave an orphan blob
-			s.record(ctx, "deploy", req.Name, "error", cerr.Error())
+			_ = s.record(ctx, "deploy", req.Name, "error", cerr.Error())
 			return nil, fmt.Errorf("create VibedApp: %w", cerr)
 		}
 	} else {
@@ -207,20 +210,31 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 			existing.Labels[k] = v
 		}
 		if uerr := s.Client.Update(ctx, existing); uerr != nil {
-			s.record(ctx, "deploy", req.Name, "error", uerr.Error())
+			_ = s.record(ctx, "deploy", req.Name, "error", uerr.Error())
 			return nil, fmt.Errorf("update VibedApp: %w", uerr)
 		}
 	}
 
-	s.record(ctx, "deploy", req.Name, "ok", "")
+	// Success-path audit: when the recorder is fail-closed and the audit
+	// write fails, surface the error to the API caller. The VibedApp is
+	// already created/updated and the controller will reconcile it, but
+	// the API tells the caller "we couldn't durably record this" so they
+	// know to retry (deploy is idempotent) or alert the operator.
+	if err := s.record(ctx, "deploy", req.Name, "ok", ""); err != nil {
+		return nil, fmt.Errorf("deploy succeeded but audit failed: %w", err)
+	}
 	return s.waitReady(ctx, req.Name)
 }
 
 // record emits an audit event when an Auditor is configured (else no-op).
-func (s *Service) record(ctx context.Context, action, target, outcome, detail string) {
-	if s.Audit != nil {
-		s.Audit.Record(ctx, action, target, outcome, detail)
+// Returns the recorder's error verbatim so the caller can decide whether to
+// abort (used on the success path; pre-action paths intentionally drop the
+// error because they're already returning a failure).
+func (s *Service) record(ctx context.Context, action, target, outcome, detail string) error {
+	if s.Audit == nil {
+		return nil
 	}
+	return s.Audit.Record(ctx, action, target, outcome, detail)
 }
 
 // waitReady polls the CR until it reaches Ready/Failed or DeployTimeout

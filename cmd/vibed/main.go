@@ -228,7 +228,7 @@ func main() {
 		auditStore = store.NewMemoryStore()
 		logger.Warn("audit trail is in-memory and won't survive restarts", "backend", cfg.Store.Backend)
 	}
-	auditRec := audit.New(auditStore, logger)
+	auditRec := audit.New(auditStore, logger, cfg.Audit.FailClosed)
 
 	// Bootstrap API key users into user store
 	if userStore != nil && cfg.Auth.Enabled && (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "") {
@@ -375,6 +375,7 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	// the endpoints stay 501 and the rest of vibeD still boots.
 	if deploySvc != nil {
 		vibedAPI.Deploy = deploySvc
+		vibedAPI.MaxConcurrentLogStreamsPerUser = cfg.Limits.MaxConcurrentLogStreamsPerUser
 		// Served tarball backend: vibeD serves the source blobs the agent pulls.
 		if blob, berr := tarball.NewBlobHandler(cfg.Storage.Tarball); berr != nil {
 			logger.Warn("blob handler init failed", "error", berr)

@@ -22,8 +22,18 @@ type Config struct {
 	Kubernetes   KubernetesConfig   `yaml:"kubernetes"`
 	Limits       LimitsConfig       `yaml:"limits"`
 	Quotas       QuotasConfig       `yaml:"quotas"`
+	Audit        AuditConfig        `yaml:"audit"`
 	GC           GCConfig           `yaml:"gc"`
 	Tracing      TracingConfig      `yaml:"tracing"`
+}
+
+// AuditConfig controls the governance audit trail. When FailClosed is true, a
+// mutating action (deploy/delete/rollback/suspend) that vibeD cannot persist
+// to the audit store is rejected — preferring availability loss over an
+// untraceable change. Set false for development and clusters that prefer
+// availability over compliance guarantees.
+type AuditConfig struct {
+	FailClosed bool `yaml:"failClosed"` // reject the action when the audit write fails
 }
 
 // QuotasConfig caps how many concurrent apps an owner / department may deploy
@@ -55,6 +65,11 @@ type LimitsConfig struct {
 	MaxTotalFileSize int `yaml:"maxTotalFileSize"` // Max total file content size in bytes (default: 50MB)
 	MaxFileCount     int `yaml:"maxFileCount"`     // Max number of files per deploy/update (default: 500)
 	MaxLogLines      int `yaml:"maxLogLines"`      // Max log lines per request (default: 10000)
+	// MaxConcurrentLogStreamsPerUser caps simultaneous /v1/logs SSE streams a
+	// single authenticated user may hold open. 0 = unlimited (legacy). A
+	// modest default (10) blocks the trivial DoS where one user opens
+	// hundreds of streams to exhaust controller memory.
+	MaxConcurrentLogStreamsPerUser int `yaml:"maxConcurrentLogStreamsPerUser"`
 }
 
 // AuthConfig holds authentication and TLS settings.
@@ -322,9 +337,10 @@ func Default() *Config {
 			},
 		},
 		Limits: LimitsConfig{
-			MaxTotalFileSize: 50 * 1024 * 1024, // 50 MB
-			MaxFileCount:     500,
-			MaxLogLines:      10000,
+			MaxTotalFileSize:               50 * 1024 * 1024, // 50 MB
+			MaxFileCount:                   500,
+			MaxLogLines:                    10000,
+			MaxConcurrentLogStreamsPerUser: 10,
 		},
 		GC: GCConfig{
 			Enabled:  true,
@@ -334,6 +350,13 @@ func Default() *Config {
 		},
 		Tracing: TracingConfig{
 			SampleRate: 1.0,
+		},
+		Audit: AuditConfig{
+			// Default fail-open: dev clusters and the default Helm install
+			// don't have a persistent audit store wired, and we'd rather
+			// degrade auditing than block deploys out of the box. Production
+			// values.yaml flips this to true.
+			FailClosed: false,
 		},
 	}
 }

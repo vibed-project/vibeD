@@ -59,10 +59,14 @@ func registerRollbackTool(server *mcp.Server, orch *orchestrator.Orchestrator, a
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input rollbackArtifactInput) (*mcp.CallToolResult, *rollbackArtifactOutput, error) {
 		result, err := orch.Rollback(ctx, input.ArtifactID, input.Version)
 		if err != nil {
-			auditRec.Record(ctx, "rollback", input.ArtifactID, "error", err.Error())
+			_ = auditRec.Record(ctx, "rollback", input.ArtifactID, "error", err.Error())
 			return nil, nil, err
 		}
-		auditRec.Record(ctx, "rollback", input.ArtifactID, "ok", fmt.Sprintf("to v%d", input.Version))
+		// Success-path audit: fail-closed Recorder bubbles up so the MCP
+		// caller learns the rollback isn't durably logged and can retry.
+		if rerr := auditRec.Record(ctx, "rollback", input.ArtifactID, "ok", fmt.Sprintf("to v%d", input.Version)); rerr != nil {
+			return nil, nil, fmt.Errorf("rollback succeeded but audit failed: %w", rerr)
+		}
 
 		// Fetch the artifact to get the new version number
 		artifact, _ := orch.Status(ctx, result.ArtifactID)

@@ -37,6 +37,15 @@ data:
     cache deny all
     access_log stdio:/dev/stdout
     cache_log stdio:/dev/stderr
+
+    # DNS-rebinding mitigation: Squid does its own DNS lookup after the authz
+    # service approves a hostname. Without TTL clamping, an attacker's
+    # authoritative resolver can return the allow-listed host's IP to authz
+    # and a private IP to Squid's CONNECT in the same conversation. Holding
+    # positive answers for an hour collapses the rebinding window; negative
+    # answers stay short so legitimate DNS changes propagate.
+    positive_dns_ttl 1 hour
+    negative_dns_ttl 5 minutes
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -59,6 +68,15 @@ spec:
         app.kubernetes.io/component: egress-proxy
     spec:
       automountServiceAccountToken: false
+      # ubuntu/squid execs the squid binary as uid 13 (proxy) but the image's
+      # USER is root. Pin runAsUser to 13 so runAsNonRoot is enforceable, and
+      # fsGroup 13 makes the emptyDir mounts writable by the proxy group.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 13
+        runAsGroup: 13
+        fsGroup: 13
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: squid
           image: "{{ .Values.egressControl.proxy.image.repository }}:{{ .Values.egressControl.proxy.image.tag | default .Chart.AppVersion }}"
@@ -70,6 +88,11 @@ spec:
             - { name: conf, mountPath: /etc/squid/squid.conf, subPath: squid.conf }
             - { name: spool, mountPath: /var/spool/squid }
             - { name: run, mountPath: /var/run }
+            - { name: logs, mountPath: /var/log/squid }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits:   { cpu: "1", memory: 256Mi }
@@ -78,6 +101,7 @@ spec:
           configMap: { name: {{ $fullName }}-egress-proxy }
         - { name: spool, emptyDir: {} }
         - { name: run, emptyDir: {} }
+        - { name: logs, emptyDir: {} }
 ---
 apiVersion: v1
 kind: Service

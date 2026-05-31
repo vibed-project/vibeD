@@ -40,9 +40,20 @@ spec:
         - { protocol: TCP, port: 9000 }
         - { protocol: TCP, port: 8080 }
   egress:
-    # DNS — sandboxes need to resolve the egress proxy's Service (and, without
-    # egress control, any allowed public host).
-    - ports:
+    # DNS — scoped to the cluster DNS pods only. Defeats the DNS-tunnel
+    # exfiltration path (a sandbox querying 8.8.8.8 or an attacker-controlled
+    # resolver) that would otherwise bypass the egress allow-list. Override
+    # networkPolicy.dnsSelector if your cluster's DNS isn't labelled
+    # kubernetes.io/metadata.name=kube-system + k8s-app=kube-dns (most CoreDNS
+    # installs match this; some managed providers differ).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dnsSelector.namespaceLabels | nindent 14 }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dnsSelector.podLabels | nindent 14 }}
+      ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
     {{- if .Values.egressControl.enabled }}

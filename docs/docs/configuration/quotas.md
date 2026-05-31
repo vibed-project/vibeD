@@ -45,3 +45,11 @@ With the above, any single user is capped at 5 apps; the `platform` department m
 ## Observing rejections
 
 Each rejection increments `vibed_quota_rejections_total{scope="owner|department"}`, and the deploy gets a `429` with a message naming the ceiling it crossed. The rejection is also written to the [audit trail](./audit-log.md) as a `deploy` event with `outcome=denied`.
+
+## Concurrency caveat: this is a soft cap
+
+The enforcer counts live `VibedApp`s and **then** the deploy path creates the new one — a List-then-Create pattern. Under burst traffic from a single owner, two concurrent deploys can both observe `count < max` and both succeed, briefly putting the owner at `max + 1` (or higher, scaled to the number of in-flight requests). The new apps are real; subsequent deploys reject normally once any of them is counted.
+
+In other words, the ceiling is **eventually consistent**, not transactional. For most governance use cases (an owner runs ~5 apps, the cap is 10) this overshoot is invisible. If you need a strictly transactional cap — refusing the (N+1)th deploy under *any* race — the right shape is a `ValidatingAdmissionPolicy` (CEL) or an admission webhook that counts and gates inside the apiserver's optimistic-concurrency loop. That's tracked as future work; if you need it sooner, the quota counter still gives you alerting (`vibed_quota_rejections_total`) and the audit trail records every breach.
+
+Redeploys are unaffected: they reuse the existing CR and skip the count entirely.

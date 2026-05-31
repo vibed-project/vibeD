@@ -18,5 +18,8 @@ COPY pkg/ ./pkg/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -o /vibed-egress-authz ./cmd/vibed-egress-authz
 
-FROM ubuntu/squid:latest
+# Pinned to ubuntu/squid:edge (a stable rolling tag, vs. :latest which floats
+# across major versions). Replace with a digest pin (ubuntu/squid@sha256:...)
+# on the next maintenance pass for full supply-chain immutability.
+FROM ubuntu/squid:edge
 COPY --from=builder /vibed-egress-authz /usr/local/bin/vibed-egress-authz

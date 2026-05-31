@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/deploy"
@@ -45,7 +46,49 @@ type Server struct {
 	// usable for ops-only mode without a K8s connection.
 	Deploy *deploy.Service
 
+	// MaxConcurrentLogStreamsPerUser caps simultaneous /v1/logs SSE
+	// connections per authenticated user. 0 disables the cap (legacy
+	// behavior). Hard-coded gate against a trivial DoS where one user opens
+	// many streams to exhaust controller memory.
+	MaxConcurrentLogStreamsPerUser int
+
+	logStreamMu sync.Mutex
+	logStreams  map[string]int // userID -> current open count
+
 	Logger *slog.Logger
+}
+
+// acquireLogStream reserves one stream slot for user. Returns false (over
+// cap) when MaxConcurrentLogStreamsPerUser > 0 and the user is already at it.
+// Each acquire must be paired with releaseLogStream.
+func (s *Server) acquireLogStream(user string) bool {
+	if s.MaxConcurrentLogStreamsPerUser <= 0 {
+		return true
+	}
+	s.logStreamMu.Lock()
+	defer s.logStreamMu.Unlock()
+	if s.logStreams == nil {
+		s.logStreams = map[string]int{}
+	}
+	if s.logStreams[user] >= s.MaxConcurrentLogStreamsPerUser {
+		return false
+	}
+	s.logStreams[user]++
+	return true
+}
+
+func (s *Server) releaseLogStream(user string) {
+	if s.MaxConcurrentLogStreamsPerUser <= 0 {
+		return
+	}
+	s.logStreamMu.Lock()
+	defer s.logStreamMu.Unlock()
+	if s.logStreams[user] > 0 {
+		s.logStreams[user]--
+	}
+	if s.logStreams[user] == 0 {
+		delete(s.logStreams, user)
+	}
 }
 
 // New constructs a Server. Nil Logger is replaced with slog.Default().
@@ -364,6 +407,18 @@ func (s *Server) StreamAppLogs(w http.ResponseWriter, r *http.Request, appID App
 		writeJSON(w, http.StatusInternalServerError, Error{Code: "get_failed", Message: err.Error()})
 		return
 	}
+	// Per-user concurrent-stream cap: blocks the trivial DoS where one
+	// caller opens dozens of streams to exhaust controller memory (each
+	// stream allocates a 1 MB scanner buffer).
+	if !s.acquireLogStream(owner) {
+		w.Header().Set("Retry-After", "5")
+		writeJSON(w, http.StatusTooManyRequests, Error{
+			Code:    "too_many_log_streams",
+			Message: fmt.Sprintf("max %d concurrent log streams per user", s.MaxConcurrentLogStreamsPerUser),
+		})
+		return
+	}
+	defer s.releaseLogStream(owner)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, Error{Code: "no_streaming", Message: "response writer does not support streaming"})

@@ -317,6 +317,41 @@ func TestStreamLogsSSE(t *testing.T) {
 	}
 }
 
+func TestLogStreamCapBlocksOverLimit(t *testing.T) {
+	// Unit-level: the cap is the gatekeeper; verify Acquire/Release semantics
+	// directly without spinning up SSE handlers (which finish synchronously
+	// under the fake clientset and never sit on a slot long enough to test).
+	srv := &Server{MaxConcurrentLogStreamsPerUser: 2}
+
+	if !srv.acquireLogStream("alice") {
+		t.Fatal("first stream must succeed")
+	}
+	if !srv.acquireLogStream("alice") {
+		t.Fatal("second stream must succeed (at cap, not over)")
+	}
+	if srv.acquireLogStream("alice") {
+		t.Fatal("third stream must be rejected — over per-user cap")
+	}
+	// Cap is per-user: a different user is unaffected.
+	if !srv.acquireLogStream("bob") {
+		t.Fatal("bob's first stream must succeed (different user)")
+	}
+	// Releasing alice's slot frees one for her.
+	srv.releaseLogStream("alice")
+	if !srv.acquireLogStream("alice") {
+		t.Fatal("after release, alice must regain a slot")
+	}
+}
+
+func TestLogStreamCapDisabled(t *testing.T) {
+	srv := &Server{MaxConcurrentLogStreamsPerUser: 0} // 0 = unlimited
+	for i := 0; i < 100; i++ {
+		if !srv.acquireLogStream("alice") {
+			t.Fatalf("acquire %d failed with cap disabled", i)
+		}
+	}
+}
+
 func TestSuspendAndResumeEndpoints(t *testing.T) {
 	h, c := newDeployRouter(t, "alice")
 	if err := c.Create(context.Background(), &vibedv1.VibedApp{

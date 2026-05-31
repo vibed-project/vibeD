@@ -67,10 +67,12 @@ func (s *Service) SetSuspended(ctx context.Context, owner, id string, suspended 
 	}
 	app.Spec.Suspended = suspended
 	if uerr := s.Client.Update(ctx, app); uerr != nil {
-		s.record(ctx, action, id, "error", uerr.Error())
+		_ = s.record(ctx, action, id, "error", uerr.Error())
 		return nil, fmt.Errorf("update VibedApp: %w", uerr)
 	}
-	s.record(ctx, action, id, "ok", "")
+	if err := s.record(ctx, action, id, "ok", ""); err != nil {
+		return nil, fmt.Errorf("%s succeeded but audit failed: %w", action, err)
+	}
 	return app, nil
 }
 
@@ -82,11 +84,13 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 		return err
 	}
 	if derr := s.Client.Delete(ctx, app); derr != nil && !apierrors.IsNotFound(derr) {
-		s.record(ctx, "delete", id, "error", derr.Error())
+		_ = s.record(ctx, "delete", id, "error", derr.Error())
 		return fmt.Errorf("delete VibedApp: %w", derr)
 	}
 	// Best-effort tarball cleanup; the CR is already gone either way.
 	_ = s.Store.Delete(ctx, id)
-	s.record(ctx, "delete", id, "ok", "")
+	if err := s.record(ctx, "delete", id, "ok", ""); err != nil {
+		return fmt.Errorf("delete succeeded but audit failed: %w", err)
+	}
 	return nil
 }

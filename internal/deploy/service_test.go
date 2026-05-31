@@ -264,10 +264,11 @@ type fakeAuditor struct {
 	events []string // "action:outcome"
 }
 
-func (a *fakeAuditor) Record(_ context.Context, action, _, outcome, _ string) {
+func (a *fakeAuditor) Record(_ context.Context, action, _, outcome, _ string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.events = append(a.events, action+":"+outcome)
+	return nil
 }
 
 func (a *fakeAuditor) got() []string {

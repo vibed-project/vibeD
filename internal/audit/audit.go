@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -29,24 +30,30 @@ var events = promauto.NewCounterVec(prometheus.CounterOpts{
 
 // Recorder writes governance audit events.
 type Recorder struct {
-	store  store.AuditStore
-	logger *slog.Logger
+	store      store.AuditStore
+	logger     *slog.Logger
+	failClosed bool
 }
 
 // New builds a Recorder over the given audit store. A nil store yields a
-// Recorder that only logs + counts (no persistence).
-func New(s store.AuditStore, logger *slog.Logger) *Recorder {
+// Recorder that only logs + counts (no persistence). When failClosed is true,
+// a Record call that cannot reach the persistent store returns an error so
+// callers can reject the caller's action — preferring availability loss over
+// an untraceable mutation.
+func New(s store.AuditStore, logger *slog.Logger, failClosed bool) *Recorder {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Recorder{store: s, logger: logger}
+	return &Recorder{store: s, logger: logger, failClosed: failClosed}
 }
 
 // Record persists one audit event. action is deploy|delete|rollback; outcome
-// is ok|denied|error. The actor is read from ctx.
-func (r *Recorder) Record(ctx context.Context, action, target, outcome, detail string) {
+// is ok|denied|error. The actor is read from ctx. Returns an error only when
+// the persistent store rejected the append AND the Recorder is configured
+// fail-closed; the in-memory log + Prometheus counter are always updated.
+func (r *Recorder) Record(ctx context.Context, action, target, outcome, detail string) error {
 	if r == nil {
-		return
+		return nil
 	}
 	actor := vibedauth.UserIDFromContext(ctx)
 	e := &api.AuditEvent{
@@ -62,9 +69,13 @@ func (r *Recorder) Record(ctx context.Context, action, target, outcome, detail s
 	r.logger.Info("audit", "actor", actor, "action", action, "target", target, "outcome", outcome)
 	if r.store != nil {
 		if err := r.store.AppendAudit(ctx, e); err != nil {
-			r.logger.Warn("audit: persist failed", "error", err, "action", action, "target", target)
+			r.logger.Warn("audit: persist failed", "error", err, "action", action, "target", target, "failClosed", r.failClosed)
+			if r.failClosed {
+				return fmt.Errorf("audit: persist failed: %w", err)
+			}
 		}
 	}
+	return nil
 }
 
 // List returns recorded audit events matching q (newest first). Returns nil

@@ -99,6 +99,7 @@ data:
       maxTotalFileSize: {{ int .Values.config.limits.maxTotalFileSize }}
       maxFileCount: {{ int .Values.config.limits.maxFileCount }}
       maxLogLines: {{ int .Values.config.limits.maxLogLines }}
+      maxConcurrentLogStreamsPerUser: {{ int (.Values.config.limits.maxConcurrentLogStreamsPerUser | default 10) }}
     {{- with .Values.config.quotas }}
     quotas:
       enabled: {{ .enabled | default false }}
@@ -110,6 +111,10 @@ data:
         {{ $name }}: {{ int $limit }}
         {{- end }}
       {{- end }}
+    {{- end }}
+    {{- with .Values.config.audit }}
+    audit:
+      failClosed: {{ .failClosed | default false }}
     {{- end }}
     tracing:
       enabled: {{ .Values.config.tracing.enabled | default false }}

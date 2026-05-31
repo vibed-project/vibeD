@@ -111,6 +111,17 @@ templateValidation:
 networkPolicy:
   enabled: false
   extraEgress: []   # additional egress rules (e.g. an in-cluster MinIO CIDR)
+  # -- Cluster-DNS selector for sandbox egress. The sandbox NetworkPolicy
+  #     permits :53 ONLY to pods matching this selector, so untrusted code
+  #     can't tunnel data via an external DNS server. Defaults match upstream
+  #     CoreDNS in kube-system; override if your cluster's DNS uses different
+  #     labels (e.g. GKE's kube-dns, managed providers, or NodeLocal DNSCache
+  #     where you may need to point at the node-local pods instead).
+  dnsSelector:
+    namespaceLabels:
+      kubernetes.io/metadata.name: kube-system
+    podLabels:
+      k8s-app: kube-dns
 
 # -- Per-app egress control. When enabled, a sandbox can reach ONLY the hosts on
 #    its VibedApp's spec.egress.allowedHosts (plus systemHosts) — enforced by a
@@ -287,6 +298,19 @@ config:
     maxFileCount: 500
     # -- Max log lines per request (default: 10000).
     maxLogLines: 10000
+    # -- Per-user cap on simultaneous /v1/logs SSE streams. 0 = unlimited.
+    #     Default 10 blocks the trivial DoS where one caller opens many
+    #     streams to exhaust controller memory (1 MB scanner buffer each).
+    maxConcurrentLogStreamsPerUser: 10
+  # -- Governance audit trail. The Recorder writes deploy/delete/rollback/
+  #     suspend/resume events to the persistent store (sqlite) or in-memory
+  #     fallback. When failClosed is true, a mutating action that vibeD
+  #     cannot durably log is rejected — preferring availability loss over
+  #     an untraceable change. Leave false for dev clusters and the default
+  #     install; flip true in production values.
+  audit:
+    failClosed: false
+
   # -- Deploy quotas: cap concurrent apps per owner / per department
   #     (enterprise governance). New deploys exceeding a ceiling get a 429;
   #     redeploys don't count. Per-department needs store.backend=sqlite +
