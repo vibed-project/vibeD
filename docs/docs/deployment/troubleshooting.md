@@ -20,6 +20,22 @@ kubectl apply -f deploy/helm/vibed/crds/vibed.dev_vibedapps.yaml
 kubectl get crd vibedapps.vibed.dev -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.status.properties.<field>}'
 ```
 
+## Deploy returns `Phase=Failed` immediately (`TemplateMissing` / `TemplateInvalid`)
+
+```bash
+kubectl get vibedapp <name> -n vibed-apps -o jsonpath='{range .status.conditions[*]}{.type}={.reason}: {.message}{"\n"}{end}'
+```
+
+- **`TemplateMissing: no SandboxTemplate for template "<slot>"`** — the classifier picked a slot (e.g. `python-313`, `node-24`) that has no warm pool in this install. The dev overlay deliberately ships only `static-nginx` to keep `make dev` fast. Enable the slot you need:
+
+  ```bash
+  make enable-python-pool   # or enable-node-pool
+  ```
+
+  See [Local development → warm pools beyond static](../getting-started/local-dev.md#warm-pools-beyond-static--opt-in-per-slot).
+
+- **`TemplateInvalid: template "<slot>" image failed validation`** — the BYO validator marked the warm pool's image as not meeting the agent contract. Two common dev causes: (1) the warm pod hasn't reached `Ready` yet and the validator recorded "no Ready pod" — restart the controller (`kubectl rollout restart -n vibed-system deploy/vibed-controller`) to force an immediate re-check rather than waiting for the next 2-minute cycle; (2) the template image is genuinely broken — see the [BYO base-image guide](../configuration/custom-base-images.md) for the contract.
+
 ## App stuck in `Starting`
 
 ```bash
@@ -32,7 +48,7 @@ kubectl get vibedapp <name> -n vibed-apps -o jsonpath='{range .status.conditions
 ## App is `Ready` but the URL 502s / isn't reachable
 
 - **502 after a sandbox pod restart** — the route follows a per-app `Service`, and the controller re-injects source on pod recreation, so this self-heals within a reconcile. If it persists, check the Service has endpoints: `kubectl get endpoints vibed-app-<label> -n vibed-apps`.
-- **`https://<label>.localhost` won't open (dev)** — dev Caddy serves plain HTTP behind a port-forward. Use the URL vibeD actually returns: `http://<label>.localhost:18080`. `*.localhost` resolves in Chrome/Firefox; in Safari add a `/etc/hosts` entry or use Chrome.
+- **`https://<label>.localhost` won't open (dev)** — dev Caddy serves plain HTTP on host port 80 (via kind's `extraPortMappings` 31080 → 80). Use the URL vibeD actually returns: `http://<label>.localhost/` (no port). `*.localhost` resolves in Chrome/Firefox; in Safari add a `/etc/hosts` entry or use Chrome.
 - **Caddy route missing** — check `vibed-router` logs and the Caddy admin API:
 
   ```bash
@@ -44,7 +60,7 @@ kubectl get vibedapp <name> -n vibed-apps -o jsonpath='{range .status.conditions
 The dashboard lists apps via `/v1/apps`. Confirm the API returns it:
 
 ```bash
-curl http://localhost:18090/v1/apps
+curl http://localhost:8080/v1/apps
 ```
 
 If it's there but not in the UI, hard-refresh the browser to drop a stale cached bundle. Note that auth scopes the list to the caller's `owner`; with auth disabled everything is owned by `admin`.
@@ -67,4 +83,4 @@ kubectl get pods -n vibed-apps
 | `kubectl logs -n vibed-system deploy/vibed-controller` | Reconcile / claim / inject logs |
 | `kubectl logs -n vibed-system deploy/vibed-router` | Route programming |
 | `kubectl get vibedapp -A` | All apps + phase + URL |
-| `curl -s localhost:18090/metrics \| grep vibed_` | Prometheus metrics |
+| `curl -s localhost:8080/metrics \| grep vibed_` | Prometheus metrics |

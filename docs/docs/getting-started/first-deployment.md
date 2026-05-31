@@ -15,13 +15,13 @@ vibeD speaks **HTTP streamable** MCP at `/mcp`. Bridge Claude Desktop to it with
   "mcpServers": {
     "vibed": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://localhost:18090/mcp"]
+      "args": ["-y", "mcp-remote", "http://localhost:8080/mcp"]
     }
   }
 }
 ```
 
-This assumes the API port-forward from [local dev](local-dev.md) (`18090`). Fully quit and reopen Claude Desktop. With auth disabled (dev default) no token is needed.
+Port 8080 is the host port kind's `extraPortMappings` bridges to vibeD's `/mcp` endpoint — no `kubectl port-forward` needed (see [local dev](local-dev.md) for the full bridge table). Fully quit and reopen Claude Desktop. With auth disabled (dev default) no token is needed.
 
 Then ask Claude to deploy something:
 
@@ -38,10 +38,10 @@ Claude calls `deploy_artifact`; vibeD classifies the source, claims a warm sandb
 mkdir site && printf '<!doctype html><h1>Hello vibeD</h1>' > site/index.html
 ( cd site && COPYFILE_DISABLE=1 tar -czf ../site.tgz . )
 
-curl -X POST http://localhost:18090/v1/deploy \
+curl -X POST http://localhost:8080/v1/deploy \
   -F 'source=@site.tgz;type=application/gzip' \
   -F 'metadata={"name":"hello"};type=application/json'
-# → {"app_id":"hello","url":"http://6fcr8uffk2pd.localhost:18080"}
+# → {"app_id":"hello","url":"http://6fcr8uffk2pd.localhost"}
 ```
 
 The classifier picks `static-nginx` automatically. To force a lane/template, add it to metadata:
@@ -52,14 +52,18 @@ The classifier picks `static-nginx` automatically. To force a lane/template, add
 
 A `200` means the app reached `Ready` within the latency budget and the `url` is live. A `202` with a `status_url` means it took a slow path — poll `GET /v1/apps/{app_id}` until `phase: Ready`.
 
+:::tip Deploying Python/Node/Go
+The dev install only enables the `static-nginx` warm pool. Deploying a Python or Node source without first running `make enable-python-pool` (or `enable-node-pool`) will return `Phase=Failed, Reason=TemplateMissing`. See [Local development → warm pools beyond static](local-dev.md#warm-pools-beyond-static--opt-in-per-slot).
+:::
+
 ## See it
 
 ```bash
-# Open the returned URL (dev: http://<label>.localhost:18080)
-curl -H "Host: 6fcr8uffk2pd.localhost" http://localhost:18080/
+# Open the returned URL in a browser, or:
+curl http://6fcr8uffk2pd.localhost/
 
 # Or list apps
-curl http://localhost:18090/v1/apps
+curl http://localhost:8080/v1/apps
 ```
 
-Deployed apps also appear in the dashboard at `http://localhost:18090/`.
+`*.localhost` resolves to `127.0.0.1` in Chrome/Firefox. In Safari add an `/etc/hosts` entry for the specific label, or use Chrome. Deployed apps also appear in the dashboard at `http://localhost:8080/`.
