@@ -82,6 +82,7 @@ jobs:
             "vibed-controller:cmd/vibed-controller/Dockerfile"
             "vibed-router:cmd/vibed-router/Dockerfile"
             "vibed-template-static-nginx:templates/static-nginx/Dockerfile"
+            "vibed-runner-python:templates/python-313/Dockerfile"
             "vibed-egress-authz:cmd/vibed-egress-authz/Dockerfile"
             "vibed-egress-proxy:deploy/egress-proxy/Dockerfile"
           )
@@ -95,7 +96,7 @@ jobs:
       - name: Load images into kind
         run: |
           set -euo pipefail
-          for name in vibed vibed-controller vibed-router vibed-template-static-nginx vibed-egress-authz vibed-egress-proxy; do
+          for name in vibed vibed-controller vibed-router vibed-template-static-nginx vibed-runner-python vibed-egress-authz vibed-egress-proxy; do
             kind load docker-image "localhost/${name}:dev" --name "${KIND_CLUSTER}"
           done
 

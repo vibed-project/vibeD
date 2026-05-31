@@ -13,6 +13,16 @@ warmPools:
     resources:
       requests: { cpu: 50m, memory: 32Mi }
       limits: { cpu: 200m, memory: 128Mi }
+  # python-313 powers the MCP e2e python deploy (test/e2e/mcp_test.go).
+  # Same kind-local image conventions as the other slots.
+  python-313:
+    enabled: true
+    lane: general
+    image: "localhost/vibed-runner-python:dev"
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 300m, memory: 256Mi }
 
 # Enable the egress proxy + authz so TestClusterEgressAuthz has something
 # to talk to in CI. The workflow builds + loads the two egress images and
