@@ -18,9 +18,13 @@ data:
     httpd_suppress_version_string on
 
     # Per-connection authorization: ask vibed-egress-authz whether this source
-    # pod may reach the requested host. %SRC = client IP, %>ru = requested URL
-    # (host:port for CONNECT). Fail-closed.
-    external_acl_type vibed_egress ttl=5 negative_ttl=5 grace=0 %SRC %>ru /usr/local/bin/vibed-egress-authz squid-helper --authz-url={{ $authz }}
+    # pod may reach the requested host. %SRC = client IP, %URI = full request
+    # URL (host:port for CONNECT). Note: %>ru is a log_format token, NOT an
+    # external_acl_type token — Squid silently substitutes "-" for it and
+    # shifts the rest, so the helper saw {URL, "-"} instead of {SRC, URL}
+    # and every request was denied with host="-". Use %URI for external_acl.
+    # Fail-closed.
+    external_acl_type vibed_egress ttl=5 negative_ttl=5 grace=0 %SRC %URI /usr/local/bin/vibed-egress-authz squid-helper --authz-url={{ $authz }}
     acl vibed_egress_ok external vibed_egress
 
     acl CONNECT method CONNECT

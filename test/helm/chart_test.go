@@ -88,6 +88,52 @@ func TestSquidConfigHasRebindingMitigation(t *testing.T) {
 	)
 }
 
+// TestSquidExternalAclFormatUsesURI pins the format tokens Squid passes to
+// the authz helper. %>ru is a log_format token, NOT an external_acl_type
+// token — Squid substitutes "-" for it and shifts the remaining tokens, so
+// the helper sees the URL in %SRC's slot and host="-". Every request gets
+// denied. Use %URI, which is the documented external_acl token. This
+// regressed once in v0.4.0 e2e; the test makes it a build-time failure.
+func TestSquidExternalAclFormatUsesURI(t *testing.T) {
+	r := helmTemplate(t, "egressControl.enabled=true")
+	containsAll(t, "Squid external_acl format", r,
+		"external_acl_type vibed_egress",
+		"%SRC %URI",
+	)
+	// The string ">ru " (token followed by a space) appears only on the
+	// active external_acl_type line, never in our comment block — which
+	// only mentions "%>ru" with quotes/punctuation around it.
+	for _, line := range strings.Split(r, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "external_acl_type") && strings.Contains(trimmed, "%>ru") {
+			t.Errorf("external_acl_type still uses '>ru' (log_format token); use 'URI' instead. Line: %s", trimmed)
+		}
+	}
+}
+
+// TestSquidServedSourcePortAllowed pins the Safe_ports widening that lets
+// the runner-agent's served source pull (vibeD Service port, default 8080)
+// through Squid's pre-authz gate. Without this, Squid 403s on Safe_ports
+// before the authz helper runs and every served-backed deploy stays
+// Phase=Starting.
+func TestSquidServedSourcePortAllowed(t *testing.T) {
+	r := helmTemplate(t, "egressControl.enabled=true")
+	containsAll(t, "Safe_ports widened for served port", r,
+		"acl Safe_ports port 80 443 8080",
+	)
+	// S3 backend keeps the narrow list (pre-signed URLs are always 80/443).
+	r2 := helmTemplate(t,
+		"egressControl.enabled=true",
+		"config.storage.tarball.backend=s3",
+	)
+	if !strings.Contains(r2, "acl Safe_ports port 80 443\n") {
+		t.Error("s3 backend should keep narrow Safe_ports (80+443) — pre-signed URLs are public ports")
+	}
+	if strings.Contains(r2, "Safe_ports port 80 443 8080") {
+		t.Error("s3 backend should NOT widen Safe_ports — that's a served-only concern")
+	}
+}
+
 // TestSandboxNetworkPolicyDNSLockdown pins the DNS egress selector that
 // stops sandboxes from tunneling data via 8.8.8.8 or an attacker-controlled
 // resolver. The cluster admin can override the selector, but the default
