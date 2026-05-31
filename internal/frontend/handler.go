@@ -75,6 +75,14 @@ func NewHandler(orch *orchestrator.Orchestrator, cfg *config.Config, bus *events
 	// The React app detects /share/<token> and calls /api/share/<token> as JSON.
 	mux.HandleFunc("/share/", handleSPAIndex())
 
+	// In-app navigation routes that need React to render (Settings, How to
+	// connect). Without this, deep-linking or reloading the page would 404
+	// because the file server doesn't know about these client-side routes.
+	mux.HandleFunc("/settings", handleSPAIndex())
+	mux.HandleFunc("/settings/", handleSPAIndex())
+	mux.HandleFunc("/connect", handleSPAIndex())
+	mux.HandleFunc("/connect/", handleSPAIndex())
+
 	// Serve static frontend files
 	staticFS, _ := fs.Sub(StaticFiles, "static")
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
