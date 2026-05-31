@@ -196,6 +196,16 @@ caddy:
     repository: caddy
     tag: "2-alpine"
     pullPolicy: IfNotPresent
+  # -- Caddy ingress Service. Defaults to ClusterIP (the production posture
+  #     where an external LB or Ingress fronts vibeD). Kind dev flips this to
+  #     NodePort so kind's extraPortMappings can bridge host:80 → Caddy:80
+  #     without a manual port-forward. httpNodePort/httpsNodePort are
+  #     honored only when type=NodePort; pick numbers your kind config
+  #     extraPortMappings actually bridge.
+  service:
+    type: ClusterIP
+    httpNodePort: ""
+    httpsNodePort: ""
   # -- DNS-01 wildcard TLS. When false, Caddy serves plain HTTP (dev). For
   #    production set provider + the token secret and use a Caddy image built
   #    with the matching DNS plugin (e.g. caddy-dns/cloudflare).
