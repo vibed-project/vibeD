@@ -24,7 +24,19 @@ data:
     acl vibed_egress_ok external vibed_egress
 
     acl CONNECT method CONNECT
+    {{- /*
+      Safe_ports gates all traffic before the authz helper runs. Default is
+      80 + 443 (public HTTP/HTTPS). When tarball.backend=served the in-cluster
+      source store lives on .Values.service.port (default 8080), so the
+      runner-agent's source pull would 403 here before authz could ever say
+      "yes." Conditionally widen Safe_ports to include that port — only when
+      served is the active backend, so production (s3) stays on 80/443.
+    */}}
+    {{- if eq (.Values.config.storage.tarball.backend | default "served") "served" }}
+    acl Safe_ports port 80 443 {{ .Values.service.port | default 8080 }}
+    {{- else }}
     acl Safe_ports port 80 443
+    {{- end }}
     acl SSL_ports port 443
     http_access deny !Safe_ports
     http_access deny CONNECT !SSL_ports

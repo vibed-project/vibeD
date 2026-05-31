@@ -152,7 +152,17 @@ jobs:
         run: |
           kubectl get pods -A || true
           kubectl get vibedapp,sandboxclaim,sandboxwarmpool -n vibed-apps -o wide || true
+          kubectl get vibedapp -n vibed-apps -o yaml || true
           kubectl describe vibedapp -n vibed-apps || true
           kubectl logs -n vibed-system deploy/vibed-controller --tail=120 || true
           kubectl logs -n vibed-system deploy/vibed --tail=80 || true
           kubectl logs -n agent-sandbox-system deploy/agent-sandbox-controller --tail=80 || true
+          # Egress chokepoint logs — authz shows "egress denied src=... host=...";
+          # squid shows TCP_DENIED / ERR_ACCESS_DENIED on rule rejects (e.g. a
+          # non-Safe_ports upstream). Both have saved me from chasing source-
+          # injection symptoms when the real fault was the proxy.
+          kubectl logs -n vibed-system deploy/vibed-egress-authz --tail=80 || true
+          kubectl logs -n vibed-system deploy/vibed-egress-proxy --tail=80 || true
+          # Warm-pool runner agent logs — the source pull happens here, so
+          # InjectFailed / timeout root causes usually land in these.
+          kubectl logs -n vibed-apps -l vibed.dev/template --tail=80 --prefix=true || true
