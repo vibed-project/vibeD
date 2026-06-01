@@ -61,6 +61,11 @@ jobs:
         uses: helm/kind-action@v1
         with:
           cluster_name: vibed-e2e
+          # Use the same kind config dev uses so extraPortMappings
+          # (host:80 → kind node:31080) are wired. Without this the
+          # MCP deploy tests' URL probe (http://<id>.localhost) hits
+          # an empty host port and gets connection refused.
+          config: testbed/kind-cluster/kind-config.yaml
 
       - name: Install agent-sandbox
         run: |
