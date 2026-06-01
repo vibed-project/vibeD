@@ -3,8 +3,10 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -12,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/vibed-project/vibeD/internal/templatevalidate"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -158,6 +161,8 @@ func (c stubClaimer) EnsureClaim(context.Context, *vibedv1.VibedApp) (bool, stri
 	return true, c.sandboxRef, c.podIP, nil
 }
 
+func (stubClaimer) ReleaseClaim(context.Context, *vibedv1.VibedApp) error { return nil }
+
 // TestReadyReinjectsOnPodRecreation: a Ready app whose bound claim now reports
 // a different pod IP (the Sandbox pod was recreated) drops back to Starting so
 // the controller re-probes + re-injects into the fresh, empty workspace. The
@@ -208,6 +213,163 @@ func TestReadyStaysWhenPodIPUnchanged(t *testing.T) {
 	}
 	if res.RequeueAfter != 0 {
 		t.Errorf("no requeue expected when pod IP unchanged, got %v", res.RequeueAfter)
+	}
+}
+
+// denyGate fails every template, for the BYO validation hard-gate test.
+type denyGate struct{ reason string }
+
+func (g denyGate) Allowed(context.Context, string) (bool, string) { return false, g.reason }
+
+// TestClaimingBlockedByInvalidTemplate: a slot whose image failed BYO
+// validation hard-gates the claim — the app goes Failed with TemplateInvalid
+// rather than claiming a sandbox of a broken image.
+func TestClaimingBlockedByInvalidTemplate(t *testing.T) {
+	app := validApp("badimg")
+	app.Status.Phase = vibedv1.PhaseClaiming
+	r := newReconciler(t, app, func(r *Reconciler) {
+		r.Gate = denyGate{reason: "expected language \"node\" but image declares \"python\""}
+	})
+
+	got, res := runOnce(t, r, app)
+	if got.Status.Phase != vibedv1.PhaseFailed {
+		t.Fatalf("phase=%q want Failed", got.Status.Phase)
+	}
+	if !hasConditionWithReason(got, ConditionReady, metav1.ConditionFalse, ReasonTemplateInvalid) {
+		t.Errorf("expected Ready=False/TemplateInvalid, got %+v", got.Status.Conditions)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("terminal Failed should not requeue, got %v", res.RequeueAfter)
+	}
+}
+
+// TestClaimingBlockedByStrictGateOnImageDrift exercises the strict-mode gate
+// in the full reconcile path: when the validator's recorded ImageID for a
+// slot diverges from the live warm-pool pod's ImageID (a mutable-tag content
+// swap between validator runs), the gate must block the claim with a
+// TemplateInvalid condition mentioning the drift. Catches regressions in
+// CurrentImageID() lookup or the strict-mode branch ordering.
+func TestClaimingBlockedByStrictGateOnImageDrift(t *testing.T) {
+	const (
+		appNS        = "default"   // app namespace = where the VibedApp lives
+		poolNS       = "vibed-apps" // where SandboxTemplate + warm pods + validation CM live
+		validatedID  = "docker-pullable://repo/node@sha256:aaaa"
+		driftedID    = "docker-pullable://repo/node@sha256:bbbb"
+	)
+
+	app := validApp("driftapp")
+	app.Namespace = appNS
+	app.Status.Phase = vibedv1.PhaseClaiming
+
+	// Scheme + client need to know about Pods/ConfigMaps for the gate's
+	// templatevalidate lookups; newReconciler's helper only adds VibedApp.
+	s := newScheme(t)
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	warmPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-24-pool-0", Namespace: poolNS,
+			Labels: map[string]string{"vibed.dev/template": "node-24"},
+		},
+		Status: corev1.PodStatus{
+			Phase:  corev1.PodRunning,
+			PodIP:  "10.0.0.7",
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+			ContainerStatuses: []corev1.ContainerStatus{{ImageID: driftedID}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(app, warmPod).
+		WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	live := &vibedv1.VibedApp{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: app.Name, Namespace: appNS}, live); err != nil {
+		t.Fatalf("seed get: %v", err)
+	}
+	live.Status = app.Status
+	if err := c.Status().Update(context.Background(), live); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
+
+	// Persist the validator's most recent (valid, validatedID) result.
+	v := &templatevalidate.Validator{Client: c, Namespace: poolNS}
+	if err := v.Persist(context.Background(), []templatevalidate.Result{
+		{Template: "node-24", Valid: true, ImageID: validatedID},
+	}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	r := &Reconciler{
+		Client:  c,
+		Scheme:  s,
+		Claimer: DummyClaimer{},
+		Probe:   DummyAgentProbe{},
+		Router:  DeterministicRouter{Domain: "test.example.com"},
+		Gate:    &ConfigMapTemplateGate{Client: c, Namespace: poolNS, Strict: true},
+	}
+
+	got, res := runOnce(t, r, app)
+	if got.Status.Phase != vibedv1.PhaseFailed {
+		t.Fatalf("phase=%q want Failed (strict gate must block on ImageID drift)", got.Status.Phase)
+	}
+	if !hasConditionWithReason(got, ConditionReady, metav1.ConditionFalse, ReasonTemplateInvalid) {
+		t.Errorf("expected Ready=False/TemplateInvalid, got %+v", got.Status.Conditions)
+	}
+	// The condition's message must mention what happened so an operator can
+	// triage without diving into validator logs.
+	cond := findCondition(got, ConditionReady)
+	if cond == nil || !strings.Contains(strings.ToLower(cond.Message), "image has changed") {
+		t.Errorf("condition message %q does not mention the drift", condMessage(cond))
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("terminal Failed should not requeue, got %v", res.RequeueAfter)
+	}
+}
+
+func findCondition(app *vibedv1.VibedApp, t string) *metav1.Condition {
+	for i := range app.Status.Conditions {
+		if app.Status.Conditions[i].Type == t {
+			return &app.Status.Conditions[i]
+		}
+	}
+	return nil
+}
+
+func condMessage(c *metav1.Condition) string {
+	if c == nil {
+		return "<nil>"
+	}
+	return c.Message
+}
+
+// missingTemplateClaimer reports the slot has no warm pool.
+type missingTemplateClaimer struct{}
+
+func (missingTemplateClaimer) EnsureClaim(context.Context, *vibedv1.VibedApp) (bool, string, string, error) {
+	return false, "", "", ErrTemplateNotFound
+}
+
+func (missingTemplateClaimer) ReleaseClaim(context.Context, *vibedv1.VibedApp) error { return nil }
+
+// TestClaimingFailsWhenTemplateMissing: a deploy routed to a slot with no
+// SandboxTemplate fails fast (Failed/TemplateMissing) instead of retrying
+// Claiming forever.
+func TestClaimingFailsWhenTemplateMissing(t *testing.T) {
+	app := validApp("nopool")
+	app.Status.Phase = vibedv1.PhaseClaiming
+	r := newReconciler(t, app, func(r *Reconciler) { r.Claimer = missingTemplateClaimer{} })
+
+	got, res := runOnce(t, r, app)
+	if got.Status.Phase != vibedv1.PhaseFailed {
+		t.Fatalf("phase=%q want Failed", got.Status.Phase)
+	}
+	if !hasConditionWithReason(got, ConditionReady, metav1.ConditionFalse, ReasonTemplateMissing) {
+		t.Errorf("expected Ready=False/TemplateMissing, got %+v", got.Status.Conditions)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("terminal Failed should not requeue, got %v", res.RequeueAfter)
 	}
 }
 
@@ -330,6 +492,8 @@ func (f failingClaimer) EnsureClaim(_ context.Context, _ *vibedv1.VibedApp) (boo
 	return false, "", "", f.err
 }
 
+func (failingClaimer) ReleaseClaim(context.Context, *vibedv1.VibedApp) error { return nil }
+
 // pendingClaimer mimics agent-sandbox not having bound a pod yet: returns
 // no error, but bound=false. The reconciler should stay in Claiming and
 // requeue without writing a sandboxRef.
@@ -338,6 +502,8 @@ type pendingClaimer struct{}
 func (pendingClaimer) EnsureClaim(_ context.Context, _ *vibedv1.VibedApp) (bool, string, string, error) {
 	return false, "", "", nil
 }
+
+func (pendingClaimer) ReleaseClaim(context.Context, *vibedv1.VibedApp) error { return nil }
 
 type staticProbe struct {
 	ready bool

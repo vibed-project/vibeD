@@ -60,7 +60,11 @@ type AppRuntimeLane string
 
 // DeployMetadata defines model for DeployMetadata.
 type DeployMetadata struct {
-	Env *[]EnvVar `json:"env,omitempty"`
+	// Egress Per-app outbound allow-list. The egress proxy default-denies; only
+	// these hosts (plus vibeD's system hosts) are reachable. Omitting it (or
+	// an empty list) means no external egress.
+	Egress *EgressPolicy `json:"egress,omitempty"`
+	Env    *[]EnvVar     `json:"env,omitempty"`
 
 	// Name Human-readable name; URL-safe slug derived from it.
 	Name string `json:"name"`
@@ -79,6 +83,14 @@ type DeployResponse struct {
 	AppId     string  `json:"app_id"`
 	StatusUrl *string `json:"status_url,omitempty"`
 	Url       *string `json:"url,omitempty"`
+}
+
+// EgressPolicy Per-app outbound allow-list. The egress proxy default-denies; only
+// these hosts (plus vibeD's system hosts) are reachable. Omitting it (or
+// an empty list) means no external egress.
+type EgressPolicy struct {
+	// AllowedHosts Destination hostnames, e.g. "api.openai.com" or "*.example.com".
+	AllowedHosts *[]string `json:"allowed_hosts,omitempty"`
 }
 
 // EnvVar defines model for EnvVar.

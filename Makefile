@@ -145,6 +145,65 @@ load-image: image
 	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-dev.tar --name $(KIND_CLUSTER)
 	@rm -f /tmp/vibed-dev.tar
 
+# Controller + router image builds. install-vibed depends on these because
+# their CLI flag surface evolves with the chart — using a stale GHCR image
+# (e.g. v0.3.1 controller after a flag was added) crashes the deployment.
+image-controller:
+	podman build -t localhost/vibed-controller:dev -f cmd/vibed-controller/Dockerfile .
+
+load-controller-image: image-controller
+	podman save localhost/vibed-controller:dev -o /tmp/vibed-controller-dev.tar
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-controller-dev.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/vibed-controller-dev.tar
+
+image-router:
+	podman build -t localhost/vibed-router:dev -f cmd/vibed-router/Dockerfile .
+
+load-router-image: image-router
+	podman save localhost/vibed-router:dev -o /tmp/vibed-router-dev.tar
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-router-dev.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/vibed-router-dev.tar
+
+# Static-nginx template image: the only warm-pool image values-kind.yaml
+# enables, so install-vibed needs it loaded or no claim ever binds.
+image-static-nginx:
+	podman build -t localhost/vibed-template-static-nginx:dev -f templates/static-nginx/Dockerfile .
+
+load-static-nginx-image: image-static-nginx
+	podman save localhost/vibed-template-static-nginx:dev -o /tmp/vibed-template-static-nginx-dev.tar
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-template-static-nginx-dev.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/vibed-template-static-nginx-dev.tar
+
+## Opt-in warm pools beyond static-nginx. install-vibed enables only the
+## static pool by default (the kind overlay disables the rest so the dev
+## install stays fast and small). These targets build + load the slot's
+## image and helm-upgrade to flip the pool on without changing the chart.
+enable-python-pool: load-runner-images
+	helm upgrade --install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		-f deploy/helm/vibed/values-kind.yaml \
+		--reuse-values \
+		--set warmPools.python-313.enabled=true \
+		--set warmPools.python-313.lane=general \
+		--set warmPools.python-313.image=$(RUNNER_PYTHON_IMAGE) \
+		--set warmPools.python-313.replicas=1 \
+		--wait --timeout 3m
+	@kubectl rollout restart -n vibed-system deploy/vibed-controller
+	@echo "python-313 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
+
+enable-node-pool: load-runner-images
+	helm upgrade --install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		-f deploy/helm/vibed/values-kind.yaml \
+		--reuse-values \
+		--set warmPools.node-24.enabled=true \
+		--set warmPools.node-24.lane=general \
+		--set warmPools.node-24.image=$(RUNNER_NODE_IMAGE) \
+		--set warmPools.node-24.replicas=1 \
+		--wait --timeout 3m
+	@kubectl rollout restart -n vibed-system deploy/vibed-controller
+	@echo "node-24 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
+
 ## Runner Images (Instant Preview fast path — see FAST-PATH.md)
 ## Build context is the repo root: the Dockerfiles compile the runner agent
 ## from the Go source tree. Built once, not per request.
@@ -195,14 +254,10 @@ install-agent-sandbox:
 
 install-deps: install-registry install-keycloak install-agent-sandbox
 
-install-vibed: load-image
+install-vibed: load-image load-controller-image load-router-image load-static-nginx-image
 	helm upgrade --install vibed deploy/helm/vibed/ \
 		--namespace vibed-system --create-namespace \
-		--set image.repository=localhost/vibed --set image.tag=dev --set image.pullPolicy=Never \
-		--set service.type=NodePort --set service.nodePort=31808 \
-		--set config.server.baseURL=http://localhost:31808 \
-		--set config.store.backend=sqlite \
-		--set config.store.sqlite.path=/data/vibed/vibed.db \
+		-f deploy/helm/vibed/values-kind.yaml \
 		--set config.tracing.enabled=true \
 		--set config.tracing.endpoint=observability-opentelemetry-collector.monitoring:4317 \
 		--wait

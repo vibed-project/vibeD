@@ -77,6 +77,13 @@ ENV VIBED_AGENT_WORKDIR=/workspace \
     VIBED_AGENT_CONTROL_ADDR=:9000 \
     VIBED_AGENT_APP_PORT=8080
 
+# Bring-your-own base-image contract. base-al2023 is the kitchen-sink fallback,
+# so the probe asserts all three bundled runtimes are present.
+LABEL dev.vibed.template.language="base" \
+      dev.vibed.agent.contract="1"
+ENV VIBED_TEMPLATE_LANGUAGE=base \
+    VIBED_RUNTIME_PROBE="node --version && python3 --version && go version"
+
 EXPOSE 9000 8080
 
 ENTRYPOINT ["tini", "--", "vibed-agent"]

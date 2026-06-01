@@ -56,13 +56,26 @@ metadata:
     {{- include "vibed.labels" . | nindent 4 }}
     app.kubernetes.io/component: caddy
 spec:
+  # Default ClusterIP; kind dev flips this to NodePort so kind's
+  # extraPortMappings can bridge host:80 → Caddy without a port-forward.
+  type: {{ .Values.caddy.service.type | default "ClusterIP" }}
   selector:
     {{- include "vibed.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: caddy
   ports:
-    - { name: http,  port: 80,   targetPort: 80 }
+    - name: http
+      port: 80
+      targetPort: 80
+      {{- if and (eq (.Values.caddy.service.type | default "ClusterIP") "NodePort") .Values.caddy.service.httpNodePort }}
+      nodePort: {{ .Values.caddy.service.httpNodePort }}
+      {{- end }}
     {{- if .Values.caddy.tls.dns01.enabled }}
-    - { name: https, port: 443,  targetPort: 443 }
+    - name: https
+      port: 443
+      targetPort: 443
+      {{- if and (eq (.Values.caddy.service.type | default "ClusterIP") "NodePort") .Values.caddy.service.httpsNodePort }}
+      nodePort: {{ .Values.caddy.service.httpsNodePort }}
+      {{- end }}
     {{- end }}
     # admin: cluster-internal only. Restrict to the router with a
     # NetworkPolicy in production — it is a powerful management API.

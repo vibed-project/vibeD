@@ -30,6 +30,14 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Pods: the BYO base-image validator reads a Ready warm-pool pod per slot to
+  # call its /info. ConfigMaps: it persists validation results for the gate.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   # SandboxClaim: created per VibedApp; Sandbox/templates read for binding.
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
@@ -82,6 +90,12 @@ spec:
       labels:
         {{- include "vibed.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: controller
+      annotations:
+        # Annotation-based scrape of the controller's metrics (incl.
+        # vibed_template_validation). Matches how the server pod is scraped.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: {{ $sa }}
       securityContext:
@@ -99,6 +113,8 @@ spec:
             {{- if .Values.controller.urlPort }}
             - --app-url-port={{ .Values.controller.urlPort }}
             {{- end }}
+            - --validate-images={{ .Values.templateValidation.enabled | default true }}
+            - --template-validation-strict={{ .Values.templateValidation.strict | default false }}
             {{- if .Values.workerd.enabled }}
             - --workerd-replicas={{ .Values.workerd.replicas }}
             - --workerd-control-port={{ .Values.workerd.controlPort }}

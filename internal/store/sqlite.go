@@ -85,7 +85,19 @@ CREATE TABLE IF NOT EXISTS departments (
         namespace  TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
-);`
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+        id      TEXT PRIMARY KEY,
+        ts      TEXT NOT NULL,
+        actor   TEXT NOT NULL DEFAULT '',
+        action  TEXT NOT NULL DEFAULT '',
+        target  TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL DEFAULT '',
+        detail  TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts);`
 
 // SQLiteStore is a persistent ArtifactStore backed by SQLite.
 type SQLiteStore struct {

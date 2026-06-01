@@ -94,3 +94,16 @@ func TestClientSurfacesAgentError(t *testing.T) {
 		t.Errorf("error %q should surface the agent's message", err)
 	}
 }
+
+func TestClientInfo(t *testing.T) {
+	c := newClientAgainstAgent(t, "tok")
+	info, err := c.Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	// The agent always reports the contract version it implements; /info is
+	// reachable without auth and round-trips into InfoResponse.
+	if info.AgentContract != AgentContract {
+		t.Errorf("agentContract = %q, want %q", info.AgentContract, AgentContract)
+	}
+}

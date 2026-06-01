@@ -123,6 +123,18 @@ type Department struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// AuditEvent is one recorded mutating action (deploy, delete, rollback) for
+// the governance audit trail. Append-only; queried via the admin audit API.
+type AuditEvent struct {
+	ID      string    `json:"id"`
+	Time    time.Time `json:"time"`
+	Actor   string    `json:"actor"`            // authenticated user ID ("" if unauthenticated)
+	Action  string    `json:"action"`           // deploy | delete | rollback
+	Target  string    `json:"target"`           // app/artifact name
+	Outcome string    `json:"outcome"`          // ok | denied | error
+	Detail  string    `json:"detail,omitempty"` // error message or context, when relevant
+}
+
 // ShareLink represents a public shareable link to an artifact.
 type ShareLink struct {
 	Token       string     `json:"token"`

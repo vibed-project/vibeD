@@ -49,6 +49,33 @@ func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, e
 	return out, nil
 }
 
+// SetSuspended toggles spec.suspended on an app the owner owns (suspend when
+// true, resume when false) and returns the updated app. The controller acts on
+// the change: releasing the warm-pool pod on suspend, re-claiming on resume.
+// Audited as "suspend"/"resume".
+func (s *Service) SetSuspended(ctx context.Context, owner, id string, suspended bool) (*vibedv1.VibedApp, error) {
+	action := "resume"
+	if suspended {
+		action = "suspend"
+	}
+	app, err := s.Get(ctx, owner, id) // ownership-checked
+	if err != nil {
+		return nil, err
+	}
+	if app.Spec.Suspended == suspended {
+		return app, nil // already in the desired state
+	}
+	app.Spec.Suspended = suspended
+	if uerr := s.Client.Update(ctx, app); uerr != nil {
+		_ = s.record(ctx, action, id, "error", uerr.Error())
+		return nil, fmt.Errorf("update VibedApp: %w", uerr)
+	}
+	if err := s.record(ctx, action, id, "ok", ""); err != nil {
+		return nil, fmt.Errorf("%s succeeded but audit failed: %w", action, err)
+	}
+	return app, nil
+}
+
 // Delete removes the VibedApp (and its tarball) if owner owns it. The
 // controller's ownerRef on the SandboxClaim reaps the bound pod.
 func (s *Service) Delete(ctx context.Context, owner, id string) error {
@@ -57,9 +84,13 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 		return err
 	}
 	if derr := s.Client.Delete(ctx, app); derr != nil && !apierrors.IsNotFound(derr) {
+		_ = s.record(ctx, "delete", id, "error", derr.Error())
 		return fmt.Errorf("delete VibedApp: %w", derr)
 	}
 	// Best-effort tarball cleanup; the CR is already gone either way.
 	_ = s.Store.Delete(ctx, id)
+	if err := s.record(ctx, "delete", id, "ok", ""); err != nil {
+		return fmt.Errorf("delete succeeded but audit failed: %w", err)
+	}
 	return nil
 }

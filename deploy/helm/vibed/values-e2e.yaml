@@ -1,0 +1,50 @@
+# E2E overlay — layered on top of values-kind.yaml in the cluster E2E
+# (.github/workflows/e2e-cluster.yaml). It enables a deliberately MIS-IMAGED
+# node-24 slot: the image is the static-nginx one, which declares language
+# "static", not "node". This lets the E2E prove bring-your-own validation gates
+# a wrong-language image — a Node deploy routed to node-24 must end up Failed
+# with TemplateInvalid. NOT for real use.
+warmPools:
+  node-24:
+    enabled: true
+    lane: general
+    image: "localhost/vibed-template-static-nginx:dev"
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 32Mi }
+      limits: { cpu: 200m, memory: 128Mi }
+  # python-313 powers the MCP e2e python deploy (test/e2e/mcp_test.go).
+  # Same kind-local image conventions as the other slots.
+  python-313:
+    enabled: true
+    lane: general
+    image: "localhost/vibed-runner-python:dev"
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 300m, memory: 256Mi }
+
+# Enable the egress proxy + authz so TestClusterEgressAuthz has something
+# to talk to in CI. The workflow builds + loads the two egress images and
+# port-forwards the authz service as VIBED_E2E_AUTHZ_URL.
+#
+# When egressControl is on, every warm-pool runtime gets HTTP_PROXY/HTTPS_PROXY
+# pointing at the Squid proxy (templates/warmpools.yaml). That includes the
+# runner-agent's source pull from the in-cluster served store, so the
+# served-store DNS name needs to be in systemHosts or Squid 403s the request
+# and the deploy gets stuck in Starting forever. The chart auto-adds it now
+# (egress-authz.yaml), but we set it explicitly here so the e2e configuration
+# is self-documenting and survives any later chart refactor that drops the
+# auto-derivation.
+egressControl:
+  enabled: true
+  systemHosts:
+    - vibed.vibed-system.svc.cluster.local
+  proxy:
+    image:
+      repository: localhost/vibed-egress-proxy
+      tag: dev
+  authz:
+    image:
+      repository: localhost/vibed-egress-authz
+      tag: dev

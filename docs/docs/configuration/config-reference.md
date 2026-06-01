@@ -75,7 +75,7 @@ networkPolicy:
 controller:
   domain: vibed.example.com    # DNS suffix for app URLs
   urlScheme: https             # http in dev
-  urlPort: ""                  # dev: the host port reaching Caddy (e.g. "18080")
+  urlPort: ""                  # optional port appended to app URLs; empty in dev (kind bridges host:80 → Caddy)
 
 router: { enabled: true }
 caddy:

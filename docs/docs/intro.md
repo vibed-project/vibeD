@@ -31,7 +31,7 @@ vibeD never builds a container image on the deploy path. Instead it keeps **warm
 
 The HTTP API is uniform. A deterministic **classifier** inspects the source and picks a lane — you never choose a runtime by hand (though you can override):
 
-- **fast lane** — V8/WASM isolates (workerd) and static sites. Sub-second, for trusted-language workloads.
+- **fast lane** — V8 isolates (workerd) and static sites. Sub-second, for trusted-language workloads.
 - **general lane** — Kata + Firecracker **microVMs** for hardware-grade isolation of arbitrary code (Node, Python, Go, or any image).
 
 ## Key components

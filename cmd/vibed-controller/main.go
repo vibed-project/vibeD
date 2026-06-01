@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -25,9 +26,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/vibed-project/vibeD/internal/controller"
+	"github.com/vibed-project/vibeD/internal/templatevalidate"
 	"github.com/vibed-project/vibeD/internal/workerd"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
@@ -47,6 +50,8 @@ func main() {
 		domain               string
 		urlScheme            string
 		urlPort              string
+		validateImages       bool
+		strictValidation     bool
 		poolNamespace        string
 		agentToken           string
 		workerdReplicas      int
@@ -65,6 +70,10 @@ func main() {
 		"URL scheme for published app URLs. Set 'http' in dev (Caddy serves plain HTTP).")
 	flag.StringVar(&urlPort, "app-url-port", "",
 		"Optional port appended to app URLs (dev: the host port reaching Caddy, e.g. 18080). Empty in prod.")
+	flag.BoolVar(&validateImages, "validate-images", true,
+		"Validate warm-pool base images (BYO contract) and hard-gate deploys whose image is invalid. Disable for trusted/air-gapped installs.")
+	flag.BoolVar(&strictValidation, "template-validation-strict", false,
+		"Strict gate: deny claims for slots without a Valid recorded result AND when the warm-pool pod's current ImageID drifts from the validated digest (mutable-tag bypass guard). Default fail-open during the 2-minute warmup.")
 	flag.StringVar(&poolNamespace, "pool-namespace", "vibed-pools",
 		"Namespace where SandboxWarmPool / SandboxTemplate live (matches templates/*/template.yaml).")
 	flag.StringVar(&agentToken, "agent-token", "",
@@ -108,6 +117,16 @@ func main() {
 		Services: &controller.K8sServiceManager{Client: mgr.GetClient(), AppPort: 8080},
 		Router:   controller.DeterministicRouter{Domain: domain, Scheme: urlScheme, Port: urlPort},
 	}
+	if validateImages {
+		reconciler.Gate = &controller.ConfigMapTemplateGate{
+			Client:    mgr.GetClient(),
+			Namespace: poolNamespace,
+			Strict:    strictValidation,
+		}
+		if strictValidation {
+			logger.Info("BYO template validation in STRICT mode: unvalidated or content-changed slots are denied")
+		}
+	}
 	// Fast lane: wire the workerd loader client only when replicas are
 	// configured. Otherwise the default DummyFastLaneDeployer rejects
 	// workerd apps with a clear "not configured" error.
@@ -131,6 +150,34 @@ func main() {
 		fatal(logger, "reconciler setup", err)
 	}
 
+	// Periodically validate the base image backing each warm-pool slot (BYO
+	// base-image feature) and persist results for the claim-path gate. Runs
+	// after the cache syncs; an initial pass happens immediately. Skipped when
+	// --validate-images=false (trusted/air-gapped installs).
+	if validateImages {
+		templatevalidate.RegisterMetrics()
+		validator := &templatevalidate.Validator{
+			Client:    mgr.GetClient(),
+			Namespace: poolNamespace,
+			Probe:     templatevalidate.HTTPInfoProbe{Token: agentToken},
+		}
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			runValidation(ctx, validator, logger)
+			t := time.NewTicker(2 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-t.C:
+					runValidation(ctx, validator, logger)
+				}
+			}
+		})); err != nil {
+			fatal(logger, "add image validator", err)
+		}
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		fatal(logger, "add healthz", err)
 	}
@@ -142,6 +189,26 @@ func main() {
 	log.FromContext(ctx).Info("starting vibed-controller", "metrics", metricsAddr, "probes", probeAddr, "leader-elect", enableLeaderElection)
 	if err := mgr.Start(ctx); err != nil {
 		fatal(logger, "manager run", err)
+	}
+}
+
+// runValidation validates every warm-pool image once and persists the results
+// for the claim-path gate. Logs (never fatal) — a transient validation error
+// must not take the controller down.
+func runValidation(ctx context.Context, v *templatevalidate.Validator, logger *slog.Logger) {
+	results, err := v.ValidateAll(ctx)
+	if err != nil {
+		logger.Warn("template image validation failed", "error", err)
+		return
+	}
+	for _, r := range results {
+		if !r.Valid {
+			logger.Warn("template image invalid", "template", r.Template, "image", r.Image, "reason", r.Reason)
+		}
+	}
+	templatevalidate.RecordResults(results)
+	if err := v.Persist(ctx, results); err != nil {
+		logger.Warn("persisting template validation results failed", "error", err)
 	}
 }
 

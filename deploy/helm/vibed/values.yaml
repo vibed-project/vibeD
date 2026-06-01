@@ -95,6 +95,21 @@ runtime:
   #               policy = fully open.)
   sandboxNetworkPolicy: Managed
 
+# -- Bring-your-own base-image validation. When enabled (default), the
+#    controller periodically boots-checks each warm-pool image (agent /info +
+#    language match + runtime probe) and hard-gates deploys whose image is
+#    known-invalid. Disable for air-gapped/offline installs where you trust
+#    your images and want no preflight.
+#
+#    strict (default false): flip the gate from fail-open to fail-closed
+#    during the warm-up window AND compare the live warm-pool pod's resolved
+#    ImageID to the validated digest, so a mutable-tag content swap forces
+#    re-validation before any new claim binds. Use in production where
+#    deploys must never race ahead of validation.
+templateValidation:
+  enabled: true
+  strict: false
+
 # -- vibeD-owned sandbox NetworkPolicy (the production posture). Default-deny,
 #    then allow the control plane -> sandbox (:8080/:9000) and DNS + public
 #    egress (for the agent's pre-signed S3 source pull) while blocking
@@ -103,6 +118,41 @@ runtime:
 networkPolicy:
   enabled: false
   extraEgress: []   # additional egress rules (e.g. an in-cluster MinIO CIDR)
+  # -- Cluster-DNS selector for sandbox egress. The sandbox NetworkPolicy
+  #     permits :53 ONLY to pods matching this selector, so untrusted code
+  #     can't tunnel data via an external DNS server. Defaults match upstream
+  #     CoreDNS in kube-system; override if your cluster's DNS uses different
+  #     labels (e.g. GKE's kube-dns, managed providers, or NodeLocal DNSCache
+  #     where you may need to point at the node-local pods instead).
+  dnsSelector:
+    namespaceLabels:
+      kubernetes.io/metadata.name: kube-system
+    podLabels:
+      k8s-app: kube-dns
+
+# -- Per-app egress control. When enabled, a sandbox can reach ONLY the hosts on
+#    its VibedApp's spec.egress.allowedHosts (plus systemHosts) — enforced by a
+#    Squid forward proxy that the sandbox NetworkPolicy forces all egress
+#    through (vibed-egress-authz authorizes each connection). Pair with
+#    runtime.sandboxNetworkPolicy=Unmanaged + networkPolicy.enabled so vibeD
+#    owns the locked-down policy.
+egressControl:
+  enabled: false
+  # Hosts always reachable regardless of an app's allow-list — most importantly
+  # the object-store (S3/MinIO) endpoint the agent pulls source from.
+  systemHosts: []
+  proxy:
+    replicaCount: 1
+    image:
+      repository: ghcr.io/vibed-project/vibed-egress-proxy
+      tag: ""              # empty -> chart appVersion
+      pullPolicy: IfNotPresent
+  authz:
+    replicaCount: 1
+    image:
+      repository: ghcr.io/vibed-project/vibed-egress-authz
+      tag: ""              # empty -> chart appVersion
+      pullPolicy: IfNotPresent
 
 # -- vibed-controller: reconciles VibedApp -> SandboxClaim / workerd.
 controller:
@@ -146,6 +196,16 @@ caddy:
     repository: caddy
     tag: "2-alpine"
     pullPolicy: IfNotPresent
+  # -- Caddy ingress Service. Defaults to ClusterIP (the production posture
+  #     where an external LB or Ingress fronts vibeD). Kind dev flips this to
+  #     NodePort so kind's extraPortMappings can bridge host:80 → Caddy:80
+  #     without a manual port-forward. httpNodePort/httpsNodePort are
+  #     honored only when type=NodePort; pick numbers your kind config
+  #     extraPortMappings actually bridge.
+  service:
+    type: ClusterIP
+    httpNodePort: ""
+    httpsNodePort: ""
   # -- DNS-01 wildcard TLS. When false, Caddy serves plain HTTP (dev). For
   #    production set provider + the token secret and use a Caddy image built
   #    with the matching DNS plugin (e.g. caddy-dns/cloudflare).
@@ -255,6 +315,32 @@ config:
     maxFileCount: 500
     # -- Max log lines per request (default: 10000).
     maxLogLines: 10000
+    # -- Per-user cap on simultaneous /v1/logs SSE streams. 0 = unlimited.
+    #     Default 10 blocks the trivial DoS where one caller opens many
+    #     streams to exhaust controller memory (1 MB scanner buffer each).
+    maxConcurrentLogStreamsPerUser: 10
+  # -- Governance audit trail. The Recorder writes deploy/delete/rollback/
+  #     suspend/resume events to the persistent store (sqlite) or in-memory
+  #     fallback. When failClosed is true, a mutating action that vibeD
+  #     cannot durably log is rejected — preferring availability loss over
+  #     an untraceable change. Leave false for dev clusters and the default
+  #     install; flip true in production values.
+  audit:
+    failClosed: false
+
+  # -- Deploy quotas: cap concurrent apps per owner / per department
+  #     (enterprise governance). New deploys exceeding a ceiling get a 429;
+  #     redeploys don't count. Per-department needs store.backend=sqlite +
+  #     users assigned to departments. See docs/configuration/quotas.
+  quotas:
+    enabled: false
+    # -- Per-user concurrent-app ceiling (0 = unlimited).
+    maxAppsPerOwner: 0
+    # -- Per-department aggregate concurrent-app ceiling (0 = unlimited).
+    maxAppsPerDepartment: 0
+    # -- Override the department ceiling by department name, e.g.
+    #     perDepartment: { platform: 50, contractors: 3 }
+    perDepartment: {}
   # -- OpenTelemetry distributed tracing configuration.
   tracing:
     enabled: false

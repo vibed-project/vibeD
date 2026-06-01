@@ -6,8 +6,15 @@ function getMcpUrl(): string {
   return `${loc.protocol}//${loc.host}/mcp/`
 }
 
-export default function SetupGuide() {
-  const [open, setOpen] = useState(false)
+interface Props {
+  /** When true, render the guide content always-expanded with no toggle —
+   *  used by the dedicated /connect page. Defaults to false (collapsible
+   *  inline widget). */
+  alwaysOpen?: boolean
+}
+
+export default function SetupGuide({ alwaysOpen = false }: Props) {
+  const [open, setOpen] = useState(alwaysOpen)
   const [copied, setCopied] = useState<string | null>(null)
 
   const mcpUrl = getMcpUrl()
@@ -58,11 +65,13 @@ export default function SetupGuide() {
 
   return (
     <div className="setup-guide">
-      <button className="setup-toggle" onClick={() => setOpen(!open)}>
-        <span className="setup-toggle-icon">{open ? '\u25BE' : '\u25B8'}</span>
-        <span className="setup-toggle-title">Connect to Claude Desktop</span>
-        {!open && <span className="setup-toggle-hint">Click to expand setup instructions</span>}
-      </button>
+      {!alwaysOpen && (
+        <button className="setup-toggle" onClick={() => setOpen(!open)}>
+          <span className="setup-toggle-icon">{open ? '\u25BE' : '\u25B8'}</span>
+          <span className="setup-toggle-title">Connect to Claude Desktop</span>
+          {!open && <span className="setup-toggle-hint">Click to expand setup instructions</span>}
+        </button>
+      )}
 
       {open && (
         <div className="setup-content">

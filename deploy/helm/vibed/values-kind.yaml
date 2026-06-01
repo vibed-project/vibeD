@@ -30,11 +30,11 @@ runtime:
 controller:
   image: { repository: localhost/vibed-controller, tag: dev, pullPolicy: Never }
   domain: localhost
-  # Dev Caddy serves plain HTTP via a port-forward on host:18080
-  # (kubectl port-forward svc/vibed-caddy 18080:80), so published app URLs are
-  # http://<label>.localhost:18080 — directly openable in Chrome/Firefox.
+  # Dev URLs are http://<label>.localhost — port 80 implicit. Caddy is
+  # exposed as NodePort 31080 below, and kind's extraPortMappings bridge
+  # host:80 → 31080, so a browser hits the deployed app with no port-forward.
   urlScheme: http
-  urlPort: "18080"
+  urlPort: ""
 
 router:
   image: { repository: localhost/vibed-router, tag: dev, pullPolicy: Never }
@@ -42,6 +42,11 @@ router:
 caddy:
   # stock upstream caddy image; no DNS-01 on dev (plain HTTP).
   image: { repository: caddy, tag: 2-alpine, pullPolicy: IfNotPresent }
+  # NodePort 31080 matches kind-config.yaml extraPortMappings host:80 →
+  # container:31080. Browsers can hit deployed apps at http://<id>.localhost.
+  service:
+    type: NodePort
+    httpNodePort: 31080
   tls:
     dns01:
       enabled: false

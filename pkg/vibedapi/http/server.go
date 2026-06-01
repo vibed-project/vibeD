@@ -5,21 +5,24 @@
 // file implements ServerInterface and is the single place hand-written code
 // lives — everything else flows through the spec.
 //
-// During milestone A2 most endpoints are deliberately stubbed with
-// 501 Not Implemented. The handlers light up as later milestones land:
-//   - milestone B (vibed-controller + agent) → deploy, get, list, delete,
-//     redeploy, suspend, logs
-//   - milestone C (classifier + templates)    → templates
-//
-// `/healthz`, `/readyz`, `/metrics` are wired to real handlers passed in at
-// construction time so they work today.
+// Live endpoints: deploy, get, list, delete, redeploy, and logs (SSE) run
+// against the VibedApp deploy service; templates returns an empty list pending
+// the classifier enumeration; ops (`/healthz`, `/readyz`, `/metrics`) delegate
+// to handlers passed in at construction. Suspend remains 501 until the
+// snapshot/restore milestone (F1) lands. When the deploy service isn't
+// configured the deploy-backed endpoints return 501 so vibeD still boots in
+// ops-only mode.
 package vibedhttp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/deploy"
@@ -43,7 +46,49 @@ type Server struct {
 	// usable for ops-only mode without a K8s connection.
 	Deploy *deploy.Service
 
+	// MaxConcurrentLogStreamsPerUser caps simultaneous /v1/logs SSE
+	// connections per authenticated user. 0 disables the cap (legacy
+	// behavior). Hard-coded gate against a trivial DoS where one user opens
+	// many streams to exhaust controller memory.
+	MaxConcurrentLogStreamsPerUser int
+
+	logStreamMu sync.Mutex
+	logStreams  map[string]int // userID -> current open count
+
 	Logger *slog.Logger
+}
+
+// acquireLogStream reserves one stream slot for user. Returns false (over
+// cap) when MaxConcurrentLogStreamsPerUser > 0 and the user is already at it.
+// Each acquire must be paired with releaseLogStream.
+func (s *Server) acquireLogStream(user string) bool {
+	if s.MaxConcurrentLogStreamsPerUser <= 0 {
+		return true
+	}
+	s.logStreamMu.Lock()
+	defer s.logStreamMu.Unlock()
+	if s.logStreams == nil {
+		s.logStreams = map[string]int{}
+	}
+	if s.logStreams[user] >= s.MaxConcurrentLogStreamsPerUser {
+		return false
+	}
+	s.logStreams[user]++
+	return true
+}
+
+func (s *Server) releaseLogStream(user string) {
+	if s.MaxConcurrentLogStreamsPerUser <= 0 {
+		return
+	}
+	s.logStreamMu.Lock()
+	defer s.logStreamMu.Unlock()
+	if s.logStreams[user] > 0 {
+		s.logStreams[user]--
+	}
+	if s.logStreams[user] == 0 {
+		delete(s.logStreams, user)
+	}
 }
 
 // New constructs a Server. Nil Logger is replaced with slog.Default().
@@ -89,7 +134,14 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
 		return
 	}
+	// forcedName "" → take the name from metadata (a first-time deploy).
+	s.runDeploy(w, r, owner, "")
+}
 
+// runDeploy parses a multipart deploy (source tarball + optional metadata) and
+// runs it through the deploy service, writing the 200/202/4xx response. When
+// forcedName is set (a redeploy of an existing app) it overrides metadata.name.
+func (s *Server) runDeploy(w http.ResponseWriter, r *http.Request, owner, forcedName string) {
 	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
 		writeJSON(w, http.StatusBadRequest, Error{Code: "bad_multipart", Message: err.Error()})
 		return
@@ -103,7 +155,11 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if meta.Name == "" {
+	name := forcedName
+	if name == "" {
+		name = meta.Name
+	}
+	if name == "" {
 		writeJSON(w, http.StatusBadRequest, Error{Code: "missing_name", Message: "metadata.name is required"})
 		return
 	}
@@ -117,7 +173,7 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	req := deploy.Request{
-		Name:    meta.Name,
+		Name:    name,
 		Owner:   owner,
 		Tarball: file,
 	}
@@ -135,6 +191,9 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 			req.Entrypoint = *meta.Runtime.Entrypoint
 		}
 	}
+	if meta.Egress != nil && meta.Egress.AllowedHosts != nil {
+		req.AllowedHosts = *meta.Egress.AllowedHosts
+	}
 	if meta.Env != nil {
 		for _, e := range *meta.Env {
 			ev := vibedv1.EnvVar{Name: e.Name}
@@ -147,6 +206,11 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 
 	res, err := s.Deploy.Deploy(r.Context(), req)
 	if err != nil {
+		var qe interface{ QuotaExceeded() bool }
+		if errors.As(err, &qe) {
+			writeJSON(w, http.StatusTooManyRequests, Error{Code: "quota_exceeded", Message: err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, Error{Code: "deploy_failed", Message: err.Error()})
 		return
 	}
@@ -268,15 +332,117 @@ func toAPIApp(app *vibedv1.VibedApp) App {
 func strPtr(s string) *string { return &s }
 
 func (s *Server) RedeployApp(w http.ResponseWriter, r *http.Request, appID AppID) {
-	notImplemented(w, "redeploy_app", "wired in milestone B (vibed-controller)")
+	if s.Deploy == nil {
+		notImplemented(w, "redeploy_app", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+	// Confirm the caller owns an existing app before mutating it — a redeploy
+	// reuses the named CR, so without this an unrelated caller could clobber it.
+	if _, err := s.Deploy.Get(r.Context(), owner, appID); err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "get_failed", Message: err.Error()})
+		return
+	}
+	s.runDeploy(w, r, owner, appID)
 }
 
 func (s *Server) SuspendApp(w http.ResponseWriter, r *http.Request, appID AppID) {
-	notImplemented(w, "suspend_app", "wired in milestone F1 (snapshot/restore)")
+	s.setSuspended(w, r, appID, true)
+}
+
+func (s *Server) ResumeApp(w http.ResponseWriter, r *http.Request, appID AppID) {
+	s.setSuspended(w, r, appID, false)
+}
+
+// setSuspended backs the suspend/resume endpoints: it toggles the app's
+// desired state (ownership-checked) and returns 202 + the App. The controller
+// reconciles the actual release/re-claim asynchronously.
+func (s *Server) setSuspended(w http.ResponseWriter, r *http.Request, appID AppID, suspended bool) {
+	if s.Deploy == nil {
+		notImplemented(w, "suspend_app", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+	app, err := s.Deploy.SetSuspended(r.Context(), owner, appID, suspended)
+	if err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "suspend_failed", Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toAPIApp(app))
 }
 
 func (s *Server) StreamAppLogs(w http.ResponseWriter, r *http.Request, appID AppID) {
-	notImplemented(w, "stream_app_logs", "wired in milestone B (vibed-controller)")
+	if s.Deploy == nil {
+		notImplemented(w, "stream_app_logs", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+	// Resolve ownership/existence up front so we can return a clean 404 before
+	// switching the response into an SSE stream.
+	if _, err := s.Deploy.Get(r.Context(), owner, appID); err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "get_failed", Message: err.Error()})
+		return
+	}
+	// Per-user concurrent-stream cap: blocks the trivial DoS where one
+	// caller opens dozens of streams to exhaust controller memory (each
+	// stream allocates a 1 MB scanner buffer).
+	if !s.acquireLogStream(owner) {
+		w.Header().Set("Retry-After", "5")
+		writeJSON(w, http.StatusTooManyRequests, Error{
+			Code:    "too_many_log_streams",
+			Message: fmt.Sprintf("max %d concurrent log streams per user", s.MaxConcurrentLogStreamsPerUser),
+		})
+		return
+	}
+	defer s.releaseLogStream(owner)
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "no_streaming", Message: "response writer does not support streaming"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	err := s.Deploy.StreamLogs(r.Context(), owner, appID, true, 200, func(line string) error {
+		if _, werr := fmt.Fprintf(w, "data: %s\n\n", line); werr != nil {
+			return werr
+		}
+		flusher.Flush()
+		return nil
+	})
+	// A cancelled context is the client disconnecting — not an error to report.
+	if err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		flusher.Flush()
+	}
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {

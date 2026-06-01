@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,8 +11,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/vibed-project/vibeD/internal/templatevalidate"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
+
+// sandboxTemplateObj is a minimal SandboxTemplate for the claim tests — its
+// presence is what EnsureClaim's fail-fast check requires.
+func sandboxTemplateObj(name, ns string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(templatevalidate.SandboxTemplateGVK)
+	u.SetName(name)
+	u.SetNamespace(ns)
+	return u
+}
 
 // newFakeClient builds a fake controller-runtime client that knows the
 // VibedApp scheme plus enough about the unstructured SandboxClaim GVK to
@@ -35,7 +47,7 @@ func newSandboxClaimer(c client.Client) *SandboxClaimer {
 // status yet).
 func TestEnsureClaimCreatesWhenMissing(t *testing.T) {
 	app := validApp("create-me")
-	c := newFakeClient(t, app)
+	c := newFakeClient(t, app, sandboxTemplateObj("node-24", "default"))
 	cl := newSandboxClaimer(c)
 
 	bound, ref, ip, err := cl.EnsureClaim(context.Background(), app)
@@ -74,7 +86,7 @@ func TestEnsureClaimCreatesWhenMissing(t *testing.T) {
 // create a duplicate and doesn't fall over when the claim already exists.
 func TestEnsureClaimIsIdempotent(t *testing.T) {
 	app := validApp("idempotent")
-	c := newFakeClient(t, app)
+	c := newFakeClient(t, app, sandboxTemplateObj("node-24", "default"))
 	cl := newSandboxClaimer(c)
 
 	for i := 0; i < 3; i++ {
@@ -122,7 +134,7 @@ func TestEnsureClaimReportsBoundOnceStatusPopulated(t *testing.T) {
 		},
 	}, "status")
 
-	c := newFakeClient(t, app, preBound)
+	c := newFakeClient(t, app, preBound, sandboxTemplateObj("node-24", "default"))
 	cl := newSandboxClaimer(c)
 
 	bound, ref, ip, err := cl.EnsureClaim(context.Background(), app)
@@ -137,6 +149,27 @@ func TestEnsureClaimReportsBoundOnceStatusPopulated(t *testing.T) {
 	}
 	if ip != "10.0.0.42" {
 		t.Errorf("podIP = %q want 10.0.0.42 (first podIP)", ip)
+	}
+}
+
+// TestEnsureClaimFailsWhenTemplateMissing: a slot with no SandboxTemplate
+// (e.g. a classifier destination like "spin" that isn't deployed) fails fast
+// with ErrTemplateNotFound instead of creating a claim that never binds.
+func TestEnsureClaimFailsWhenTemplateMissing(t *testing.T) {
+	app := validApp("no-pool") // template node-24, but none seeded
+	c := newFakeClient(t, app)
+	cl := newSandboxClaimer(c)
+
+	_, _, _, err := cl.EnsureClaim(context.Background(), app)
+	if !errors.Is(err, ErrTemplateNotFound) {
+		t.Fatalf("expected ErrTemplateNotFound, got %v", err)
+	}
+	// No claim should have been created.
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(SandboxClaimGVK)
+	_ = c.List(context.Background(), list, client.InNamespace(app.Namespace))
+	if len(list.Items) != 0 {
+		t.Errorf("expected no SandboxClaim, got %d", len(list.Items))
 	}
 }
 

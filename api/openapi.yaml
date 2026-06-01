@@ -172,10 +172,32 @@ paths:
     post:
       tags: [apps]
       operationId: suspendApp
-      summary: Suspend an app to snapshot, freeing compute.
+      summary: Suspend an app, freeing its compute.
+      description: |
+        Releases the app's warm-pool pod and parks it in the Suspended phase.
+        In-memory state is not preserved; resume re-materializes from source.
       responses:
         '202':
           description: Suspend initiated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/App' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/apps/{app_id}/resume:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      tags: [apps]
+      operationId: resumeApp
+      summary: Resume a suspended app, re-claiming compute.
+      description: |
+        Clears the suspended state so the controller re-claims a warm-pool pod
+        and re-injects the app's source, returning it to Ready.
+      responses:
+        '202':
+          description: Resume initiated.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/App' }
@@ -280,6 +302,8 @@ components:
           maxLength: 63
         runtime:
           $ref: '#/components/schemas/RuntimeOverride'
+        egress:
+          $ref: '#/components/schemas/EgressPolicy'
         env:
           type: array
           items: { $ref: '#/components/schemas/EnvVar' }
@@ -302,6 +326,18 @@ components:
           type: string
         entrypoint:
           type: string
+
+    EgressPolicy:
+      type: object
+      description: |
+        Per-app outbound allow-list. The egress proxy default-denies; only
+        these hosts (plus vibeD's system hosts) are reachable. Omitting it (or
+        an empty list) means no external egress.
+      properties:
+        allowed_hosts:
+          type: array
+          description: 'Destination hostnames, e.g. "api.openai.com" or "*.example.com".'
+          items: { type: string }
 
     EnvVar:
       type: object

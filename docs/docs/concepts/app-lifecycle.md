@@ -40,8 +40,7 @@ The app's public URL is derived from a stable 12-character label hashed from `na
 ## Phases
 
 ```
-Pending → Claiming → Starting → Ready
-                              ↘ Suspended   (after idle TTL — planned)
+Pending → Claiming → Starting → Ready ⇄ Suspended
                               ↘ Failed
 ```
 
@@ -52,7 +51,11 @@ Pending → Claiming → Starting → Ready
 | **Starting** | A sandbox is bound. The controller probes `vibed-agent` (`:9000`), then POSTs the source URL to inject + start the user process. |
 | **Ready** | The user process is listening. A per-app `Service` exists, `routeTarget` + `url` are set, and vibed-router has programmed the Caddy route. |
 | **Failed** | Validation failed, or the agent couldn't start the app. `conditions` carry the reason. |
-| **Suspended** | *Planned.* After an idle TTL the app suspends to a snapshot to free compute. Not yet wired. |
+| **Suspended** | Compute released. Setting `spec.suspended=true` (or `POST /v1/apps/{id}/suspend`) deletes the `SandboxClaim` — returning the pod to the warm pool — and clears `podIP`/`routeTarget`. Clearing it (`POST .../resume`) flips back to `Claiming`, re-claiming a pod and re-injecting source. |
+
+## Suspend & resume
+
+`spec.suspended` is the declarative toggle the controller reconciles. Suspend is **release & re-materialize**: the warm-pool pod is freed and the app parked in `Suspended`; resume re-enters the normal `Claiming → Starting → Ready` machine, re-injecting from the stored source. In-memory/disk state is **not** preserved — appropriate for stateless web apps. (Real Firecracker memory snapshots via `status.snapshotRef`, and automatic idle-TTL suspend driven by `spec.ttl`, remain future work.)
 
 ## Routing target
 
@@ -60,4 +63,4 @@ Pending → Claiming → Starting → Ready
 
 ## Implemented vs. planned
 
-The following API endpoints exist but are **not yet implemented** (they return `501`): `POST /v1/apps/{id}/redeploy`, `POST /v1/apps/{id}/suspend`, and `GET /v1/apps/{id}/logs` (live log streaming). Snapshot-restore (`status.snapshotRef`) and idle-suspend are likewise design targets not yet wired. The implemented lifecycle is the deploy → `Ready` path plus `GET`/`DELETE` of apps.
+Implemented: the deploy → `Ready` path, `GET`/`DELETE` of apps, `POST /v1/apps/{id}/redeploy`, `GET /v1/apps/{id}/logs` (SSE live log streaming), and `POST /v1/apps/{id}/suspend` + `.../resume`. Still design targets: real snapshot-restore (`status.snapshotRef`) and automatic idle-TTL suspend.

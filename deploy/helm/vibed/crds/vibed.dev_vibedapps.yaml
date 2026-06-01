@@ -54,6 +54,20 @@ spec:
           spec:
             description: VibedAppSpec is the desired state of a VibedApp.
             properties:
+              egress:
+                description: Egress is the per-app outbound allow-list enforced by
+                  the egress proxy.
+                properties:
+                  allowedHosts:
+                    description: |-
+                      AllowedHosts are the destination hostnames the app may reach, e.g.
+                      "api.openai.com". A leading "*." wildcard matches one or more leading
+                      labels ("*.example.com" matches "a.example.com"). Matched on the CONNECT
+                      host / HTTP Host by the egress proxy.
+                    items:
+                      type: string
+                    type: array
+                type: object
               owner:
                 description: |-
                   Owner is the authenticated user identity (email or OIDC subject) that
@@ -120,6 +134,13 @@ spec:
                       the app source.
                     type: string
                 type: object
+              suspended:
+                description: |-
+                  Suspended is the desired-state toggle for suspend/restore. When true the
+                  controller releases the app's warm-pool pod and parks it in the Suspended
+                  phase; setting it back to false re-claims a pod and re-injects source.
+                  In-memory state is not preserved (release & re-materialize).
+                type: boolean
               ttl:
                 default: 30m
                 description: |-

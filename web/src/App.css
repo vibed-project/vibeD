@@ -312,8 +312,98 @@
   cursor: not-allowed;
 }
 
+/* Header navigation: text button ("How to connect") + icon button (settings
+   gear). Active state matches the focused refresh-btn vocabulary to keep
+   the header visually cohesive. */
+.nav-btn {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.85rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 0.2s;
+}
+
+.nav-btn:hover {
+  background: var(--bg-hover);
+}
+
+.nav-btn-active {
+  background: var(--bg-hover);
+  border-color: var(--accent, var(--text));
+}
+
+.icon-btn {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  width: 2.25rem;
+  height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  transition: background 0.2s;
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+}
+
+.icon-btn-active {
+  background: var(--bg-hover);
+  border-color: var(--accent, var(--text));
+}
+
+/* Sub-page header (Settings, How to connect): back chevron + page title +
+   subtle bottom separator so the new pages read as distinct surfaces
+   without a heavy chrome. */
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.back-btn {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.7rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 0.2s;
+}
+
+.back-btn:hover {
+  background: var(--bg-hover);
+}
+
+.page-title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.page-note {
+  color: var(--text-muted, #888);
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
 .error-banner {
-  background: #1a0505;
+  /* Tinted red — color-mix derives a theme-appropriate background from
+     --red against the current --bg, so the banner stays legible in both
+     dark and light modes without needing a hardcoded fallback colour. */
+  background: color-mix(in srgb, var(--red) 12%, var(--bg));
   border: 1px solid var(--red);
   color: var(--red);
   padding: 0.75rem 1rem;

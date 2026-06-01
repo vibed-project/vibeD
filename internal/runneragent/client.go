@@ -82,6 +82,16 @@ func (c *Client) Healthz(ctx context.Context) error {
 	return c.do(ctx, http.MethodGet, PathHealthz, nil, nil)
 }
 
+// Info returns the image's declared language + runtime-probe result, used by
+// bring-your-own base-image validation.
+func (c *Client) Info(ctx context.Context) (*InfoResponse, error) {
+	var out InfoResponse
+	if err := c.do(ctx, http.MethodGet, PathInfo, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // do performs one control-API request. body, when non-nil, is JSON-encoded;
 // out, when non-nil, receives the decoded JSON response.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {

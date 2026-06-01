@@ -16,7 +16,8 @@ import (
 type Lane string
 
 const (
-	// LaneFast is workerd/Spin: V8/WASM isolates for trusted-language workloads.
+	// LaneFast is workerd + static nginx: V8 isolates / static serving for
+	// trusted-language workloads (Spin/WASM is planned, not yet shipped).
 	LaneFast Lane = "fast"
 	// LaneGeneral is Kata+Firecracker microVM isolation for arbitrary code.
 	LaneGeneral Lane = "general"
@@ -51,6 +52,18 @@ type Source struct {
 
 	// GitRef is an optional git URL + commit used instead of a tarball.
 	GitRef string `json:"gitRef,omitempty"`
+}
+
+// Egress is the per-app outbound network policy. The egress proxy default-
+// denies; only hosts listed here (plus vibeD's system hosts, e.g. the source
+// store) are reachable. Empty AllowedHosts means the app can reach no external
+// hosts at all.
+type Egress struct {
+	// AllowedHosts are the destination hostnames the app may reach, e.g.
+	// "api.openai.com". A leading "*." wildcard matches one or more leading
+	// labels ("*.example.com" matches "a.example.com"). Matched on the CONNECT
+	// host / HTTP Host by the egress proxy.
+	AllowedHosts []string `json:"allowedHosts,omitempty"`
 }
 
 // Runtime selects the lane and template, plus per-deploy runtime overrides.
@@ -94,6 +107,9 @@ type VibedAppSpec struct {
 	// Runtime selects the lane and template.
 	Runtime Runtime `json:"runtime"`
 
+	// Egress is the per-app outbound allow-list enforced by the egress proxy.
+	Egress Egress `json:"egress,omitempty"`
+
 	// Resources caps CPU/memory for the user process.
 	Resources Resources `json:"resources,omitempty"`
 
@@ -102,6 +118,12 @@ type VibedAppSpec struct {
 	//
 	// +kubebuilder:default="30m"
 	TTL string `json:"ttl,omitempty"`
+
+	// Suspended is the desired-state toggle for suspend/restore. When true the
+	// controller releases the app's warm-pool pod and parks it in the Suspended
+	// phase; setting it back to false re-claims a pod and re-injects source.
+	// In-memory state is not preserved (release & re-materialize).
+	Suspended bool `json:"suspended,omitempty"`
 }
 
 // VibedAppStatus is the observed state of a VibedApp.

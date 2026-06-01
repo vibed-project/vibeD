@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -234,5 +237,258 @@ func TestGetListDeleteOwnership(t *testing.T) {
 	}
 	if _, err := svc.Get(context.Background(), "alice", "a"); err != ErrNotFound {
 		t.Errorf("app should be gone after delete")
+	}
+}
+
+// ---- quota + audit wiring ----
+
+type fakeQuota struct {
+	dept    string
+	deny    bool
+	lastNew bool
+}
+
+func (q *fakeQuota) Authorize(_ context.Context, _ string, isNew bool) (string, error) {
+	q.lastNew = isNew
+	if q.deny {
+		return q.dept, &fakeQuotaErr{}
+	}
+	return q.dept, nil
+}
+
+type fakeQuotaErr struct{}
+
+func (e *fakeQuotaErr) Error() string       { return "quota exceeded" }
+func (e *fakeQuotaErr) QuotaExceeded() bool { return true }
+
+type fakeAuditor struct {
+	mu     sync.Mutex
+	events []string // "action:outcome"
+}
+
+func (a *fakeAuditor) Record(_ context.Context, action, _, outcome, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, action+":"+outcome)
+	return nil
+}
+
+// failClosedAuditor models a fail-closed Recorder whose store has gone away:
+// pre-action records (denied/error) are swallowed (the service is already
+// returning an error), but success-path records bubble the error up.
+type failClosedAuditor struct {
+	mu     sync.Mutex
+	events []string
+	err    error // returned only when outcome == "ok"
+}
+
+func (a *failClosedAuditor) Record(_ context.Context, action, _, outcome, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, action+":"+outcome)
+	if outcome == "ok" {
+		return a.err
+	}
+	return nil
+}
+
+func (a *fakeAuditor) got() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.events...)
+}
+
+func TestDeployQuotaDeniesNewApp(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	store := newFakeStore()
+	svc := newService(c, store)
+	aud := &fakeAuditor{}
+	svc.Quota = &fakeQuota{deny: true}
+	svc.Audit = aud
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "denied-app",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	})
+	var qe interface{ QuotaExceeded() bool }
+	if !errors.As(err, &qe) {
+		t.Fatalf("want a quota error, got %v", err)
+	}
+	if store.puts() != 0 {
+		t.Errorf("a rejected deploy must not store source, got %d puts", store.puts())
+	}
+	if got := aud.got(); len(got) != 1 || got[0] != "deploy:denied" {
+		t.Errorf("audit = %v, want [deploy:denied]", got)
+	}
+}
+
+func TestDeployStampsLabelsAndAudits(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	aud := &fakeAuditor{}
+	svc.Quota = &fakeQuota{dept: "platform"}
+	svc.Audit = aud
+	markReady(c, "labeled", "vibed-apps", 20*time.Millisecond)
+
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "labeled",
+		Owner:   "alice@x.io",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+
+	app := &vibedv1.VibedApp{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "labeled", Namespace: "vibed-apps"}, app)
+	if app.Labels[vibedv1.LabelOwner] != vibedv1.SanitizeLabel("alice@x.io") {
+		t.Errorf("owner label = %q", app.Labels[vibedv1.LabelOwner])
+	}
+	if app.Labels[vibedv1.LabelDepartment] != "platform" {
+		t.Errorf("department label = %q, want platform", app.Labels[vibedv1.LabelDepartment])
+	}
+	if got := aud.got(); len(got) != 1 || got[0] != "deploy:ok" {
+		t.Errorf("audit = %v, want [deploy:ok]", got)
+	}
+}
+
+// TestDeployFailsClosedWhenAuditWriteFails locks in the fail-closed contract:
+// when the post-success audit Record returns an error, Deploy surfaces that
+// error to the caller. The VibedApp is already created and the controller
+// will reconcile it; the API just tells the caller "we couldn't durably
+// record this," so they retry (deploy is idempotent) or alert.
+func TestDeployFailsClosedWhenAuditWriteFails(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	store := newFakeStore()
+	svc := newService(c, store)
+	aud := &failClosedAuditor{err: errors.New("audit store: disk full")}
+	svc.Audit = aud
+	markReady(c, "myapp", "vibed-apps", 20*time.Millisecond)
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "myapp",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"go.mod": "module x\n"})),
+	})
+	if err == nil {
+		t.Fatal("Deploy must return error when fail-closed audit write fails")
+	}
+	if !strings.Contains(err.Error(), "audit failed") {
+		t.Errorf("error %q must mention audit failure", err.Error())
+	}
+
+	// Side-effect contract: the VibedApp WAS created (the deploy succeeded
+	// pre-audit). The error tells the caller to retry/alert, not that the
+	// workload is missing.
+	got := &vibedv1.VibedApp{}
+	if gerr := c.Get(context.Background(), types.NamespacedName{Name: "myapp", Namespace: "vibed-apps"}, got); gerr != nil {
+		t.Fatalf("VibedApp should exist despite audit failure: %v", gerr)
+	}
+
+	// And the recorder saw exactly the success record (no pre-action error event).
+	if want := []string{"deploy:ok"}; !reflect.DeepEqual(aud.events, want) {
+		t.Errorf("audit events = %v, want %v", aud.events, want)
+	}
+}
+
+// TestDeployPreActionAuditFailureIsSwallowed covers the inverse of fail-closed:
+// when the deploy is already being denied (quota), the Recorder's error on
+// that pre-action audit must NOT mask the original quota error.
+func TestDeployPreActionAuditFailureIsSwallowed(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Quota = &fakeQuota{deny: true}
+	// Force the audit Record to error on EVERY outcome — pre-action calls
+	// must still swallow it, only the success path bubbles.
+	failAll := &failClosedAuditor{err: errors.New("store down")}
+	failAll.events = nil
+	failAll.err = errors.New("store down")
+	svc.Audit = &alwaysFailAuditor{}
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "myapp",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"go.mod": "module x\n"})),
+	})
+	if err == nil {
+		t.Fatal("expected the quota-exceeded error to propagate")
+	}
+	var qe interface{ QuotaExceeded() bool }
+	if !errors.As(err, &qe) {
+		t.Errorf("error %q does not satisfy QuotaExceeded() — pre-action audit failure masked the original cause", err.Error())
+	}
+}
+
+// alwaysFailAuditor errors on every Record call, regardless of outcome.
+type alwaysFailAuditor struct{}
+
+func (alwaysFailAuditor) Record(context.Context, string, string, string, string) error {
+	return errors.New("audit store down")
+}
+
+func TestRedeployPassesIsNewFalse(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).
+		WithObjects(&vibedv1.VibedApp{
+			ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: "vibed-apps"},
+			Spec:       vibedv1.VibedAppSpec{Owner: "alice"},
+		}).Build()
+	svc := newService(c, newFakeStore())
+	q := &fakeQuota{}
+	svc.Quota = q
+	markReady(c, "existing", "vibed-apps", 20*time.Millisecond)
+
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "existing",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if q.lastNew {
+		t.Error("a redeploy must pass isNew=false to the quota enforcer")
+	}
+}
+
+func TestSetSuspendedTogglesAndAudits(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).
+		WithObjects(&vibedv1.VibedApp{
+			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "vibed-apps"},
+			Spec:       vibedv1.VibedAppSpec{Owner: "alice"},
+		}).Build()
+	svc := newService(c, newFakeStore())
+	aud := &fakeAuditor{}
+	svc.Audit = aud
+
+	app, err := svc.SetSuspended(context.Background(), "alice", "a", true)
+	if err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if !app.Spec.Suspended {
+		t.Error("expected spec.suspended=true after suspend")
+	}
+
+	app, err = svc.SetSuspended(context.Background(), "alice", "a", false)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if app.Spec.Suspended {
+		t.Error("expected spec.suspended=false after resume")
+	}
+
+	if got := aud.got(); len(got) != 2 || got[0] != "suspend:ok" || got[1] != "resume:ok" {
+		t.Errorf("audit = %v, want [suspend:ok resume:ok]", got)
+	}
+}
+
+func TestSetSuspendedOwnership(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).
+		WithObjects(&vibedv1.VibedApp{
+			ObjectMeta: metav1.ObjectMeta{Name: "bobs", Namespace: "vibed-apps"},
+			Spec:       vibedv1.VibedAppSpec{Owner: "bob"},
+		}).Build()
+	svc := newService(c, newFakeStore())
+
+	if _, err := svc.SetSuspended(context.Background(), "alice", "bobs", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-owner SetSuspended = %v, want ErrNotFound", err)
 	}
 }

@@ -1,11 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   ArtifactSummary,
-  TargetInfo,
   WhoAmI,
   fetchArtifacts,
   fetchArtifact,
-  fetchTargets,
   deleteArtifact,
   fetchWhoami,
   fetchOrganization,
@@ -15,19 +13,35 @@ import {
   clearAuthToken,
 } from './api/client'
 import ArtifactList from './components/ArtifactList'
-import DeploymentTargets from './components/DeploymentTargets'
 import LogViewer from './components/LogViewer'
 import VersionHistory from './components/VersionHistory'
 import ShareDialog from './components/ShareDialog'
-import AdminPanel from './components/AdminPanel'
-import SetupGuide from './components/SetupGuide'
 import ShareLinkPage from './components/ShareLinkPage'
+import ThemeToggle from './components/ThemeToggle'
+import SettingsPage from './pages/SettingsPage'
+import ConnectPage from './pages/ConnectPage'
 import './App.css'
 
 // Detect public share link route: /share/<token> or /api/share/<token>
 function getShareToken(): string | null {
   const m = window.location.pathname.match(/^\/(?:api\/)?share\/([a-f0-9]{64})$/)
   return m ? m[1] : null
+}
+
+// Top-level dashboard routes. The share-link path above takes precedence
+// because it renders a standalone, auth-free page. Everything else maps
+// pathname → route name; unknown paths fall through to the dashboard so
+// stale bookmarks don't 404.
+type Route = 'dashboard' | 'settings' | 'connect'
+function routeFromPath(path: string): Route {
+  if (path === '/settings' || path.startsWith('/settings/')) return 'settings'
+  if (path === '/connect' || path.startsWith('/connect/')) return 'connect'
+  return 'dashboard'
+}
+const ROUTE_PATHS: Record<Route, string> = {
+  dashboard: '/',
+  settings: '/settings',
+  connect: '/connect',
 }
 
 function App() {
@@ -37,8 +51,19 @@ function App() {
     return <ShareLinkPage token={shareToken} />
   }
 
+  const [route, setRoute] = useState<Route>(() => routeFromPath(window.location.pathname))
+  const navigate = useCallback((next: Route) => {
+    if (next === route) return
+    window.history.pushState({}, '', ROUTE_PATHS[next])
+    setRoute(next)
+  }, [route])
+  useEffect(() => {
+    const onPop = () => setRoute(routeFromPath(window.location.pathname))
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
   const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([])
-  const [targets, setTargets] = useState<TargetInfo[]>([])
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null)
   const [versionArtifactId, setVersionArtifactId] = useState<string | null>(null)
   const [shareArtifactId, setShareArtifactId] = useState<string | null>(null)
@@ -111,10 +136,9 @@ function App() {
     try {
       setLoading(true)
       setError(null)
-      const [result, tgts] = await Promise.all([fetchArtifacts(), fetchTargets()])
+      const result = await fetchArtifacts()
       setArtifacts(result.artifacts)
       setTotalArtifacts(result.total)
-      setTargets(tgts)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data')
     } finally {
@@ -192,7 +216,7 @@ function App() {
     <div className="app">
       <header className="header">
         <div className="header-left">
-          <h1 className="logo">
+          <h1 className="logo" onClick={() => navigate('dashboard')} style={{ cursor: 'pointer' }}>
             <img src="/logo.png" alt="vibeD" className="logo-img" />
             vibeD
           </h1>
@@ -200,6 +224,23 @@ function App() {
           {orgName && <span className="org-badge">{orgName}</span>}
         </div>
         <div className="header-right">
+          <button
+            type="button"
+            className={`nav-btn${route === 'connect' ? ' nav-btn-active' : ''}`}
+            onClick={() => navigate('connect')}
+          >
+            How to connect
+          </button>
+          <ThemeToggle />
+          <button
+            type="button"
+            className={`icon-btn${route === 'settings' ? ' icon-btn-active' : ''}`}
+            onClick={() => navigate('settings')}
+            aria-label="Settings"
+            title="Settings"
+          >
+            <span aria-hidden="true">⚙</span>
+          </button>
           {currentUser && (
             <div className="profile-wrapper">
               <button className="profile-trigger" onClick={() => setShowProfile(!showProfile)}>
@@ -277,42 +318,42 @@ function App() {
         </div>
       )}
 
-      <main className="main">
-        <section className="section">
-          <SetupGuide />
-        </section>
+      {route === 'settings' && (
+        <SettingsPage
+          currentUser={currentUser}
+          isAdmin={isAdmin}
+          onBack={() => navigate('dashboard')}
+        />
+      )}
 
-        <section className="section">
-          <DeploymentTargets targets={targets} />
-        </section>
+      {route === 'connect' && (
+        <ConnectPage onBack={() => navigate('dashboard')} />
+      )}
 
-        {isAdmin && (
+      {route === 'dashboard' && (
+        <main className="main">
           <section className="section">
-            <AdminPanel currentUser={currentUser} />
+            <h2 className="section-title">
+              Deployed Artifacts
+              <span className="count">{artifacts.length}</span>
+            </h2>
+            <ArtifactList
+              artifacts={artifacts}
+              currentUser={currentUser}
+              isAdmin={isAdmin}
+              onViewLogs={(id) => setSelectedArtifactId(id)}
+              onViewVersions={(id) => setVersionArtifactId(id)}
+              onShare={(id) => setShareArtifactId(id)}
+              onDelete={handleDelete}
+            />
+            {artifacts.length < totalArtifacts && (
+              <button className="load-more-btn" onClick={loadMore}>
+                Load more ({artifacts.length} of {totalArtifacts})
+              </button>
+            )}
           </section>
-        )}
-
-        <section className="section">
-          <h2 className="section-title">
-            Deployed Artifacts
-            <span className="count">{artifacts.length}</span>
-          </h2>
-          <ArtifactList
-            artifacts={artifacts}
-            currentUser={currentUser}
-            isAdmin={isAdmin}
-            onViewLogs={(id) => setSelectedArtifactId(id)}
-            onViewVersions={(id) => setVersionArtifactId(id)}
-            onShare={(id) => setShareArtifactId(id)}
-            onDelete={handleDelete}
-          />
-          {artifacts.length < totalArtifacts && (
-            <button className="load-more-btn" onClick={loadMore}>
-              Load more ({artifacts.length} of {totalArtifacts})
-            </button>
-          )}
-        </section>
-      </main>
+        </main>
+      )}
 
       {selectedArtifactId && (
         <LogViewer

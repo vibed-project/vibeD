@@ -12,6 +12,34 @@
   --red: #ef4444;
   --blue: #3b82f6;
   --radius: 8px;
+  color-scheme: dark;
+}
+
+/* Light theme: opt in by setting data-theme="light" on the <html> root.
+   The ThemeToggle component toggles + persists this; first paint reads
+   the saved preference, falling back to prefers-color-scheme. Values
+   keep the dark palette's intent (cool, slight purple cast on chrome)
+   so the brand feels consistent. */
+[data-theme="light"] {
+  --bg: #f5f6fa;
+  --bg-card: #ffffff;
+  --bg-hover: #eceef5;
+  --border: #d6d9e2;
+  --text: #1a1d27;
+  --text-muted: #6b7080;
+  --accent: #5851e0;
+  --accent-hover: #4a44c7;
+  --green: #15803d;
+  --yellow: #b45309;
+  --red: #b91c1c;
+  --blue: #1d4ed8;
+  color-scheme: light;
+}
+
+body {
+  /* Smooth the theme flip — short enough to feel instant, long enough
+     to not jar the eye. */
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
 * {

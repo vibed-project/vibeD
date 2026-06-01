@@ -1,0 +1,72 @@
+/* Theme toggle pill — sun on the left, moon on the right, a sliding knob
+   covers the active half. The knob is the visual "selected" indicator;
+   the icons stay visible underneath for affordance. */
+.theme-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 3.75rem;
+  height: 2.25rem;
+  padding: 0 0.45rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.theme-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.theme-toggle-icon {
+  position: relative;
+  z-index: 1;
+  width: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: color 0.2s;
+  pointer-events: none;
+}
+
+.theme-toggle-icon-light {
+  /* Sun glyph — slightly smaller than the moon glyph to balance optical
+     weight in the pill. */
+  font-size: 0.95rem;
+}
+
+.theme-toggle-icon-dark {
+  font-size: 1.05rem;
+}
+
+/* Knob slides to cover the active icon. */
+.theme-toggle-knob {
+  position: absolute;
+  top: 50%;
+  left: 0.18rem;
+  width: 1.7rem;
+  height: 1.7rem;
+  background: var(--accent);
+  border-radius: 50%;
+  transform: translateY(-50%);
+  transition: left 0.2s ease, background 0.2s;
+  z-index: 0;
+}
+
+.theme-toggle-light .theme-toggle-knob {
+  /* Pill width 3.75rem, padding 0.45rem each side, knob 1.7rem →
+     right edge = 3.75 - 0.18 - 1.7 = 1.87rem from left. */
+  left: 1.87rem;
+}
+
+.theme-toggle-light .theme-toggle-icon-light,
+.theme-toggle-dark .theme-toggle-icon-dark {
+  /* The icon under the knob gets a contrasting color so the active glyph
+     reads against the accent fill. */
+  color: #ffffff;
+}

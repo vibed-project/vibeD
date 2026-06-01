@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/pkg/api"
 
@@ -51,14 +52,20 @@ type rollbackArtifactOutput struct {
 	Message    string `json:"message"`
 }
 
-func registerRollbackTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
+func registerRollbackTool(server *mcp.Server, orch *orchestrator.Orchestrator, auditRec *audit.Recorder) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "rollback_artifact",
 		Description: "Roll back a deployed artifact to a previous version. This redeploys the artifact using the image and configuration from the specified version snapshot. A new version entry is created for the rollback (history is not rewritten).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input rollbackArtifactInput) (*mcp.CallToolResult, *rollbackArtifactOutput, error) {
 		result, err := orch.Rollback(ctx, input.ArtifactID, input.Version)
 		if err != nil {
+			_ = auditRec.Record(ctx, "rollback", input.ArtifactID, "error", err.Error())
 			return nil, nil, err
+		}
+		// Success-path audit: fail-closed Recorder bubbles up so the MCP
+		// caller learns the rollback isn't durably logged and can retry.
+		if rerr := auditRec.Record(ctx, "rollback", input.ArtifactID, "ok", fmt.Sprintf("to v%d", input.Version)); rerr != nil {
+			return nil, nil, fmt.Errorf("rollback succeeded but audit failed: %w", rerr)
 		}
 
 		// Fetch the artifact to get the new version number
