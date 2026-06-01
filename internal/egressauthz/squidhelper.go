@@ -58,8 +58,23 @@ func RunSquidHelper(ctx context.Context, in io.Reader, out io.Writer, authzURL s
 	return sc.Err()
 }
 
-// parseHelperLine handles both the no-concurrency ("SRC URI") and concurrency
-// ("ID SRC URI") forms of Squid's helper protocol.
+// parseHelperLine extracts the source IP and destination URI/host from one
+// line of Squid's external_acl helper input. The helper is configured
+// without concurrency=N (no `ID` prefix); the wire format Squid sends is
+//
+//	<%SRC> <%DST> [extra fields…]
+//
+// In practice Squid 5.x/6.x appends a trailing "-" kvpair-style terminator,
+// so the line we see has THREE space-separated fields:
+//
+//	"10.244.0.13 vibed.vibed-system.svc.cluster.local -"
+//
+// Earlier this function treated 3+ fields as concurrency mode and read
+// (id, src, uri) = (f[0], f[1], f[2]) — which silently put the real client
+// IP in `id` and the destination host in `src`, then read "-" as the URI
+// and asked authz "is host=- allowed for src=<hostname>?", denying every
+// request. Always take f[0]/f[1] and ignore the rest; concurrency support
+// would need explicit opt-in (it's not used by vibeD today).
 func parseHelperLine(line string) (id, src, uri string) {
 	f := strings.Fields(line)
 	switch len(f) {
@@ -67,10 +82,8 @@ func parseHelperLine(line string) (id, src, uri string) {
 		return "", "", ""
 	case 1:
 		return "", f[0], ""
-	case 2:
-		return "", f[0], f[1]
 	default:
-		return f[0], f[1], f[2]
+		return "", f[0], f[1]
 	}
 }
 
