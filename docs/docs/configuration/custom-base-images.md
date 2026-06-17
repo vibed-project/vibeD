@@ -24,7 +24,7 @@ Your image must satisfy the contract below. The simplest path is to start `FROM`
 
 ```dockerfile
 # Stage 1: grab a statically-linked vibed-agent (or COPY one you've vendored).
-FROM ghcr.io/vibed-project/vibed-runner-node:0.3.1 AS agent
+FROM ghcr.io/vibed-project/vibed-runner-node:0.4.1 AS agent
 
 # Stage 2: your hardened base.
 FROM your-registry/hardened-node:24

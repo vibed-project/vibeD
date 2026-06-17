@@ -10,11 +10,6 @@ import (
 
 // Metrics holds all vibeD Prometheus metrics.
 type Metrics struct {
-	// Build metrics
-	BuildsTotal    *prometheus.CounterVec
-	BuildDuration  *prometheus.HistogramVec
-	BuildsInFlight prometheus.Gauge
-
 	// Deploy metrics
 	DeploysTotal   *prometheus.CounterVec
 	DeployDuration *prometheus.HistogramVec
@@ -56,25 +51,6 @@ var (
 func New() *Metrics {
 	once.Do(func() {
 		instance = &Metrics{
-			BuildsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
-				Namespace: "vibed",
-				Name:      "builds_total",
-				Help:      "Total number of container image builds.",
-			}, []string{"status", "language"}),
-
-			BuildDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
-				Namespace: "vibed",
-				Name:      "build_duration_seconds",
-				Help:      "Duration of container image builds in seconds.",
-				Buckets:   []float64{5, 10, 30, 60, 120, 300, 600},
-			}, []string{"status", "language"}),
-
-			BuildsInFlight: promauto.NewGauge(prometheus.GaugeOpts{
-				Namespace: "vibed",
-				Name:      "builds_in_flight",
-				Help:      "Number of builds currently in progress.",
-			}),
-
 			DeploysTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 				Namespace: "vibed",
 				Name:      "deploys_total",

@@ -49,15 +49,12 @@ These require a Kind cluster (`make dev` or `make test-integration-setup`). Tagg
 | Feature | Test File | Tests | What's Covered |
 |---------|-----------|-------|----------------|
 | **K8s Deployer** | `internal/deployer/kubernetes_integration_test.go` | 7 | Deploy, update, delete, logs, URL, full lifecycle |
-| **Knative Deployer** | `internal/deployer/knative_integration_test.go` | 5 | Deploy, update, delete, full lifecycle (skipped if no Knative CRDs) |
 | **Orchestrator** | `internal/orchestrator/orchestrator_integration_test.go` | 11 | Deploy, list, filter, update, delete, targets, invalid input, duplicates, build failures, logs |
-| **Promote (Fast Path)** | `internal/orchestrator/promote_integration_test.go` | 4 | Happy path swap (preview → built), reject non-preview, build-failure restores preview verbatim, 5 concurrent promotes |
 | **HTTP API** | `internal/frontend/handler_integration_test.go` | 3 | List artifacts, list targets, 404 for missing artifact |
 | **Authentication** | `internal/auth/auth_integration_test.go` | 8 | Valid/invalid keys, missing token, skip paths, env var keys |
 | **Health Checks** | `internal/health/health_integration_test.go` | 7 | Liveness, readiness, component details, not-ready state |
-| **Environment Detection** | `internal/environment/detector_integration_test.go` | 5 | K8s/Knative detection, target selection |
+| **Environment Detection** | `internal/environment/detector_integration_test.go` | 5 | K8s environment detection, target selection |
 | **ConfigMap Store** | `internal/store/configmap_integration_test.go` | 9 | CRUD, list, filter, duplicates (K8s-backed store) |
-| **Image Builder** | `internal/builder/builder_integration_test.go` | 1 | Static site buildpack (slow, skipped with `-short`) |
 | **HTTP Metrics** | `internal/metrics/middleware_integration_test.go` | 2 | Request recording, path normalization |
 
 ### Not Yet Automated — Manual Test Procedures
@@ -167,26 +164,6 @@ done
 | 5 | Metadata endpoint | `GET /.well-known/oauth-protected-resource` | Returns JSON with authorization_servers |
 
 **Automation opportunity:** Use a test JWT library to generate tokens with a mock JWKS endpoint. Verify middleware accepts/rejects correctly.
-
----
-
-#### Insecure Registry
-
-| # | Test | Steps | Expected |
-|---|------|-------|----------|
-| 1 | HTTP push | Set `registry.insecure: true` and `buildah.insecure: true`. Deploy Go/Node app. | Build succeeds, image pushed to HTTP registry |
-| 2 | HTTPS default | Set `insecure: false` with HTTP-only registry | Build fails: "http: server gave HTTP response to HTTPS client" |
-
-**Automation opportunity:** Integration test in Kind cluster with the in-cluster HTTP registry.
-
----
-
-#### Knative Gateway Port
-
-| # | Test | Steps | Expected |
-|---|------|-------|----------|
-| 1 | Port 80 (default) | Set `knative.gatewayPort: 80`. Deploy. | URL has no port: `http://app.default.localhost` |
-| 2 | Custom port | Set `knative.gatewayPort: 31080`. Deploy. | URL includes port: `http://app.default.localhost:31080` |
 
 ---
 

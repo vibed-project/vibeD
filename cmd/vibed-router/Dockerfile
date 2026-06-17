@@ -1,6 +1,6 @@
 # vibed-router image. Build context MUST be the repo root:
 #   podman build -f cmd/vibed-router/Dockerfile -t vibed-router:dev .
-FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 ENV GOTOOLCHAIN=auto GO111MODULE=on

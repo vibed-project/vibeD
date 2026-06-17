@@ -204,7 +204,7 @@ enable-node-pool: load-runner-images
 	@kubectl rollout restart -n vibed-system deploy/vibed-controller
 	@echo "node-24 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
 
-## Runner Images (Instant Preview fast path — see FAST-PATH.md)
+## Runner Images (warm-pool runner images for the general/fast lanes)
 ## Build context is the repo root: the Dockerfiles compile the runner agent
 ## from the Go source tree. Built once, not per request.
 

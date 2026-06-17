@@ -77,12 +77,12 @@ export default function Home() {
                 description="Expose deployment tools via the Model Context Protocol. Any AI coding tool (Claude, Gemini, ChatGPT) can deploy directly to your infrastructure."
               />
               <Feature
-                title="Multi-Target"
-                description="Deploy to Knative for serverless, plain Kubernetes for traditional workloads, or wasmCloud for WebAssembly artifacts."
+                title="Two Lanes, Auto-Selected"
+                description="A deterministic classifier routes each upload to the fast lane (workerd V8 isolates / static nginx) or the general lane (Kata + Firecracker microVM) for hardware-grade isolation."
               />
               <Feature
-                title="Zero Config Builds"
-                description="Buildah auto-generates Dockerfiles per language and builds optimized container images in-cluster. No Dockerfiles needed."
+                title="No Build on the Deploy Path"
+                description="Source is injected into a pre-booted, warm sandbox and started in seconds. Template images are built by CI on template changes, never per deploy."
               />
             </div>
           </div>

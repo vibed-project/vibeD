@@ -39,10 +39,12 @@ rules:
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
 
-  # --- Build Jobs: Buildah container image builds ---
+  # --- Jobs: the garbage collector sweeps orphaned Jobs left by earlier
+  #     deploys. vibeD no longer creates Jobs itself (the in-cluster image
+  #     builder was removed in v0.4.1), so no "create" verb is needed.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "delete"]
 
   # --- agent-sandbox: BYOC + Sandbox CR target, and the Instant Preview
   #     fast-path warm runner pool. Without these the SandboxDeployer 403s

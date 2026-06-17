@@ -9,7 +9,7 @@ COPY internal/frontend/static/ /app/internal/frontend/static/
 RUN npm run build
 
 # Stage 2: Build Go binary (cross-compile natively, no QEMU needed)
-FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH

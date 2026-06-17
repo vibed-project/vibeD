@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # update_artifact
 
-Update an existing deployed artifact with new source files. Triggers a rebuild and redeployment. A new version snapshot is created automatically.
+Update an existing deployed artifact with new source files. vibeD stores the new source tarball and re-injects it into the app's warm sandbox — there is no per-deploy container build. A new version snapshot is created automatically.
 
 ## Input Schema
 
@@ -37,10 +37,7 @@ Update an existing deployed artifact with new source files. Triggers a rebuild a
   "artifact_id": "a1b2c3d4",
   "name": "my-portfolio",
   "url": "http://my-portfolio.default.localhost:31080",
-  "target": "knative",
-  "status": "running",
-  "image_ref": "kind-registry:5000/vibed-artifacts/my-portfolio:v2",
-  "version": 2
+  "status": "running"
 }
 ```
 
@@ -51,5 +48,5 @@ Update an existing deployed artifact with new source files. Triggers a rebuild a
 3. **Re-injects** the new source into the app's sandbox — no rebuild
 
 :::note
-Redeploy (`POST /v1/apps/{id}/redeploy`) is not yet fully wired in v0.3.x. The supported update path is to deploy again under the same name.
+Redeploy (`POST /v1/apps/{id}/redeploy`) is not yet fully wired. The supported update path is to deploy again under the same name.
 :::

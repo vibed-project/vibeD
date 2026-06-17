@@ -22,10 +22,9 @@ const statusConfig: Record<string, { color: string; label: string }> = {
 }
 
 const targetLabels: Record<string, string> = {
-  knative: 'Knative',
   kubernetes: 'Kubernetes',
   sandbox: 'Sandbox',
-  runner: 'Instant Preview',
+  runner: 'Fast lane',
 }
 
 function timeAgo(dateStr: string): string {
@@ -70,9 +69,6 @@ export default function ArtifactCard({ artifact, currentUser, isAdmin, onViewLog
           </span>
           {artifact.version > 0 && (
             <span className="version-badge">v{artifact.version}</span>
-          )}
-          {artifact.mode === 'preview' && (
-            <span className="mode-badge" title="Ephemeral fast-path preview — promote for a durable build">preview</span>
           )}
           {showOwner && artifact.owner_id && (
             <span className="owner-badge">{artifact.owner_id}</span>

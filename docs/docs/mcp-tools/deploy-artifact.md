@@ -13,7 +13,7 @@ The primary tool for deploying web artifacts to the cluster.
 | `name` | string | Yes | Unique DNS-safe name (lowercase, hyphens OK) |
 | `files` | object | Yes | Map of relative file paths to file content. **Tip:** Provide a `Dockerfile` at the root to completely customize the build. |
 | `language` | string | No | Language hint (nodejs, python, go, static) |
-| `target` | string | No | Deployment target (auto, knative, sandbox, kubernetes, runner) |
+| `target` | string | No | Deployment target (auto, sandbox, kubernetes) |
 | `env_vars` | object | No | Environment variables for the artifact |
 | `secret_refs` | object | No | Map of env var name to K8s Secret reference (`secret-name:key`) |
 | `port` | number | No | Port the app listens on (auto-detected) |
@@ -39,9 +39,7 @@ The primary tool for deploying web artifacts to the cluster.
   "artifact_id": "a1b2c3d4e5f6g7h8",
   "name": "my-portfolio",
   "url": "http://my-portfolio.default.localhost",
-  "target": "knative",
-  "status": "running",
-  "image_ref": "vibed-artifacts/my-portfolio:latest"
+  "status": "running"
 }
 ```
 

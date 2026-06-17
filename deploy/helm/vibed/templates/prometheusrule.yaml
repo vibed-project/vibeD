@@ -12,22 +12,6 @@ spec:
   groups:
     - name: vibed.rules
       rules:
-        - alert: VibeDHighConcurrentBuilds
-          expr: vibed_builds_in_flight > 5
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "Too many concurrent builds ({{ "{{ $value }}" }})"
-
-        - alert: VibeDHighBuildFailureRate
-          expr: rate(vibed_builds_total{status="error"}[5m]) > 0.1
-          for: 10m
-          labels:
-            severity: critical
-          annotations:
-            summary: "Build failure rate is elevated"
-
         - alert: VibeDHighDeployFailureRate
           expr: rate(vibed_deploys_total{status="error"}[5m]) > 0.1
           for: 10m
@@ -43,14 +27,6 @@ spec:
             severity: warning
           annotations:
             summary: "High number of active artifacts ({{ "{{ $value }}" }})"
-
-        - alert: VibeDSlowBuilds
-          expr: histogram_quantile(0.99, rate(vibed_build_duration_seconds_bucket[10m])) > 300
-          for: 15m
-          labels:
-            severity: warning
-          annotations:
-            summary: "P99 build duration exceeds 5 minutes"
 
         - alert: VibeDGCHighCleanupRate
           expr: rate(vibed_gc_resources_cleaned_total[1h]) > 10

@@ -39,16 +39,6 @@ deployment:
   preferredTarget: "auto"
   namespace: "default"
 
-builder:
-  engine: "buildah"
-  image: "paketobuildpacks/builder-jammy-base:latest"
-  pullPolicy: "if-not-present"
-  containerRuntime: "auto"
-  buildah:
-    image: "quay.io/buildah/stable:latest"
-    timeout: "10m"
-    insecure: true
-
 storage:
   backend: "local"
   local:
@@ -73,7 +63,3 @@ registry:
 
 store:
   backend: "memory"
-
-knative:
-  domainSuffix: "localhost"
-  ingressClass: "kourier.ingress.networking.knative.dev"

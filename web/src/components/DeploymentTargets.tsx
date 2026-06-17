@@ -32,8 +32,8 @@ export default function DeploymentTargets({ targets }: Props) {
 
 function formatTarget(name: string): string {
   switch (name) {
-    case 'knative': return 'Knative Serving'
     case 'kubernetes': return 'Kubernetes'
+    case 'sandbox': return 'Sandbox'
     default: return name
   }
 }

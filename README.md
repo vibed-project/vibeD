@@ -4,32 +4,34 @@
 
 **Workload orchestrator for GenAI-generated artifacts.**
 
-vibeD bridges AI coding tools (Claude, Gemini, ChatGPT) with your own Kubernetes infrastructure. It exposes an [MCP server](https://modelcontextprotocol.io/) that AI tools call to deploy websites and web apps directly to your cluster — keeping code on your infrastructure, not in third-party sandboxes.
+vibeD bridges AI coding tools (Claude, Gemini, ChatGPT) with your own Kubernetes infrastructure. It exposes an [MCP server](https://modelcontextprotocol.io/) that AI tools call to deploy websites and web apps directly to your cluster — getting AI-generated code to a live URL in **seconds**, with hardware-grade isolation, and **without building a container on the deploy path**.
 
 ![](./media/gif/hello-world.gif)
 
 ## Features
 
-- **MCP Server** — 15 tools for deploying, updating, listing, promoting, and deleting artifacts
-- **Instant static deploys** — HTML/CSS/JS files deploy in milliseconds via ConfigMap + nginx (no build step)
-- **Instant Preview fast path** — Python/Node apps with pre-baked dependencies skip the build entirely: source is injected into a warm pooled runner pod, then promoted to a durable build on demand
-- **Buildah builder** — Auto-generates Dockerfiles for Node.js, Python, and Go apps; builds container images in-cluster via Kubernetes Jobs
-- **Multi-target deployment** — Knative Serving (serverless) or plain Kubernetes (Deployment + Service)
-- **Auto-detection** — Discovers available deployment targets by checking cluster CRDs
+- **MCP Server** — 18 tools for deploying, updating, listing, rolling back, sharing, and deleting artifacts, plus user/department management
+- **No build on the deploy path** — source is injected into a pre-booted, warm sandbox; template images are built by CI on template changes, never per deploy
+- **Two lanes, auto-selected** — a deterministic classifier inspects file names and routes each upload to the **fast lane** (workerd V8 isolates or static nginx) or the **general lane** (Kata + Firecracker microVM for arbitrary Node/Python/Go/any-image code)
+- **Built on agent-sandbox** — reuses [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) (`Sandbox`, `SandboxTemplate`, `SandboxClaim`, `SandboxWarmPool`); vibeD adds one CRD, `VibedApp`
+- **Warm pools** — pre-booted idle sandboxes per template, so a deploy never waits on a cold boot or an image build
+- **Caddy routing** — vibed-router programs Caddy routes per app; wildcard DNS-01 TLS in production, plain HTTP in dev
 - **Web dashboard** — React UI showing all deployed artifacts with status and URLs
-- **Multiple storage backends** — Local filesystem, GitHub, or GitLab
-- **Per-user isolation** — Route different users to separate storage repos
-- **Authentication** — API key or OAuth with optional TLS
-- **Helm charts** — Production-ready deployment including RBAC, ConfigMap store, and Prometheus metrics
+- **Multiple storage backends** — local filesystem, GitHub, or GitLab for source files; S3/MinIO or in-cluster served blobs for the source tarball store
+- **Per-user isolation** — route different users to separate storage repos
+- **Authentication** — API key or OIDC, with optional TLS
+- **Helm charts** — production-ready deployment including RBAC, the control plane, warm pools, and Prometheus metrics
 
 ## Quick Start
 
 ### Prerequisites
 
 - Go 1.23+ (with `GOTOOLCHAIN=auto`) or Go 1.25+
-- A Kubernetes cluster (Kind for local dev, or any production cluster)
-- Container runtime (Docker or Podman)
+- A Kubernetes cluster — Kind for local dev (`make dev` sets it up), or any 1.29+ cluster for production
+- Container runtime (Podman or Docker)
 - kubectl configured to access your cluster
+
+For production you also need [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) (v0.4.5+), a Kata RuntimeClass (`kata-qemu` or `kata-fc`), a sandbox node pool, and object storage — see the [installation guide](docs/docs/getting-started/installation.md).
 
 ### Build
 
@@ -50,31 +52,19 @@ make build
 ```bash
 ./bin/vibed --config vibed.yaml --transport http
 # Dashboard: http://localhost:8080
-# MCP endpoint: http://localhost:8080/mcp/
+# MCP endpoint: http://localhost:8080/mcp
 ```
 
-### Deploy to a Kind Cluster
+### Local Cluster (Kind)
 
 ```bash
-# Create Kind cluster + install Knative + build vibeD
+# Stands up a Kind cluster, installs agent-sandbox + the testbed,
+# builds and loads the vibed/controller/router/static-nginx images,
+# and helm-installs vibeD with the dev overlay.
 make dev
-
-# Build container image and load into Kind
-make load-image
-
-# Install with Helm
-helm install vibed deploy/helm/vibed/ \
-  --namespace vibed-system \
-  --create-namespace
-
-# Port-forward to access vibeD
-kubectl port-forward svc/vibed 8080:8080 -n vibed-system
-
-# Port-forward to access deployed artifacts
-kubectl port-forward svc/kourier 8081:80 -n kourier-system
 ```
 
-Deployed artifacts are accessible at `http://<name>.default.localhost:8081`.
+When it finishes, the dashboard is at `http://localhost:8080/` and deployed apps are reachable at `http://<id>.localhost/` — no `kubectl port-forward` needed (Kind's `extraPortMappings` bridge the host ports). The dev install enables only the `static-nginx` warm pool; enable others with `make enable-python-pool` / `make enable-node-pool`. See [Local development](docs/docs/getting-started/local-dev.md) for details.
 
 ## Connect to Claude Desktop
 
@@ -95,14 +85,14 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ### Option B: HTTP (vibeD runs in-cluster)
 
-With vibeD deployed to your cluster and port-forwarded to `localhost:8080`:
+With vibeD deployed and reachable at `localhost:8080`:
 
 ```json
 {
   "mcpServers": {
     "vibed": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:8080/mcp/"]
+      "args": ["mcp-remote", "http://localhost:8080/mcp"]
     }
   }
 }
@@ -112,115 +102,132 @@ Then ask Claude: *"Create a simple portfolio website and deploy it using vibeD"*
 
 ## MCP Tools
 
-vibeD exposes 15 MCP tools. The core deploy lifecycle:
+vibeD exposes 18 MCP tools. The core deploy lifecycle:
 
 | Tool | Description |
 |------|-------------|
 | `deploy_artifact` | Deploy source files as a web artifact |
 | `update_artifact` | Update an existing artifact with new files |
-| `promote_artifact` | Promote a fast-path preview into a durable build |
 | `list_artifacts` | List all deployed artifacts with status |
 | `get_artifact_status` | Get detailed status for one artifact |
 | `get_artifact_logs` | Retrieve pod logs for debugging |
+| `list_versions` | List the version history of an artifact |
+| `rollback_artifact` | Roll an artifact back to a previous version |
 | `delete_artifact` | Stop and remove an artifact |
-| `list_deployment_targets` | Show available deployment backends |
 
-Plus version (`list_versions`, `rollback_artifact`), sharing (`share_artifact`,
-`unshare_artifact`), and share-link tools — see the [docs](https://vibed-project.github.io/vibeD/docs/mcp-tools/overview).
+Plus `list_deployment_targets`, sharing (`share_artifact`, `unshare_artifact`,
+and the share-link tools), and user/department management — see the
+[docs](https://vibed-project.github.io/vibeD/docs/mcp-tools/overview).
 
 ## How It Works
 
 ```
-AI Tool (Claude, Gemini, etc.)
+AI Tool (Claude, Gemini, ChatGPT)
     │
-    │  MCP Protocol (deploy_artifact)
+    │  MCP / REST  →  deploy_artifact (gzipped source tarball)
     ▼
-┌─────────┐
-│  vibeD   │  MCP Server + Dashboard
-└────┬─────┘
-     │
-     ├── Static HTML/CSS/JS? → ConfigMap + nginx (instant)
-     │
-     ├── Python/Node, pre-baked deps? → inject into a warm runner pod
-     │                                  (Instant Preview — no build)
-     │                                        │ promote
-     │                                        ▼
-     └── App code? ───────────────────→ Buildah Job → Container Image
-                                                │
-                             ┌──────────────────┤
-                             ▼                  ▼
-                       Knative Serving    Kubernetes Deployment
-                       (serverless)       (always available)
+┌──────────────┐
+│    vibed     │  HTTP server · MCP · dashboard
+└──────┬───────┘
+       │  1. classify source by file names → (lane, template)
+       │  2. store the source blob (s3 in prod, served in dev)
+       │  3. create a VibedApp CR
+       ▼
+┌──────────────────┐
+│ vibed-controller │  claims a pre-booted sandbox from the matching warm
+└──────┬───────────┘  pool, then POSTs the source URL to its vibed-agent
+       │
+       ▼  vibed-agent (PID 1 in the sandbox) pulls + extracts + starts the app
+┌────────────────────────────┬──────────────────────────────────┐
+│  fast lane                 │  general lane                     │
+│  workerd V8 isolates       │  Kata + Firecracker microVM       │
+│  or static-nginx           │  (Node, Python, Go, any image)    │
+└────────────────────────────┴──────────────────────────────────┘
+       │
+       ▼  per-app Service (follows the pod, so the route never goes stale)
+┌──────────────┐
+│ vibed-router │  watches VibedApp status, programs Caddy routes
+└──────┬───────┘
+       ▼
+   Caddy reverse proxy  →  https://<id>.<domain>
 ```
 
-**Static files** (HTML, CSS, JS under 900KB) are stored in a Kubernetes ConfigMap and served by nginx — no container build, deploys in milliseconds.
+**The deploy path never builds an image.** A deterministic [classifier](docs/docs/concepts/lanes-and-templates.md) reads only file *names* + `package.json` keys (well under 50 ms) and picks a `(lane, template)`. The controller claims a warm, pre-booted sandbox, and `vibed-agent` injects the source into `/workspace` and starts the process. If everything is warm this completes in seconds.
 
-**Instant Preview** — Python/Node apps whose dependencies are all pre-baked into the runner image skip the build: their source is injected into a warm, pre-running pooled pod. The preview is ephemeral; `promote_artifact` runs the real build for a durable artifact. See the [Instant Preview docs](https://vibed-project.github.io/vibeD/docs/concepts/instant-preview).
+**Fast lane** — static sites (HTML/CSS/JS, served by an nginx sandbox) and small trusted-language workers (workerd V8 isolates). Sub-second cold start.
 
-**Application code** (Node.js, Python, Go) that needs a build gets an auto-generated Dockerfile, built into a container image by a Buildah Kubernetes Job, and deployed to the selected target.
+**General lane** — arbitrary code (Node.js, Python, Go, or any base image) runs in a Kata + Firecracker microVM for hardware-grade isolation. New runtime/dependency combinations are handled by an async template builder that refreshes the warm pool out of band — never on the deploy path.
+
+For the full picture see the [architecture docs](docs/docs/concepts/architecture.md).
 
 ## Configuration
 
-vibeD is configured via `vibed.yaml`. Key sections:
+vibeD has two layers: the app config (`vibed.yaml`, rendered into a ConfigMap by the chart) and the Helm values (cluster topology). Key app-config sections:
 
 ```yaml
 server:
-  transport: "http"        # stdio | http | both
+  transport: "http"            # stdio | http
   httpAddr: ":8080"
 
-deployment:
-  preferredTarget: "auto"  # auto | knative | kubernetes
-  namespace: "default"
+auth:
+  enabled: false               # enable before exposing the API
+  mode: "apikey"               # apikey | oidc
 
-builder:
-  engine: "buildah"
-  buildah:
-    image: "quay.io/buildah/stable:latest"
-    timeout: "10m"
+deployment:
+  appsNamespace: "vibed-apps"  # where /v1 creates VibedApps + warm pools live
+  readyTimeout: "10m"          # how long a deploy waits for Ready before failing
 
 storage:
-  backend: "local"         # local | github | gitlab
+  backend: "local"             # local | github | gitlab  (source files)
+  tarball:
+    backend: "served"          # served (DEV only) | s3 (PRODUCTION)
 
 store:
-  backend: "memory"        # memory | configmap
-
-knative:
-  domainSuffix: "localhost"
+  backend: "sqlite"            # sqlite | configmap
 ```
 
-Every field has an environment variable override (e.g. `VIBED_SERVER_TRANSPORT`). See [Configuration Reference](docs/docs/configuration/config-reference.md) for the full list.
+Most fields have an environment override (e.g. `VIBED_SERVER_TRANSPORT`). Cluster topology — namespaces, the Kata RuntimeClass, NetworkPolicy, controller/router/Caddy, and the warm pools — is set through Helm values. See the [Configuration Reference](docs/docs/configuration/config-reference.md) for the full list.
 
 ## Project Structure
 
 ```
-cmd/vibed/          Main entry point
+cmd/
+  vibed/              HTTP server, MCP, dashboard, classifier
+  vibed-controller/   VibedApp reconciler (claims sandboxes, injects source)
+  vibed-router/       Programs Caddy routes from VibedApp status
+  vibed-agent/        PID 1 inside every sandbox (pulls + starts the app)
+  vibed-egress-authz/ Egress authorization for sandboxes
+  vibed-workerd-loader/ Loads workers into the fast-lane workerd runtime
 internal/
-  builder/          Buildah builder + Dockerfile generation
-  config/           Configuration loading
-  deployer/         Knative, Kubernetes deployers
-  orchestrator/     Deploy/update/delete lifecycle coordination
-  store/            Artifact metadata (memory, ConfigMap)
-  storage/          Source file storage (local, GitHub, GitLab)
-  frontend/         Dashboard (embedded React SPA)
-  metrics/          Prometheus metrics
-  auth/             API key + OAuth authentication
-pkg/api/            Shared types
-deploy/helm/        Helm charts
-docs/               Docusaurus documentation site
-web/                React dashboard source
+  classifier/         Deterministic lane + template selection
+  controller/         Reconcile logic for VibedApp
+  router/             Caddy route programming
+  deployer/           Kubernetes + sandbox deployers
+  orchestrator/       Deploy/update/delete lifecycle coordination
+  prebaked/           Pre-baked-dependency fast path
+  tarball/ storage/   Source blob + source-file storage backends
+  store/              Artifact metadata (sqlite, ConfigMap)
+  frontend/           Dashboard (embedded React SPA)
+  auth/ metrics/ ...  Auth, Prometheus metrics, GC, quota, tracing
+pkg/api/              Shared types
+deploy/helm/          Helm charts (control plane + warm pools)
+templates/            SandboxTemplate / SandboxWarmPool definitions
+docs/                 Docusaurus documentation site
+web/                  React dashboard source
 ```
 
 ## Development
 
 ```bash
-make build          # Build Go binary
+make build          # Build the vibed binary
+make build-all      # Build frontend + backend
 make run-http       # Build and run with HTTP transport
 make test           # Run unit tests
+make e2e            # Run end-to-end tests
 make lint           # Run linter
 make web-build      # Build React dashboard
-make build-all      # Build frontend + backend
-make dev            # Full local setup (Kind + Knative + build)
-make teardown       # Delete Kind cluster
+make dev            # Full local setup (Kind + agent-sandbox + build + install)
+make teardown       # Delete the Kind cluster
 ```
 
 ## Documentation

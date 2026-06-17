@@ -18,7 +18,6 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/appspec"
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
-	"github.com/vibed-project/vibeD/internal/builder"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deployer"
 	"github.com/vibed-project/vibeD/internal/environment"
@@ -33,10 +32,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/google/go-containerregistry/pkg/crane"
-	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1/daemon"
-
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,16 +42,17 @@ var dnsNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // DeployRequest is the input for deploying a new artifact.
 type DeployRequest struct {
-        Name         string
-        Files        map[string]string
-        Language     string
-        Target       string
-        EnvVars      map[string]string
-        SecretRefs   map[string]string // env var name → "secret-name:key"
-        Port         int
-        OwnerID      string
-        DepartmentID string
+	Name         string
+	Files        map[string]string
+	Language     string
+	Target       string
+	EnvVars      map[string]string
+	SecretRefs   map[string]string // env var name → "secret-name:key"
+	Port         int
+	OwnerID      string
+	DepartmentID string
 }
+
 // UpdateRequest is the input for updating an existing artifact.
 type UpdateRequest struct {
 	ArtifactID string
@@ -79,7 +75,6 @@ type DeployResult struct {
 type Orchestrator struct {
 	cfg            *config.Config
 	detector       *environment.Detector
-	builder        builder.Builder
 	factory        *deployer.Factory
 	storage        storage.Storage
 	store          store.ArtifactStore
@@ -88,7 +83,6 @@ type Orchestrator struct {
 	clientset      kubernetes.Interface
 	events         *events.EventBus
 	shareLinkStore store.ShareLinkStore
-	imageBase      string
 	tracer         trace.Tracer
 	logger         *slog.Logger
 
@@ -107,33 +101,25 @@ type Orchestrator struct {
 func NewOrchestrator(
 	cfg *config.Config,
 	detector *environment.Detector,
-	bldr builder.Builder,
 	factory *deployer.Factory,
 	stg storage.Storage,
 	st store.ArtifactStore,
 	userStore store.UserStore,
-	m *metrics.Metrics,	clientset kubernetes.Interface,
+	m *metrics.Metrics, clientset kubernetes.Interface,
 	bus *events.EventBus,
 	shareLinkStore store.ShareLinkStore,
 	logger *slog.Logger,
 ) *Orchestrator {
-	imageBase := "vibed-artifacts"
-	if cfg.Registry.Enabled && cfg.Registry.URL != "" {
-		imageBase = cfg.Registry.URL
-	}
-
 	return &Orchestrator{
-		cfg:            cfg,
-		detector:       detector,
-		builder:        bldr,
-		factory:        factory,
-		storage:        stg,
-		store:          st,
-		userStore:      userStore,
-		metrics:        m,		clientset:      clientset,
+		cfg:       cfg,
+		detector:  detector,
+		factory:   factory,
+		storage:   stg,
+		store:     st,
+		userStore: userStore,
+		metrics:   m, clientset: clientset,
 		events:         bus,
 		shareLinkStore: shareLinkStore,
-		imageBase:      imageBase,
 		tracer:         otel.Tracer("vibed/orchestrator"),
 		logger:         logger,
 		// Default to context.Background() until SetLifecycleContext is called;
@@ -339,10 +325,10 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest, prebuilt
 	now := time.Now()
 	namespace := o.cfg.Deployment.Namespace // fallback
 	if req.DepartmentID != "" && o.userStore != nil {
-	        dept, err := o.userStore.GetDepartment(ctx, req.DepartmentID)
-	        if err == nil && dept.Namespace != "" {
-	                namespace = dept.Namespace
-	        }
+		dept, err := o.userStore.GetDepartment(ctx, req.DepartmentID)
+		if err == nil && dept.Namespace != "" {
+			namespace = dept.Namespace
+		}
 	}
 
 	var artifact *api.Artifact
@@ -418,119 +404,12 @@ func (o *Orchestrator) doDeploy(ctx context.Context, req DeployRequest, prebuilt
 		return o.deployStatic(ctx, artifact, req.Files, target)
 	}
 
-	// 7. Build image (container or wasm depending on target)
-	imageName := fmt.Sprintf("%s/%s:latest", o.imageBase, req.Name)
-
-	o.metrics.BuildsInFlight.Inc()
-	defer o.metrics.BuildsInFlight.Dec()
-	buildStart := time.Now()
-
-	activeBuilder := o.builder
-
-	// Child span: builder.Build (local image, no push)
-	buildCtx, buildSpan := o.tracer.Start(ctx, "builder.Build",
-		trace.WithAttributes(
-			attribute.String("builder.image", imageName),
-			attribute.String("builder.language", lang),
-		))
-	// When the builder handles push internally (Buildah/Wasm K8s Job), set Publish: true
-	// so the Job pushes to the registry. For Pack (local daemon), set Publish: false and
-	// handle the push separately in the registry.Push span below.
-	builderPublishes := activeBuilder.PublishesInternally()
-	buildResult, err := activeBuilder.Build(buildCtx, builder.BuildRequest{
-	        SourceDir: storageRef.LocalPath,
-	        ImageName: imageName,
-	        Namespace: artifact.Namespace,
-	        Language:  lang,
-	        Env:       req.EnvVars,
-	        Publish:   builderPublishes && o.cfg.Registry.Enabled,
-	})
-
-	buildDur := time.Since(buildStart).Seconds()
-
-	if err != nil {
-		buildSpan.RecordError(err)
-		buildSpan.SetStatus(codes.Error, err.Error())
-		buildSpan.End()
-		o.metrics.BuildsTotal.WithLabelValues("failed", lang).Inc()
-		o.metrics.BuildDuration.WithLabelValues("failed", lang).Observe(buildDur)
-		o.failArtifact(ctx, artifact, fmt.Sprintf("build failed: %v", err))
-		return nil, &api.ErrBuildFailed{Reason: err.Error()}
-	}
-	buildSpan.End()
-
-	o.metrics.BuildsTotal.WithLabelValues("success", lang).Inc()
-	o.metrics.BuildDuration.WithLabelValues("success", lang).Observe(buildDur)
-	// Pin to the immutable manifest digest when the builder reported one.
-	// Falls back to the tag for builders that haven't been updated yet.
-	artifact.ImageRef = pinnedImageRef(buildResult)
-
-	// Child span: registry.Push — only needed when the builder doesn't push internally
-	// (i.e. PackBuilder produces a local daemon image that must be pushed via crane).
-	if o.cfg.Registry.Enabled && !builderPublishes {
-		pushCtx, pushSpan := o.tracer.Start(ctx, "registry.Push",
-			trace.WithAttributes(
-				attribute.String("registry.image", buildResult.ImageRef),
-				attribute.String("registry.url", o.cfg.Registry.URL),
-			))
-		if pushErr := pushImage(pushCtx, buildResult.ImageRef); pushErr != nil {
-			pushSpan.RecordError(pushErr)
-			pushSpan.SetStatus(codes.Error, pushErr.Error())
-			pushSpan.End()
-			o.failArtifact(ctx, artifact, fmt.Sprintf("push failed: %v", pushErr))
-			return nil, fmt.Errorf("registry push: %w", pushErr)
-		}
-		pushSpan.End()
-	}
-
-	// 8. Deploy
-	o.updateStatus(ctx, artifact, api.StatusDeploying)
-	dep, err := o.factory.Get(target)
-	if err != nil {
-		o.failArtifact(ctx, artifact, fmt.Sprintf("no deployer for target: %v", err))
-		return nil, err
-	}
-
-	// Child span: deployer.Deploy
-	deployCtx, deploySpan := o.tracer.Start(ctx, "deployer.Deploy",
-		trace.WithAttributes(attribute.String("deployer.target", string(target))))
-	deployStart := time.Now()
-	deployResult, err := dep.Deploy(deployCtx, artifact)
-	deployDur := time.Since(deployStart).Seconds()
-
-	if err != nil {
-		deploySpan.RecordError(err)
-		deploySpan.SetStatus(codes.Error, err.Error())
-		deploySpan.End()
-		o.metrics.DeploysTotal.WithLabelValues("failed", string(target)).Inc()
-		o.metrics.DeployDuration.WithLabelValues("failed", string(target)).Observe(deployDur)
-		o.failArtifact(ctx, artifact, fmt.Sprintf("deploy failed: %v", err))
-		return nil, &api.ErrDeployFailed{Reason: err.Error()}
-	}
-	deploySpan.End()
-
-	o.metrics.DeploysTotal.WithLabelValues("success", string(target)).Inc()
-	o.metrics.DeployDuration.WithLabelValues("success", string(target)).Observe(deployDur)
-	o.metrics.ArtifactsActive.WithLabelValues(string(target)).Inc()
-
-	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
-
-	o.logger.Info("artifact deployed successfully",
-		"id", artifactID,
-		"name", req.Name,
-		"target", target,
-		"url", deployResult.URL,
-		"version", 1,
-	)
-
-	return &DeployResult{
-		ArtifactID: artifactID,
-		Name:       req.Name,
-		URL:        deployResult.URL,
-		Target:     string(target),
-		Status:     string(api.StatusRunning),
-		ImageRef:   buildResult.ImageRef,
-	}, nil
+	// The in-cluster image builder was removed in v0.4.1. Non-static
+	// workloads are served by the tarball deploy path (deploy.Service),
+	// which requires a Kubernetes client and a tarball store. When that
+	// path is unavailable the orchestrator fallback only handles static apps.
+	o.failArtifact(ctx, artifact, fmt.Sprintf("non-static deploy unsupported in fallback mode (language %q)", lang))
+	return nil, fmt.Errorf("non-static deploy requires the tarball deploy path: language %q is not servable by the static fallback", lang)
 }
 
 // AsyncUpdate validates ownership synchronously, then runs the rebuild + redeploy in
@@ -667,100 +546,11 @@ func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*Deploy
 		return o.updateStatic(ctx, artifact, req.Files)
 	}
 
-	// Rebuild (non-static path)
-	imageName := fmt.Sprintf("%s/%s:latest", o.imageBase, artifact.Name)
-
-	o.metrics.BuildsInFlight.Inc()
-	defer o.metrics.BuildsInFlight.Dec()
-	buildStart := time.Now()
-
-	activeBuilder := o.builder
-
-	// Child span: builder.Build (update path)
-	builderPublishes := activeBuilder.PublishesInternally()
-	buildCtx, buildSpan := o.tracer.Start(ctx, "builder.Build",
-		trace.WithAttributes(attribute.String("builder.image", imageName), attribute.String("builder.language", lang)))
-	buildResult, err := activeBuilder.Build(buildCtx, builder.BuildRequest{
-	        SourceDir: storageRef.LocalPath,
-	        ImageName: imageName,
-	        Namespace: artifact.Namespace,
-	        Language:  lang,
-	        Env:       artifact.EnvVars,
-	        Publish:   builderPublishes && o.cfg.Registry.Enabled,	})
-
-	buildDur := time.Since(buildStart).Seconds()
-
-	if err != nil {
-		buildSpan.RecordError(err)
-		buildSpan.SetStatus(codes.Error, err.Error())
-		buildSpan.End()
-		o.metrics.BuildsTotal.WithLabelValues("failed", lang).Inc()
-		o.metrics.BuildDuration.WithLabelValues("failed", lang).Observe(buildDur)
-		o.failArtifact(ctx, artifact, fmt.Sprintf("build failed: %v", err))
-		return nil, &api.ErrBuildFailed{Reason: err.Error()}
-	}
-	buildSpan.End()
-
-	o.metrics.BuildsTotal.WithLabelValues("success", lang).Inc()
-	o.metrics.BuildDuration.WithLabelValues("success", lang).Observe(buildDur)
-	artifact.ImageRef = pinnedImageRef(buildResult)
-
-	// Child span: registry.Push (only for Pack — Buildah/Wasm push inside the K8s Job)
-	if o.cfg.Registry.Enabled && !builderPublishes {
-		pushCtx, pushSpan := o.tracer.Start(ctx, "registry.Push",
-			trace.WithAttributes(
-				attribute.String("registry.image", buildResult.ImageRef),
-				attribute.String("registry.url", o.cfg.Registry.URL),
-			))
-		if pushErr := pushImage(pushCtx, buildResult.ImageRef); pushErr != nil {
-			pushSpan.RecordError(pushErr)
-			pushSpan.SetStatus(codes.Error, pushErr.Error())
-			pushSpan.End()
-			o.failArtifact(ctx, artifact, fmt.Sprintf("push failed: %v", pushErr))
-			return nil, fmt.Errorf("registry push: %w", pushErr)
-		}
-		pushSpan.End()
-	}
-
-	// Redeploy
-	o.updateStatus(ctx, artifact, api.StatusDeploying)
-	dep, err := o.factory.Get(artifact.Target)
-	if err != nil {
-		return nil, err
-	}
-
-	// Child span: deployer.Update
-	target := string(artifact.Target)
-	deployCtx, deploySpan := o.tracer.Start(ctx, "deployer.Update",
-		trace.WithAttributes(attribute.String("deployer.target", target)))
-	deployStart := time.Now()
-	deployResult, err := dep.Update(deployCtx, artifact)
-	deployDur := time.Since(deployStart).Seconds()
-
-	if err != nil {
-		deploySpan.RecordError(err)
-		deploySpan.SetStatus(codes.Error, err.Error())
-		deploySpan.End()
-		o.metrics.DeploysTotal.WithLabelValues("failed", target).Inc()
-		o.metrics.DeployDuration.WithLabelValues("failed", target).Observe(deployDur)
-		o.failArtifact(ctx, artifact, fmt.Sprintf("deploy failed: %v", err))
-		return nil, &api.ErrDeployFailed{Reason: err.Error()}
-	}
-	deploySpan.End()
-
-	o.metrics.DeploysTotal.WithLabelValues("success", target).Inc()
-	o.metrics.DeployDuration.WithLabelValues("success", target).Observe(deployDur)
-
-	o.finalizeDeployment(ctx, artifact, deployResult, artifact.OwnerID)
-
-	return &DeployResult{
-		ArtifactID: artifact.ID,
-		Name:       artifact.Name,
-		URL:        deployResult.URL,
-		Target:     target,
-		Status:     string(api.StatusRunning),
-		ImageRef:   buildResult.ImageRef,
-	}, nil
+	// The in-cluster image builder was removed in v0.4.1; only the static
+	// ConfigMap path above is handled by the orchestrator fallback. Non-static
+	// updates require the tarball deploy path (deploy.Service).
+	o.failArtifact(ctx, artifact, fmt.Sprintf("non-static update unsupported in fallback mode (language %q)", lang))
+	return nil, fmt.Errorf("non-static update requires the tarball deploy path: language %q is not servable by the static fallback", lang)
 }
 
 // Delete stops and removes a deployed artifact, after an ownership check.
@@ -1124,24 +914,6 @@ func generateID() string {
 		panic("crypto/rand unavailable: " + err.Error())
 	}
 	return hex.EncodeToString(b)
-}
-
-// pinnedImageRef returns image@sha256:... when the builder captured a digest,
-// or the original ImageRef tag otherwise. Pinning by digest avoids registry
-// caching surprises and makes Sandbox revisions reproducibly distinct.
-func pinnedImageRef(r *builder.BuildResult) string {
-	if r == nil {
-		return ""
-	}
-	if r.Digest == "" {
-		return r.ImageRef
-	}
-	// Strip any trailing tag — `repo:tag@digest` is invalid.
-	ref := r.ImageRef
-	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
-		ref = ref[:i]
-	}
-	return ref + "@" + r.Digest
 }
 
 const staticNginxConf = `server {
@@ -1618,24 +1390,6 @@ func (o *Orchestrator) RevokeShareLink(ctx context.Context, token string) error 
 }
 
 // ResolveShareLink validates a share link token and optional password, returns read-only artifact view.
-// pushImage pushes a locally built image (in the container daemon) to the registry
-// using go-containerregistry. It is called after builder.Build when registry is enabled
-// so that the push step can be traced as a dedicated child span.
-func pushImage(ctx context.Context, imageRef string) error {
-	ref, err := name.ParseReference(imageRef)
-	if err != nil {
-		return fmt.Errorf("parse image ref %q: %w", imageRef, err)
-	}
-	img, err := daemon.Image(ref, daemon.WithContext(ctx))
-	if err != nil {
-		return fmt.Errorf("load image from daemon %q: %w", imageRef, err)
-	}
-	if err := crane.Push(img, imageRef, crane.WithContext(ctx)); err != nil {
-		return fmt.Errorf("push image %q: %w", imageRef, err)
-	}
-	return nil
-}
-
 func (o *Orchestrator) ResolveShareLink(ctx context.Context, token, password string) (*api.Artifact, error) {
 	if o.shareLinkStore == nil {
 		return nil, fmt.Errorf("share links require SQLite store backend")
