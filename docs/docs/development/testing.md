@@ -167,17 +167,6 @@ done
 
 ---
 
-#### Insecure Registry
-
-| # | Test | Steps | Expected |
-|---|------|-------|----------|
-| 1 | HTTP push | Set `registry.insecure: true` and `buildah.insecure: true`. Deploy Go/Node app. | Build succeeds, image pushed to HTTP registry |
-| 2 | HTTPS default | Set `insecure: false` with HTTP-only registry | Build fails: "http: server gave HTTP response to HTTPS client" |
-
-**Automation opportunity:** Integration test in Kind cluster with the in-cluster HTTP registry.
-
----
-
 ## Test Utilities
 
 The `tests/testutil/` package provides helpers for integration tests:

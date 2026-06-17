@@ -22,14 +22,6 @@ Most Prometheus installations with annotation-based discovery will scrape vibeD 
 
 ## Available Metrics
 
-### Build Metrics
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `vibed_builds_total` | Counter | `status`, `language` | Total container image builds |
-| `vibed_build_duration_seconds` | Histogram | `status`, `language` | Build duration (buckets: 5s, 10s, 30s, 60s, 120s, 300s, 600s) |
-| `vibed_builds_in_flight` | Gauge | - | Number of builds currently in progress |
-
 ### Deployment Metrics
 
 | Metric | Type | Labels | Description |
@@ -121,7 +113,7 @@ These are served on the main server's `/metrics` (:8080). The bring-your-own bas
 |-------|----------------|
 | `status` | `success`, `error` |
 | `language` | `nodejs`, `python`, `go`, `static` |
-| `target` | `knative`, `kubernetes` |
+| `target` | `sandbox`, `kubernetes` |
 | `tool` | `deploy_artifact`, `update_artifact`, `list_artifacts`, `get_artifact_status`, `get_artifact_logs`, `delete_artifact`, `list_deployment_targets` |
 
 ## Scraping with Prometheus
@@ -182,22 +174,6 @@ spec:
   groups:
     - name: vibed.rules
       rules:
-        - alert: VibeDHighConcurrentBuilds
-          expr: vibed_builds_in_flight > 5
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "Too many concurrent builds ({{ $value }})"
-
-        - alert: VibeDHighBuildFailureRate
-          expr: rate(vibed_builds_total{status="error"}[5m]) > 0.1
-          for: 10m
-          labels:
-            severity: critical
-          annotations:
-            summary: "Build failure rate is elevated"
-
         - alert: VibeDHighDeployFailureRate
           expr: rate(vibed_deploys_total{status="error"}[5m]) > 0.1
           for: 10m
@@ -213,14 +189,6 @@ spec:
             severity: warning
           annotations:
             summary: "High number of active artifacts ({{ $value }})"
-
-        - alert: VibeDSlowBuilds
-          expr: histogram_quantile(0.99, rate(vibed_build_duration_seconds_bucket[10m])) > 300
-          for: 15m
-          labels:
-            severity: warning
-          annotations:
-            summary: "P99 build duration exceeds 5 minutes"
 
         - alert: VibeDGCHighCleanupRate
           expr: rate(vibed_gc_resources_cleaned_total[1h]) > 10
@@ -273,9 +241,6 @@ The `testbed/observability` stack ships a ready-made **vibeD Overview** dashboar
 automatically by `make install-observability`. You can also build your own from
 the metrics above. Recommended panels:
 
-- **Build Rate** - `rate(vibed_builds_total[5m])` by status
-- **Build Duration P99** - `histogram_quantile(0.99, rate(vibed_build_duration_seconds_bucket[5m]))`
-- **Concurrent Builds** - `vibed_builds_in_flight`
 - **Deploy Success Rate** - `rate(vibed_deploys_total{status="success"}[5m]) / rate(vibed_deploys_total[5m])`
 - **Active Artifacts** - `sum(vibed_artifacts_active)` by target
 - **MCP Tool Usage** - `rate(vibed_mcp_tool_calls_total[5m])` by tool

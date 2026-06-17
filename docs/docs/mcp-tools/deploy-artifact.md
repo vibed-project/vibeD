@@ -39,9 +39,7 @@ The primary tool for deploying web artifacts to the cluster.
   "artifact_id": "a1b2c3d4e5f6g7h8",
   "name": "my-portfolio",
   "url": "http://my-portfolio.default.localhost",
-  "target": "knative",
-  "status": "running",
-  "image_ref": "vibed-artifacts/my-portfolio:latest"
+  "status": "running"
 }
 ```
 

@@ -33,7 +33,7 @@ List deployed artifacts with their status, deployment target, and access URLs. S
       "id": "a1b2c3d4",
       "name": "my-portfolio",
       "status": "running",
-      "target": "knative",
+      "target": "sandbox",
       "mode": "built",
       "url": "http://my-portfolio.default.localhost",
       "created_at": "2026-03-14T10:00:00Z"

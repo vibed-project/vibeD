@@ -52,7 +52,7 @@ func NewGitHubStorage(owner, repo, branch, token, localCacheDir string) (*GitHub
 }
 
 func (s *GitHubStorage) StoreSource(ctx context.Context, artifactID string, files map[string]string) (*StorageRef, error) {
-	// 1. Write files locally for buildpacks to use
+	// 1. Write files locally for the deploy path to read back
 	localSrcDir := filepath.Join(s.localDir, artifactID, "src")
 	if err := os.MkdirAll(localSrcDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating local src dir: %w", err)

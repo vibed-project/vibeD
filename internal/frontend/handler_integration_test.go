@@ -3,20 +3,20 @@
 package frontend_test
 
 import (
-        "encoding/json"
-        "log/slog"
-        "net/http"
-        "net/http/httptest"
-        "os"
-        "path/filepath"
-        "testing"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
 
-        "github.com/vibed-project/vibeD/internal/config"
-        "github.com/vibed-project/vibeD/internal/deployer"
-        "github.com/vibed-project/vibeD/internal/environment"
-        "github.com/vibed-project/vibeD/internal/events"
-        "github.com/vibed-project/vibeD/internal/frontend"
-        "github.com/vibed-project/vibeD/internal/metrics"
+	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/deployer"
+	"github.com/vibed-project/vibeD/internal/environment"
+	"github.com/vibed-project/vibeD/internal/events"
+	"github.com/vibed-project/vibeD/internal/frontend"
+	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
@@ -51,7 +51,8 @@ func TestAPI_ListArtifacts_Empty(t *testing.T) {
 	var listResult store.ListResult
 	err = json.NewDecoder(resp.Body).Decode(&listResult)
 	require.NoError(t, err)
-	assert.Empty(t, listResult.Artifacts)}
+	assert.Empty(t, listResult.Artifacts)
+}
 
 func TestAPI_ListTargets(t *testing.T) {
 	testutil.SkipIfNoCluster(t)
@@ -63,7 +64,6 @@ func TestAPI_ListTargets(t *testing.T) {
 	localStorage, err := storage.NewLocalStorage(tmpDir)
 	require.NoError(t, err)
 	memStore := store.NewMemoryStore()
-	mockBuilder := &testutil.MockBuilder{}
 	factory := deployer.NewFactory()
 	detector := environment.NewDetector(clients, logger)
 	m := metrics.New()
@@ -74,7 +74,7 @@ func TestAPI_ListTargets(t *testing.T) {
 	defer sqlStore.Close()
 
 	bus := events.NewEventBus()
-	orch := orchestrator.NewOrchestrator(cfg, detector, mockBuilder, factory, localStorage, memStore, sqlStore, m, clients.Clientset, bus, sqlStore, logger)
+	orch := orchestrator.NewOrchestrator(cfg, detector, factory, localStorage, memStore, sqlStore, m, clients.Clientset, bus, sqlStore, logger)
 	handler := frontend.NewHandler(orch, cfg, bus, m, sqlStore, nil)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
@@ -134,7 +134,6 @@ func testAPIOrchSimple(t *testing.T) *orchestrator.Orchestrator {
 	localStorage, err := storage.NewLocalStorage(tmpDir)
 	require.NoError(t, err)
 	memStore := store.NewMemoryStore()
-	mockBuilder := &testutil.MockBuilder{}
 	factory := deployer.NewFactory()
 	m := metrics.New()
 
@@ -142,4 +141,5 @@ func testAPIOrchSimple(t *testing.T) *orchestrator.Orchestrator {
 	sqlStore, err := store.NewSQLiteStore(dbPath)
 	require.NoError(t, err)
 
-	return orchestrator.NewOrchestrator(cfg, nil, mockBuilder, factory, localStorage, memStore, sqlStore, m, nil, events.NewEventBus(), sqlStore, logger)}
+	return orchestrator.NewOrchestrator(cfg, nil, factory, localStorage, memStore, sqlStore, m, nil, events.NewEventBus(), sqlStore, logger)
+}

@@ -4,7 +4,6 @@ package orchestrator_test
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -47,9 +46,6 @@ func testOrch(t *testing.T) (*orchestrator.Orchestrator, string) {
 	require.NoError(t, err)
 	t.Cleanup(func() { sqliteStore.Close() })
 
-	// Builder (mock)
-	mockBuilder := &testutil.MockBuilder{}
-
 	// Deployer factory with K8s deployer
 	factory := deployer.NewFactory()
 	k8sDep := deployer.NewKubernetesDeployer(
@@ -69,18 +65,17 @@ func testOrch(t *testing.T) (*orchestrator.Orchestrator, string) {
 	bus := events.NewEventBus()
 
 	orch := orchestrator.NewOrchestrator(
-	        cfg,
-	        detector,
-	        mockBuilder,
-	        factory,
-	        localStorage,
-	        sqliteStore,
-	        sqliteStore,
-	        m,
-	        clients.Clientset,
-	        bus,
-	        sqliteStore,
-	        logger,
+		cfg,
+		detector,
+		factory,
+		localStorage,
+		sqliteStore,
+		sqliteStore,
+		m,
+		clients.Clientset,
+		bus,
+		sqliteStore,
+		logger,
 	)
 	return orch, ns
 }
@@ -292,51 +287,6 @@ func TestOrchestrator_DuplicateName(t *testing.T) {
 	_, err = orch.Deploy(ctx, req)
 	require.Error(t, err)
 	assert.IsType(t, &api.ErrAlreadyExists{}, err)
-}
-
-func TestOrchestrator_BuildFailure(t *testing.T) {
-	testutil.SkipIfNoCluster(t)
-
-	clients := testutil.MustGetClients(t)
-	ns := testutil.CreateTestNamespace(t, clients.Clientset)
-	tmpDir := t.TempDir()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-	cfg := testutil.TestConfig(ns, tmpDir)
-	localStorage, err := storage.NewLocalStorage(tmpDir)
-	require.NoError(t, err)
-
-	// Mock builder that always fails
-	failBuilder := &testutil.MockBuilder{
-		Err: errors.New("buildpack failed: out of memory"),
-	}
-
-	factory := deployer.NewFactory()
-	k8sDep := deployer.NewKubernetesDeployer(clients.Clientset, 0, logger)
-	factory.Register(api.TargetKubernetes, k8sDep)
-
-	detector := environment.NewDetector(clients, logger)
-	m := metrics.New()
-
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	sqliteStore, err := store.NewSQLiteStore(dbPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { sqliteStore.Close() })
-
-	bus := events.NewEventBus()
-
-	orch := orchestrator.NewOrchestrator(cfg, detector, failBuilder, factory, localStorage, sqliteStore, sqliteStore, m, clients.Clientset, bus, sqliteStore, logger)
-	ctx := context.Background()
-	req := testutil.SampleDeployRequest(testutil.RandomName())
-
-	_, err = orch.Deploy(ctx, req)
-	require.Error(t, err)
-	assert.IsType(t, &api.ErrBuildFailed{}, err)
-
-	// Verify the artifact is marked as failed in the store
-	list, err := orch.List(ctx, "failed", 0, 0)
-	require.NoError(t, err)
-	assert.Len(t, list.Artifacts, 1)
 }
 
 func TestOrchestrator_Logs(t *testing.T) {

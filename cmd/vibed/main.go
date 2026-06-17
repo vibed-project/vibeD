@@ -10,14 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/vibed-project/vibeD/internal/audit"
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
-	"github.com/vibed-project/vibeD/internal/builder"
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
@@ -110,29 +108,6 @@ func main() {
 
 	// Initialize subsystems
 	detector := environment.NewDetector(k8sClients, logger)
-
-	var bldr builder.Builder
-	switch cfg.Builder.Engine {
-	case "buildah", "":
-		ns := cfg.Builder.Buildah.Namespace
-		if ns == "" {
-			ns = cfg.Deployment.Namespace
-		}
-		pvcName := cfg.Builder.Buildah.PVCName
-		if pvcName == "" {
-			pvcName = "vibed-data"
-		}
-		// PVC mount point is the parent of the storage base path
-		// (e.g. /data/vibed when basePath is /data/vibed/artifacts)
-		pvcMountPath := filepath.Dir(cfg.Storage.Local.BasePath)
-		bldr = builder.NewBuildahBuilder(
-			k8sClients.Clientset, cfg.Builder.Buildah, cfg.Registry,
-			ns, pvcName, pvcMountPath, logger,
-		)
-	default:
-		logger.Error("unsupported builder engine", "engine", cfg.Builder.Engine)
-		os.Exit(1)
-	}
 
 	// Initialize storage
 	checker.SetNotReady("storage", "initializing")
@@ -263,7 +238,7 @@ func main() {
 		shareLinkStore = sls
 	}
 
-	orch := orchestrator.NewOrchestrator(cfg, detector, bldr, factory, stg, st, userStore, m, k8sClients.Clientset, bus, shareLinkStore, logger)
+	orch := orchestrator.NewOrchestrator(cfg, detector, factory, stg, st, userStore, m, k8sClients.Clientset, bus, shareLinkStore, logger)
 
 	// Lifecycle context shared by GC and orchestrator's async goroutines so
 	// SIGTERM cancels in-flight builds and the GC loop together.

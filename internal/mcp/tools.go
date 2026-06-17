@@ -13,11 +13,10 @@ import (
 // RegisterTools registers all vibeD MCP tools with the server.
 //
 // deploySvc, when non-nil, routes the core artifact lifecycle (deploy /
-// list / status / delete) through the VibedApp path. When nil those four
-// fall back to the orchestrator build-and-deploy path. Either way the four
-// agree on one backend, so MCP never goes split-brain. The remaining tools
-// (update, logs, versions, rollback, share) stay on the orchestrator
-// pending a follow-up.
+// update / list / status / delete) through the VibedApp path. When nil those
+// fall back to the orchestrator path. Either way they agree on one backend, so
+// MCP never goes split-brain. The remaining tools (logs, versions, rollback,
+// share) stay on the orchestrator pending a follow-up.
 func RegisterTools(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, limits config.LimitsConfig, userStore store.UserStore, auditRec *audit.Recorder) {
 	registerDeployTool(server, orch, deploySvc, limits)
 	registerListTool(server, orch, deploySvc)
@@ -25,7 +24,7 @@ func RegisterTools(server *mcp.Server, orch *orchestrator.Orchestrator, deploySv
 	registerDeleteTool(server, orch, deploySvc)
 	registerLogsTool(server, orch, limits)
 	registerTargetsTool(server, orch)
-	registerUpdateTool(server, orch, limits)
+	registerUpdateTool(server, orch, deploySvc, limits)
 	registerListVersionsTool(server, orch)
 	registerRollbackTool(server, orch, auditRec)
 	registerShareTool(server, orch)

@@ -29,16 +29,14 @@ Returns the full artifact object:
   "id": "a1b2c3d4",
   "name": "my-portfolio",
   "status": "running",
-  "target": "knative",
+  "target": "sandbox",
   "mode": "built",
   "url": "http://my-portfolio.default.localhost:31080",
-  "image_ref": "kind-registry:5000/vibed-artifacts/my-portfolio:v1",
+  "image_ref": "nginx:alpine",
   "language": "static",
   "port": 80,
-  "env_vars": {"NODE_ENV": "production"},
-  "secret_refs": {"DB_PASSWORD": "my-db-creds:password"},
   "version": 3,
-  "owner": "env-key",
+  "owner_id": "env-key",
   "created_at": "2026-03-14T10:00:00Z",
   "updated_at": "2026-03-14T12:30:00Z"
 }
@@ -46,4 +44,4 @@ Returns the full artifact object:
 
 The status reflects the app's [phase](../concepts/app-lifecycle.md) (`Pending` → `Claiming` → `Starting` → `Ready`, or `Failed`) along with its URL and the bound sandbox.
 
-Note: `secret_refs` shows only the reference (`secret-name:key`), never the actual secret value.
+Note: environment variables and secret references are never included in the response — secret values are never exposed.

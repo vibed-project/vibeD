@@ -134,10 +134,6 @@ func TestConfig(ns, tmpDir string) *config.Config {
 			PreferredTarget: "kubernetes",
 			Namespace:       ns,
 		},
-		Builder: config.BuilderConfig{
-			Image:      "paketobuildpacks/builder-jammy-base:latest",
-			PullPolicy: "if-not-present",
-		},
 		Storage: config.StorageConfig{
 			Backend: "local",
 			Local: config.LocalStorageConfig{

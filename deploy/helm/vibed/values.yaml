@@ -263,15 +263,6 @@ config:
     #     Sandbox reconcile can take several minutes; the default is
     #     intentionally generous.
     readyTimeout: "10m"
-  builder:
-    engine: "buildah"
-    image: "paketobuildpacks/builder-jammy-base:latest"
-    pullPolicy: "if-not-present"
-    containerRuntime: "auto"
-    buildah:
-      image: "quay.io/buildah/stable:latest"
-      timeout: "10m"
-      insecure: true  # kind-registry is HTTP-only
   storage:
     backend: "local"
     local:

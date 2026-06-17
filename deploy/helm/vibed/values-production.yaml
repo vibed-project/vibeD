@@ -48,11 +48,6 @@ config:
   deployment:
     preferredTarget: "auto"
     namespace: "default"
-  builder:
-    engine: "buildah"
-    buildah:
-      timeout: "10m"
-      insecure: false
   storage:
     backend: "local"
     local:
