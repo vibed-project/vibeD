@@ -51,5 +51,5 @@ Update an existing deployed artifact with new source files. Triggers a rebuild a
 3. **Re-injects** the new source into the app's sandbox — no rebuild
 
 :::note
-Redeploy (`POST /v1/apps/{id}/redeploy`) is not yet fully wired in v0.3.x. The supported update path is to deploy again under the same name.
+Redeploy (`POST /v1/apps/{id}/redeploy`) is not yet fully wired. The supported update path is to deploy again under the same name.
 :::

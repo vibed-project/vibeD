@@ -30,4 +30,4 @@ Retrieve recent log lines from a deployed artifact's pods for debugging purposes
 }
 ```
 
-Logs are fetched from the running pod(s) using the Kubernetes API. For Knative services scaled to zero, the response will indicate no pods are available.
+Logs are fetched from the running sandbox pod(s) using the Kubernetes API. If the sandbox is not currently running, the response will indicate no pods are available.

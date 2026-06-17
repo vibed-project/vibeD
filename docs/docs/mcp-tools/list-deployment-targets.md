@@ -22,7 +22,7 @@ No parameters required.
 {
   "targets": [
     {
-      "name": "knative",
+      "name": "sandbox",
       "available": true
     },
     {

@@ -11,7 +11,7 @@
 #   podman build -f templates/go-123/Dockerfile -t vibed-template-go-123 .
 
 # Stage 1: build vibed-agent (cross-compile natively, no QEMU).
-FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS agent
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS agent
 ARG TARGETOS=linux
 ARG TARGETARCH
 ENV GOTOOLCHAIN=auto GO111MODULE=on

@@ -58,7 +58,7 @@ Most Prometheus installations with annotation-based discovery will scrape vibeD 
 | `vibed_gc_resources_cleaned_total` | Counter | `type` | Total resources cleaned by garbage collector |
 
 The `type` label values are: `job`, `configmap`, `deployment`, `service`,
-`knative_service`, `sandbox`, and `preview` (expired fast-path previews).
+and `sandbox`.
 
 The GC runs periodically (default: every 1 hour) and removes orphaned Kubernetes resources whose artifact no longer exists in the store. See [Configuration Reference](../configuration/config-reference.md) for GC settings.
 
