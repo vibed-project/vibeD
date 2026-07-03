@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -55,6 +56,47 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// Main is the standard vibeD program entry point: it parses the -config and
+// -transport flags, loads and validates the config, builds the logger, and runs
+// the server. cmd/vibed calls it, and so does an out-of-tree edition — e.g. a
+// closed cmd/vibed-enterprise whose main() blank-imports its provider packages
+// (registering backends/modes via init()) and then calls server.Main(). This is
+// the seam that lets a separate module boot vibeD without importing internal/.
+func Main() {
+	var (
+		configPath string
+		transport  string
+	)
+	flag.StringVar(&configPath, "config", "", "Path to vibed.yaml config file")
+	flag.StringVar(&transport, "transport", "", "Override transport: stdio, http, or both")
+	flag.Parse()
+
+	// Bootstrap logger for config loading (always text, info level).
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		logger.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+
+	if transport != "" {
+		cfg.Server.Transport = transport
+	}
+
+	// Replace the bootstrap logger with the configured format and level.
+	logger = NewLogger(cfg.Server)
+	Run(cfg, logger)
+}
+
+// LoadConfig loads and validates a vibeD config file (an empty path yields the
+// built-in defaults). It is exposed so an out-of-tree binary can build a custom
+// bootstrap without importing internal/config: assign the result with := and it
+// never has to name the config type.
+func LoadConfig(path string) (*config.Config, error) {
+	return config.Load(path)
+}
 
 // Run wires every subsystem from cfg and serves until the process receives
 // SIGINT/SIGTERM. It logs and calls os.Exit(1) on a fatal initialization error,
