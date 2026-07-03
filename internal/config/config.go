@@ -78,9 +78,9 @@ type AuthConfig struct {
 	APIKeys []APIKeyConf `yaml:"apiKeys"`
 	OIDC    OIDCConfig   `yaml:"oidc"`
 	TLS     TLSConf      `yaml:"tls"`
-	// Options is a generic bag read by out-of-tree auth providers (e.g. an
-	// enterprise SAML mode). Core providers (apikey/oauth/oidc) ignore it, so a
-	// new mode needs no field added to this struct.
+	// Options is a generic bag read by out-of-tree auth providers. Core providers
+	// (apikey/oauth/oidc) ignore it, so a new mode needs no field added to this
+	// struct.
 	Options map[string]string `yaml:"options,omitempty"`
 }
 
@@ -233,9 +233,9 @@ type StoreConfig struct {
 	ConfigMap ConfigMapConfig `yaml:"configmap"`
 	SQLite    SQLiteConfig    `yaml:"sqlite"`
 	// Options is a generic bag passed verbatim to the store backend factory.
-	// Core backends ignore it; out-of-tree backends (e.g. an enterprise Postgres
-	// store) read their own settings from here (a DSN, pool size, …) so adding a
-	// backend needs no change to this struct.
+	// Core backends ignore it; an out-of-tree backend reads its own settings from
+	// here (a DSN, pool size, …) so adding a backend needs no change to this
+	// struct.
 	Options map[string]string `yaml:"options,omitempty"`
 }
 

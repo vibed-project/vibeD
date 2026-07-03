@@ -12,7 +12,7 @@ import (
 
 // extStore mimics an out-of-tree backend: it implements plugin.ArtifactStore
 // (an alias of the internal interface) using only public packages — the same
-// constraint a separate enterprise module operates under.
+// constraint a separate out-of-tree module operates under.
 type extStore struct{}
 
 func (extStore) Create(context.Context, *api.Artifact) error              { return nil }

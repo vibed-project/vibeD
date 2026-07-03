@@ -34,9 +34,9 @@ import (
 // SP's metadata/ACS/login endpoints). When auth is disabled it returns a
 // passthrough middleware and no routes. userStore is optional (may be nil).
 //
-// OSS registers apikey/oauth/oidc (see providers.go); a closed enterprise module
-// registers additional modes (e.g. saml) via RegisterProvider. An empty mode
-// defaults to apikey.
+// The core registers apikey/oauth/oidc (see providers.go); an out-of-tree module
+// can register additional modes via RegisterProvider. An empty mode defaults to
+// apikey.
 func Build(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (func(http.Handler) http.Handler, []Route, error) {
 	passthrough := func(next http.Handler) http.Handler { return next }
 	if !cfg.Enabled {

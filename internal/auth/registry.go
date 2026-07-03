@@ -34,10 +34,10 @@ type Provider struct {
 
 // ProviderFactory builds the Provider for one auth mode. It does its own config
 // validation and returns a descriptive error (e.g. "no API keys configured").
-// userStore may be nil. Registered from init(): the OSS core registers
-// apikey/oauth/oidc; a closed enterprise module registers additional modes (e.g.
-// saml) the same way, reading any settings it needs from cfg.Options so no field
-// has to be added to config.AuthConfig.
+// userStore may be nil. Registered from init(): the core registers
+// apikey/oauth/oidc; an out-of-tree module can register additional modes the
+// same way, reading any settings it needs from cfg.Options so no field has to be
+// added to config.AuthConfig.
 type ProviderFactory func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (*Provider, error)
 
 var (

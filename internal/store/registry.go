@@ -14,9 +14,9 @@ import (
 // Deps carries everything a backend Factory might need to build a store. Core
 // backends read only the fields they care about (sqlite → SQLitePath; configmap
 // → K8sClient + ConfigMapName/Namespace; memory → nothing). Options is a generic
-// escape hatch so out-of-tree backends (e.g. an enterprise Postgres store) can
-// receive their own configuration (a DSN, TLS settings, …) without the core
-// StoreConfig having to grow a field for every backend.
+// escape hatch so an out-of-tree backend can receive its own configuration
+// (a DSN, TLS settings, …) without the core StoreConfig having to grow a field
+// for every backend.
 type Deps struct {
 	Backend            string
 	SQLitePath         string
@@ -30,7 +30,7 @@ type Deps struct {
 // Factory builds a primary ArtifactStore from Deps. The returned store MAY also
 // implement UserStore, AuditStore, ShareLinkStore, and io.Closer; callers
 // feature-detect those via type assertion. Registered from each backend's
-// init(); enterprise editions register additional backends the same way.
+// init(); an out-of-tree module registers additional backends the same way.
 type Factory func(Deps) (ArtifactStore, error)
 
 var (

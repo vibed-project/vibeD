@@ -1,12 +1,11 @@
-// Package entitlements gates paid features behind the running edition.
+// Package entitlements gates optional features behind the running edition.
 //
-// The OSS core ships the "community" edition, under which no paid feature is
-// licensed. A closed enterprise binary installs a license-backed implementation
-// via Set (through pkg/plugin.SetEntitlements) after verifying its signed
-// license key; paid feature gate points then call Require before activating.
-// Because the OSS core never calls Set, an OSS build stays community and every
-// Require for a paid feature fails — but the OSS code never gates itself, so
-// there is no behavior change for community users.
+// The default edition is "community", which enables no gated feature. An
+// out-of-tree build can install a different edition via Set (through
+// pkg/plugin.SetEntitlements) at startup; feature gate points then call Require
+// before activating. The core itself never calls Set, so a plain build stays
+// community and every Require for a gated feature fails — but the core never
+// gates itself, so there is no behavior change for community builds.
 package entitlements
 
 import (
@@ -14,19 +13,19 @@ import (
 	"sync"
 )
 
-// Entitlements reports the running edition and which paid features it licenses.
+// Entitlements reports the running edition and which gated features it enables.
 type Entitlements interface {
-	// Edition names the running edition, e.g. "community" or "enterprise".
+	// Edition names the running edition, e.g. "community".
 	Edition() string
-	// Licensed reports whether the named paid feature is licensed.
-	Licensed(feature string) bool
+	// Enabled reports whether the named gated feature is enabled.
+	Enabled(feature string) bool
 }
 
-// community is the OSS default: it licenses no paid feature.
+// community is the default: it enables no gated feature.
 type community struct{}
 
-func (community) Edition() string      { return "community" }
-func (community) Licensed(string) bool { return false }
+func (community) Edition() string     { return "community" }
+func (community) Enabled(string) bool { return false }
 
 // current holds the process-wide Entitlements, guarded by mu (Entitlements has
 // varying concrete types, so a mutex — not atomic.Value — is used).
@@ -35,8 +34,8 @@ var (
 	current Entitlements = community{}
 )
 
-// Set installs the process-wide entitlements. The enterprise binary calls it
-// once, after verifying its license; the OSS core never does.
+// Set installs the process-wide entitlements. An out-of-tree build calls it once
+// at startup to select a non-default edition; the core never does.
 func Set(e Entitlements) {
 	if e == nil {
 		e = community{}
@@ -53,12 +52,12 @@ func Get() Entitlements {
 	return current
 }
 
-// Require returns nil if feature is licensed in the current edition, else a
-// descriptive error. It is the gate a paid feature calls before activating.
+// Require returns nil if feature is enabled in the current edition, else a
+// descriptive error. It is the gate a feature calls before activating.
 func Require(feature string) error {
 	e := Get()
-	if e.Licensed(feature) {
+	if e.Enabled(feature) {
 		return nil
 	}
-	return fmt.Errorf("feature %q is not licensed in the %q edition; a valid vibeD Enterprise license is required", feature, e.Edition())
+	return fmt.Errorf("feature %q is not available in the %q edition", feature, e.Edition())
 }

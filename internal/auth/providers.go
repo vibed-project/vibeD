@@ -8,9 +8,9 @@ import (
 	"github.com/vibed-project/vibeD/internal/store"
 )
 
-// Register the three OSS built-in auth modes. Each carries the same validation
-// the previous switch in Middleware performed. Enterprise modes (saml, …) are
-// registered by the closed enterprise module via RegisterProvider.
+// Register the three built-in auth modes. Each carries the same validation the
+// previous switch in Middleware performed. Additional modes can be registered by
+// an out-of-tree module via RegisterProvider.
 func init() {
 	RegisterProvider("apikey", func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (*Provider, error) {
 		if len(cfg.APIKeys) == 0 {

@@ -62,7 +62,7 @@ func TestMiddleware_ApikeyRequiresKeys(t *testing.T) {
 	}
 }
 
-// A closed enterprise module registers a new mode exactly this way.
+// An out-of-tree module registers a new mode exactly this way.
 func TestRegisterProvider_Extensibility(t *testing.T) {
 	RegisterProvider("test-saml", func(config.AuthConfig, store.UserStore, *slog.Logger) (*Provider, error) {
 		return nil, nil

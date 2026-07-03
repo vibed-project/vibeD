@@ -2,11 +2,10 @@
 // metrics, Kubernetes clients, storage, the artifact store, the orchestrator,
 // the deploy service, the MCP server, authentication, and the HTTP server.
 //
-// It is the reusable entry point shared by cmd/vibed and out-of-tree editions
-// (e.g. a closed cmd/vibed-enterprise): those import this package, register
-// their providers via the internal/auth and internal/store registries, and call
-// Run. The build/wiring logic lives here so a second binary does not have to
-// fork main().
+// It is the reusable entry point shared by cmd/vibed and any out-of-tree binary:
+// those import this package, register their providers via the internal/auth and
+// internal/store registries, and call Run. The build/wiring logic lives here so
+// a second binary does not have to fork main().
 package server
 
 import (
@@ -59,10 +58,10 @@ import (
 
 // Main is the standard vibeD program entry point: it parses the -config and
 // -transport flags, loads and validates the config, builds the logger, and runs
-// the server. cmd/vibed calls it, and so does an out-of-tree edition — e.g. a
-// closed cmd/vibed-enterprise whose main() blank-imports its provider packages
-// (registering backends/modes via init()) and then calls server.Main(). This is
-// the seam that lets a separate module boot vibeD without importing internal/.
+// the server. cmd/vibed calls it, and so can an out-of-tree binary whose main()
+// blank-imports its provider packages (registering backends/modes via init())
+// and then calls server.Main(). This is the seam that lets a separate module
+// boot vibeD without importing internal/.
 func Main() {
 	var (
 		configPath string

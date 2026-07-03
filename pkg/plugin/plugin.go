@@ -1,8 +1,8 @@
 // Package plugin is the public extension surface of vibeD.
 //
-// It exists so a SEPARATE Go module — for example a closed-source enterprise
-// edition — can plug its own implementations into the OSS core without importing
-// the core's internal/ packages, which Go forbids across module boundaries.
+// It exists so a SEPARATE Go module can plug its own implementations into the
+// core without importing the core's internal/ packages, which Go forbids across
+// module boundaries.
 //
 // The package re-exports, as type aliases, the interfaces and helper types an
 // out-of-tree provider must name, plus thin Register* wrappers over the internal
@@ -10,20 +10,19 @@
 // that satisfies plugin.ArtifactStore also satisfies internal/store.ArtifactStore
 // — they are the same type — so registration needs no adapter.
 //
-// Typical enterprise use:
+// Typical use from an out-of-tree module:
 //
 //	func init() {
-//	    plugin.RegisterStoreBackend("postgres", func(d plugin.StoreDeps) (plugin.ArtifactStore, error) {
-//	        return newPostgresStore(d.Options["dsn"])
+//	    plugin.RegisterStoreBackend("mybackend", func(d plugin.StoreDeps) (plugin.ArtifactStore, error) {
+//	        return newBackend(d.Options["dsn"])
 //	    })
-//	    plugin.RegisterAuthProvider("saml", newSAMLProvider)
+//	    plugin.RegisterAuthProvider("mymode", newProvider)
 //	}
 //
-// The enterprise binary then imports pkg/server and calls server.Run; the
-// registered backend/mode is selected by the usual store.backend / auth.mode
-// config value. Error sentinels a store returns (api.ErrNotFound,
-// api.ErrAlreadyExists, api.ErrVersionNotFound, …) already live in the public
-// pkg/api package.
+// That module then imports pkg/server and calls server.Main/Run; the registered
+// backend/mode is selected by the usual store.backend / auth.mode config value.
+// Error sentinels a store returns (api.ErrNotFound, api.ErrAlreadyExists,
+// api.ErrVersionNotFound, …) already live in the public pkg/api package.
 package plugin
 
 import (
@@ -70,8 +69,8 @@ func StoreBackends() []string { return store.Backends() }
 // --- Auth providers ---------------------------------------------------------
 
 // AuthConfig is the auth section of the vibeD config. Out-of-tree providers
-// typically read AuthConfig.Options for their settings (e.g. a SAML metadata
-// URL) so a new mode needs no new config field.
+// typically read AuthConfig.Options for their settings so a new mode needs no
+// new config field.
 type AuthConfig = config.AuthConfig
 
 // TokenVerifier and TokenInfo are the MCP SDK types an auth provider produces:
@@ -104,18 +103,18 @@ func RegisterAuthProvider(mode string, f AuthProviderFactory) { auth.RegisterPro
 // AuthProviders returns the registered auth mode names, sorted.
 func AuthProviders() []string { return auth.Providers() }
 
-// --- Entitlements (license gating) -----------------------------------------
+// --- Entitlements (feature gating) -----------------------------------------
 
-// Entitlements reports the running edition and which paid features are licensed.
-// The OSS default is the community edition, which licenses nothing.
+// Entitlements reports the running edition and which gated features it enables.
+// The default is the community edition, which enables no gated feature.
 type Entitlements = entitlements.Entitlements
 
-// SetEntitlements installs the process-wide entitlements. A closed enterprise
-// binary calls it once, at startup, after verifying its signed license key; the
-// OSS core never calls it, so an OSS build stays community.
+// SetEntitlements installs the process-wide entitlements. An out-of-tree build
+// calls it once, at startup, to select a non-default edition; the core never
+// calls it, so a plain build stays community.
 func SetEntitlements(e Entitlements) { entitlements.Set(e) }
 
-// RequireFeature returns nil if feature is licensed in the current edition, else
-// an error. Enterprise provider registrations call it to gate activation, so an
-// enterprise binary without a valid license refuses to serve paid features.
+// RequireFeature returns nil if feature is enabled in the current edition, else
+// an error. Provider registrations call it to gate activation, so a build that
+// has not enabled a feature's edition refuses to serve it.
 func RequireFeature(feature string) error { return entitlements.Require(feature) }

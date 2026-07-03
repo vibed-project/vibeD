@@ -108,8 +108,8 @@ test-cleanup:
 lint: boundary
 	golangci-lint run ./...
 
-# Enforce the open-core boundary: the Apache-2.0 core must not import the closed
-# vibed-enterprise / vibed-cloud modules. Also run in CI (.github/workflows/ci.yaml).
+# Assert this module stays self-contained (no sibling github.com/vibed-project
+# module dependency). Also run in CI (.github/workflows/ci.yaml).
 boundary:
 	./scripts/check-import-boundary.sh
 
