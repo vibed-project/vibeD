@@ -66,6 +66,17 @@ jobs:
         # -race requires cgo; default Ubuntu runners have it.
         run: go test -race -count=1 -short ./internal/... ./pkg/...
 
+  # Open-core boundary: the Apache-2.0 core must never import the closed
+  # commercial modules (vibed-enterprise, vibed-cloud). Pure static check — no
+  # Go/Node toolchain needed — so it runs fast and in parallel.
+  boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check open-core import boundary
+        run: ./scripts/check-import-boundary.sh
+
   # Build and push the control-plane images on merge to main (not on PRs).
   # Template/runner images are built separately in runner-images.yaml.
   container:
