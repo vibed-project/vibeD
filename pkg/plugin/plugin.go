@@ -31,6 +31,7 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/entitlements"
 	"github.com/vibed-project/vibeD/internal/store"
 )
 
@@ -102,3 +103,19 @@ func RegisterAuthProvider(mode string, f AuthProviderFactory) { auth.RegisterPro
 
 // AuthProviders returns the registered auth mode names, sorted.
 func AuthProviders() []string { return auth.Providers() }
+
+// --- Entitlements (license gating) -----------------------------------------
+
+// Entitlements reports the running edition and which paid features are licensed.
+// The OSS default is the community edition, which licenses nothing.
+type Entitlements = entitlements.Entitlements
+
+// SetEntitlements installs the process-wide entitlements. A closed enterprise
+// binary calls it once, at startup, after verifying its signed license key; the
+// OSS core never calls it, so an OSS build stays community.
+func SetEntitlements(e Entitlements) { entitlements.Set(e) }
+
+// RequireFeature returns nil if feature is licensed in the current edition, else
+// an error. Enterprise provider registrations call it to gate activation, so an
+// enterprise binary without a valid license refuses to serve paid features.
+func RequireFeature(feature string) error { return entitlements.Require(feature) }
