@@ -206,6 +206,11 @@ func (s *Server) runDeploy(w http.ResponseWriter, r *http.Request, owner, forced
 
 	res, err := s.Deploy.Deploy(r.Context(), req)
 	if err != nil {
+		var pe interface{ PolicyDenied() bool }
+		if errors.As(err, &pe) {
+			writeJSON(w, http.StatusForbidden, Error{Code: "policy_denied", Message: err.Error()})
+			return
+		}
 		var qe interface{ QuotaExceeded() bool }
 		if errors.As(err, &qe) {
 			writeJSON(w, http.StatusTooManyRequests, Error{Code: "quota_exceeded", Message: err.Error()})

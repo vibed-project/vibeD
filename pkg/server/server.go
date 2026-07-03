@@ -36,9 +36,11 @@ import (
 	"github.com/vibed-project/vibeD/internal/health"
 	"github.com/vibed-project/vibeD/internal/k8s"
 	mcppkg "github.com/vibed-project/vibeD/internal/mcp"
+	"github.com/vibed-project/vibeD/internal/meter"
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/middleware"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/quota"
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
@@ -317,6 +319,25 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 			os.Exit(1)
 		}
 		deploySvc.Tenants = resolver
+
+		// Deploy-time policy gate (none by default) and usage meter (Prometheus
+		// by default) — an out-of-tree module may register its own.
+		gate, gerr := policy.Build(policy.Deps{})
+		if gerr != nil {
+			logger.Error("failed to build policy gate", "error", gerr)
+			os.Exit(1)
+		}
+		deploySvc.Policy = gate
+
+		sink, merr := meter.Build(meter.Deps{})
+		if merr != nil {
+			logger.Error("failed to build usage meter", "error", merr)
+			os.Exit(1)
+		}
+		deploySvc.Meter = sink
+		if gate != nil {
+			logger.Info("deploy policy gate enabled")
+		}
 	}
 
 	// Create MCP server

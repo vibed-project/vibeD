@@ -21,6 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vibed-project/vibeD/internal/classifier"
+	"github.com/vibed-project/vibeD/internal/meter"
+	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/tarball"
 	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
@@ -62,6 +64,12 @@ type Service struct {
 	Quota Quota
 	// Audit, when set, records deploy/delete actions. nil disables auditing.
 	Audit Auditor
+	// Policy, when set, evaluates each deploy after classification and may deny
+	// it. nil = no policy (deploys are unrestricted).
+	Policy policy.Gate
+	// Meter, when set, records a usage event on each deploy/delete. nil disables
+	// metering.
+	Meter meter.Sink
 }
 
 // Quota gates new deploys within a tenant and resolves the owner's department
@@ -168,6 +176,26 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("get VibedApp: %w", getErr)
 	}
 
+	// Policy gate: evaluated on every deploy (new AND redeploy — a redeploy can
+	// introduce a new violation) after classification, before anything is
+	// stored. A denial aborts the deploy.
+	if s.Policy != nil {
+		if perr := s.Policy.Evaluate(ctx, policy.Input{
+			Tenant:       t,
+			Owner:        req.Owner,
+			Name:         req.Name,
+			Lane:         lane,
+			Template:     template,
+			AllowedHosts: req.AllowedHosts,
+			Env:          req.Env,
+			IsNew:        isNew,
+			Source:       buf,
+		}); perr != nil {
+			_ = s.record(ctx, "deploy", req.Name, "denied", perr.Error())
+			return nil, perr
+		}
+	}
+
 	// Quota gates new deploys (within the tenant) and tells us the owner's
 	// department for labeling.
 	var department string
@@ -240,7 +268,15 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	if err := s.record(ctx, "deploy", req.Name, "ok", ""); err != nil {
 		return nil, fmt.Errorf("deploy succeeded but audit failed: %w", err)
 	}
+	s.meter(ctx, meter.Event{Kind: "deploy", Tenant: t.ID, Owner: req.Owner, App: req.Name})
 	return s.waitReady(ctx, t.Namespace, req.Name)
+}
+
+// meter records a usage event when a Meter is configured (else no-op).
+func (s *Service) meter(ctx context.Context, e meter.Event) {
+	if s.Meter != nil {
+		s.Meter.Record(ctx, e)
+	}
 }
 
 // tenant resolves the request's tenant, falling back to the single-tenant

@@ -31,6 +31,8 @@ import (
 	"github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/entitlements"
+	"github.com/vibed-project/vibeD/internal/meter"
+	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tenant"
 )
@@ -139,3 +141,40 @@ func SingleTenant(t Tenant) TenantResolver { return tenant.Single(t) }
 // one). An out-of-tree module calls it to enable multi-tenancy: the core resolves
 // each request to its tenant (namespace + limits) instead of the single default.
 func RegisterTenantResolver(f func(TenantDeps) (TenantResolver, error)) { tenant.Register(f) }
+
+// --- Policy (deploy-time governance) ---------------------------------------
+
+// PolicyGate evaluates a deploy after classification and may deny it.
+// PolicyInput is what it receives; PolicyDeniedError (or any error whose
+// PolicyDenied() is true) makes the deploy API return 403. PolicyDeps is what a
+// gate factory receives.
+type (
+	PolicyGate        = policy.Gate
+	PolicyInput       = policy.Input
+	PolicyDeniedError = policy.DeniedError
+	PolicyDeps        = policy.Deps
+)
+
+// RegisterPolicyGate installs the process policy gate factory (at most one). The
+// core installs no gate, so deploys are unrestricted until one is registered.
+func RegisterPolicyGate(f func(PolicyDeps) (PolicyGate, error)) { policy.Register(f) }
+
+// --- Metering (usage) ------------------------------------------------------
+
+// MeterSink records a usage MeterEvent on each deploy/delete. MeterDeps is what
+// a sink factory receives.
+type (
+	MeterSink  = meter.Sink
+	MeterEvent = meter.Event
+	MeterDeps  = meter.Deps
+)
+
+// RegisterMeterSink installs the process usage-meter factory (at most one),
+// replacing the Prometheus default. Compose with the default via TeeMeterSinks.
+func RegisterMeterSink(f func(MeterDeps) (MeterSink, error)) { meter.Register(f) }
+
+// PrometheusMeterSink is the core's default sink (per-tenant event counters);
+// TeeMeterSinks fans events out to several sinks (e.g. Prometheus + a billing
+// sink).
+func PrometheusMeterSink() MeterSink             { return meter.Prometheus() }
+func TeeMeterSinks(sinks ...MeterSink) MeterSink { return meter.Tee(sinks...) }

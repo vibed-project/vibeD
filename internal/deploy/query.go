@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/vibed-project/vibeD/internal/meter"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -102,5 +103,9 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 	if err := s.record(ctx, "delete", id, "ok", ""); err != nil {
 		return fmt.Errorf("delete succeeded but audit failed: %w", err)
 	}
+	// Usage event. The tenant resolves from the same context Get used, so this
+	// can't error here (Get already succeeded); a zero tenant id is fine.
+	t, _ := s.tenant(ctx)
+	s.meter(ctx, meter.Event{Kind: "delete", Tenant: t.ID, Owner: owner, App: id})
 	return nil
 }

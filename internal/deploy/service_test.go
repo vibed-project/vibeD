@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/vibed-project/vibeD/internal/classifier"
+	"github.com/vibed-project/vibeD/internal/meter"
+	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/tarball"
 	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
@@ -297,6 +299,64 @@ func TestDeployRejectsNamedTenantWithoutNamespace(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "without a namespace") {
 		t.Fatalf("want a 'without a namespace' error, got %v", err)
+	}
+}
+
+type denyPolicy struct{}
+
+func (denyPolicy) Evaluate(context.Context, policy.Input) error {
+	return &policy.DeniedError{Reason: "not allowed"}
+}
+
+type recordingMeter struct{ events []meter.Event }
+
+func (m *recordingMeter) Record(_ context.Context, e meter.Event) { m.events = append(m.events, e) }
+
+// A Policy that denies aborts the deploy (403-tagged error) and no CR is created.
+func TestDeployPolicyDenies(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Policy = denyPolicy{}
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	})
+	var pe interface{ PolicyDenied() bool }
+	if !errors.As(err, &pe) || !pe.PolicyDenied() {
+		t.Fatalf("want a PolicyDenied error, got %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app1", Namespace: "vibed-apps"}, &vibedv1.VibedApp{}); err == nil {
+		t.Error("a policy-denied deploy must not create a CR")
+	}
+}
+
+// The meter records a "deploy" then a "delete" usage event with owner/app.
+func TestMeterRecordsDeployAndDelete(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	rec := &recordingMeter{}
+	svc.Meter = rec
+
+	markReady(c, "app1", "vibed-apps", 30*time.Millisecond)
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if err := svc.Delete(context.Background(), "alice", "app1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(rec.events) != 2 || rec.events[0].Kind != "deploy" || rec.events[1].Kind != "delete" {
+		t.Fatalf("events = %+v", rec.events)
+	}
+	if rec.events[0].App != "app1" || rec.events[0].Owner != "alice" {
+		t.Errorf("deploy event = %+v", rec.events[0])
 	}
 }
 
