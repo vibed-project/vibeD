@@ -17,6 +17,10 @@ type MemoryStore struct {
 	audit     []api.AuditEvent                  // append-only audit log (oldest first)
 }
 
+func init() {
+	Register("memory", func(Deps) (ArtifactStore, error) { return NewMemoryStore(), nil })
+}
+
 // NewMemoryStore creates a new in-memory artifact store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{

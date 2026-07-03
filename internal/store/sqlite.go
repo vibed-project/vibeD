@@ -115,6 +115,10 @@ type SQLiteStore struct {
 	stmtGetUserByName     *sql.Stmt
 }
 
+func init() {
+	Register("sqlite", func(d Deps) (ArtifactStore, error) { return NewSQLiteStore(d.SQLitePath) })
+}
+
 // NewSQLiteStore opens (or creates) a SQLite database at the given path
 // and initializes the schema. Uses WAL mode for concurrent read performance.
 func NewSQLiteStore(path string) (*SQLiteStore, error) {

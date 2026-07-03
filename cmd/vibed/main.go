@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -167,29 +168,31 @@ func main() {
 
 	// Initialize artifact store
 	checker.SetNotReady("store", "initializing")
-	var st store.ArtifactStore
-	var userStore store.UserStore // non-nil only for SQLite backend
-	switch cfg.Store.Backend {
-	case "memory":
-		st = store.NewMemoryStore()
-	case "configmap":
-		st = store.NewConfigMapStore(
-			k8sClients.Clientset,
-			cfg.Store.ConfigMap.Name,
-			cfg.Store.ConfigMap.Namespace,
-		)
-	case "sqlite":
-		sqliteStore, err := store.NewSQLiteStore(cfg.Store.SQLite.Path)
-		if err != nil {
-			logger.Error("failed to open SQLite store", "error", err, "path", cfg.Store.SQLite.Path)
-			os.Exit(1)
-		}
-		defer sqliteStore.Close()
-		st = sqliteStore
-		userStore = sqliteStore // SQLiteStore implements both interfaces
-	default:
-		logger.Error("unsupported store backend", "backend", cfg.Store.Backend)
+	st, err := store.New(store.Deps{
+		Backend:            cfg.Store.Backend,
+		SQLitePath:         cfg.Store.SQLite.Path,
+		ConfigMapName:      cfg.Store.ConfigMap.Name,
+		ConfigMapNamespace: cfg.Store.ConfigMap.Namespace,
+		K8sClient:          k8sClients.Clientset,
+		Options:            cfg.Store.Options,
+		Logger:             logger,
+	})
+	if err != nil {
+		logger.Error("failed to initialize store", "backend", cfg.Store.Backend, "error", err)
 		os.Exit(1)
+	}
+	// Release backend resources on shutdown (SQLite closes its DB handle; the
+	// memory/configmap backends don't implement io.Closer, so this is a no-op).
+	if closer, ok := st.(io.Closer); ok {
+		defer closer.Close()
+	}
+	// UserStore, AuditStore, and ShareLinkStore are optional capabilities the
+	// chosen backend may also implement, feature-detected via type assertion.
+	// Today only SQLite (and an out-of-tree Postgres backend) implements
+	// UserStore; the memory/configmap backends leave it nil.
+	var userStore store.UserStore
+	if us, ok := st.(store.UserStore); ok {
+		userStore = us
 	}
 	checker.SetReady("store")
 

@@ -228,6 +228,11 @@ type StoreConfig struct {
 	Backend   string          `yaml:"backend"` // "sqlite" (default), "memory", or "configmap"
 	ConfigMap ConfigMapConfig `yaml:"configmap"`
 	SQLite    SQLiteConfig    `yaml:"sqlite"`
+	// Options is a generic bag passed verbatim to the store backend factory.
+	// Core backends ignore it; out-of-tree backends (e.g. an enterprise Postgres
+	// store) read their own settings from here (a DSN, pool size, …) so adding a
+	// backend needs no change to this struct.
+	Options map[string]string `yaml:"options,omitempty"`
 }
 
 // SQLiteConfig configures the SQLite artifact store.

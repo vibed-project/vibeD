@@ -27,6 +27,12 @@ type ConfigMapStore struct {
 	mu           sync.Mutex
 }
 
+func init() {
+	Register("configmap", func(d Deps) (ArtifactStore, error) {
+		return NewConfigMapStore(d.K8sClient, d.ConfigMapName, d.ConfigMapNamespace), nil
+	})
+}
+
 // NewConfigMapStore creates a ConfigMap-backed artifact store.
 func NewConfigMapStore(client kubernetes.Interface, name, namespace string) *ConfigMapStore {
 	return &ConfigMapStore{
