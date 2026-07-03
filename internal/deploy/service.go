@@ -22,6 +22,7 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/tarball"
+	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -40,8 +41,14 @@ type Service struct {
 	// can't read the pods/log subresource). nil disables log streaming.
 	Clientset kubernetes.Interface
 
-	// Namespace is where VibedApp CRs are created.
+	// Namespace is where VibedApp CRs are created for the single-tenant default,
+	// and the fallback namespace when a resolved tenant leaves it empty.
 	Namespace string
+
+	// Tenants resolves each request to its tenant (namespace + limits). nil means
+	// the single-tenant default: every request runs in Namespace with no
+	// per-tenant limits, so behavior is unchanged.
+	Tenants tenant.Resolver
 	// DeployTimeout bounds how long Deploy waits for Ready before returning
 	// a still-pending result (the API turns this into a 202). Default 10s
 	// matches the refactor.md latency contract.
@@ -57,9 +64,10 @@ type Service struct {
 	Audit Auditor
 }
 
-// Quota gates new deploys and resolves the owner's department (for labeling).
+// Quota gates new deploys within a tenant and resolves the owner's department
+// (for labeling).
 type Quota interface {
-	Authorize(ctx context.Context, owner string, isNew bool) (department string, err error)
+	Authorize(ctx context.Context, t tenant.Tenant, owner string, isNew bool) (department string, err error)
 }
 
 // Auditor records a mutating action; implementations read the actor from ctx.
@@ -122,6 +130,11 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("owner is required")
 	}
 
+	t, err := s.tenant(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve tenant: %w", err)
+	}
+
 	// Read + cap the tarball once; we feed the same bytes to the classifier
 	// and the store.
 	buf, err := readCapped(req.Tarball, MaxTarballBytes)
@@ -147,7 +160,7 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 
 	// New vs redeploy: a redeploy reuses the CR (so the controller can
 	// snapshot-restore later) and is never quota-gated.
-	key := types.NamespacedName{Name: req.Name, Namespace: s.Namespace}
+	key := types.NamespacedName{Name: req.Name, Namespace: t.Namespace}
 	existing := &vibedv1.VibedApp{}
 	getErr := s.Client.Get(ctx, key, existing)
 	isNew := apierrors.IsNotFound(getErr)
@@ -155,10 +168,11 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("get VibedApp: %w", getErr)
 	}
 
-	// Quota gates new deploys and tells us the owner's department for labeling.
+	// Quota gates new deploys (within the tenant) and tells us the owner's
+	// department for labeling.
 	var department string
 	if s.Quota != nil {
-		dept, qerr := s.Quota.Authorize(ctx, req.Owner, isNew)
+		dept, qerr := s.Quota.Authorize(ctx, t, req.Owner, isNew)
 		if qerr != nil {
 			_ = s.record(ctx, "deploy", req.Name, "denied", qerr.Error())
 			return nil, qerr
@@ -177,6 +191,9 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	if department != "" {
 		labels[vibedv1.LabelDepartment] = vibedv1.SanitizeLabel(department)
 	}
+	if t.ID != "" {
+		labels[vibedv1.LabelTenant] = vibedv1.SanitizeLabel(t.ID)
+	}
 
 	spec := vibedv1.VibedAppSpec{
 		Owner:  req.Owner,
@@ -193,7 +210,7 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 
 	if isNew {
 		app := &vibedv1.VibedApp{
-			ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: s.Namespace, Labels: labels},
+			ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: t.Namespace, Labels: labels},
 			Spec:       spec,
 		}
 		if cerr := s.Client.Create(ctx, app); cerr != nil {
@@ -223,7 +240,30 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	if err := s.record(ctx, "deploy", req.Name, "ok", ""); err != nil {
 		return nil, fmt.Errorf("deploy succeeded but audit failed: %w", err)
 	}
-	return s.waitReady(ctx, req.Name)
+	return s.waitReady(ctx, t.Namespace, req.Name)
+}
+
+// tenant resolves the request's tenant, falling back to the single-tenant
+// default (Service.Namespace, no limits) when no resolver is configured or the
+// resolved tenant leaves the namespace empty.
+func (s *Service) tenant(ctx context.Context) (tenant.Tenant, error) {
+	var t tenant.Tenant
+	if s.Tenants != nil {
+		var err error
+		if t, err = s.Tenants.Resolve(ctx); err != nil {
+			return t, err
+		}
+	}
+	// A named tenant must carry its own namespace; falling back to the shared
+	// default would silently mix it with other tenants. Only the single-tenant
+	// default (empty ID) inherits Service.Namespace.
+	if t.ID != "" && t.Namespace == "" {
+		return t, fmt.Errorf("tenant %q resolved without a namespace", t.ID)
+	}
+	if t.Namespace == "" {
+		t.Namespace = s.Namespace
+	}
+	return t, nil
 }
 
 // record emits an audit event when an Auditor is configured (else no-op).
@@ -239,9 +279,9 @@ func (s *Service) record(ctx context.Context, action, target, outcome, detail st
 
 // waitReady polls the CR until it reaches Ready/Failed or DeployTimeout
 // elapses. A timeout is not an error — it's the 202 (still-claiming) path.
-func (s *Service) waitReady(ctx context.Context, name string) (*Result, error) {
+func (s *Service) waitReady(ctx context.Context, namespace, name string) (*Result, error) {
 	deadline := time.Now().Add(s.DeployTimeout)
-	key := types.NamespacedName{Name: name, Namespace: s.Namespace}
+	key := types.NamespacedName{Name: name, Namespace: namespace}
 
 	for {
 		app := &vibedv1.VibedApp{}

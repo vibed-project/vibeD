@@ -26,6 +26,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/internal/tarball"
+	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -322,14 +323,14 @@ func TestStreamLogsSSE(t *testing.T) {
 // pulling the internal package in.
 type quotaDenied struct{}
 
-func (quotaDenied) Authorize(context.Context, string, bool) (string, error) {
+func (quotaDenied) Authorize(context.Context, tenant.Tenant, string, bool) (string, error) {
 	return "", quotaErr{}
 }
 
 type quotaErr struct{}
 
-func (quotaErr) Error() string        { return "owner \"alice\" quota exceeded: 5/5 apps already deployed" }
-func (quotaErr) QuotaExceeded() bool  { return true }
+func (quotaErr) Error() string       { return "owner \"alice\" quota exceeded: 5/5 apps already deployed" }
+func (quotaErr) QuotaExceeded() bool { return true }
 
 // TestDeployEndpointReturns429OnQuotaExceeded locks in the contract the CLI
 // and clients rely on: a quota rejection at the deploy path must surface as

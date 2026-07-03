@@ -16,11 +16,17 @@ import (
 // existence of other users' apps).
 var ErrNotFound = fmt.Errorf("app not found")
 
-// Get returns the VibedApp named id if owner owns it, else ErrNotFound.
+// Get returns the VibedApp named id if owner owns it, else ErrNotFound. The
+// lookup is scoped to the request's tenant namespace, so ownership can never
+// cross a tenant boundary.
 func (s *Service) Get(ctx context.Context, owner, id string) (*vibedv1.VibedApp, error) {
 	s.defaults()
+	t, err := s.tenant(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve tenant: %w", err)
+	}
 	app := &vibedv1.VibedApp{}
-	err := s.Client.Get(ctx, types.NamespacedName{Name: id, Namespace: s.Namespace}, app)
+	err = s.Client.Get(ctx, types.NamespacedName{Name: id, Namespace: t.Namespace}, app)
 	if apierrors.IsNotFound(err) {
 		return nil, ErrNotFound
 	}
@@ -33,11 +39,15 @@ func (s *Service) Get(ctx context.Context, owner, id string) (*vibedv1.VibedApp,
 	return app, nil
 }
 
-// List returns every VibedApp owned by owner in the service namespace.
+// List returns every VibedApp owned by owner in the request's tenant namespace.
 func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, error) {
 	s.defaults()
+	t, err := s.tenant(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve tenant: %w", err)
+	}
 	var list vibedv1.VibedAppList
-	if err := s.Client.List(ctx, &list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(ctx, &list, client.InNamespace(t.Namespace)); err != nil {
 		return nil, fmt.Errorf("list VibedApps: %w", err)
 	}
 	out := make([]vibedv1.VibedApp, 0, len(list.Items))

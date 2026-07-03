@@ -43,6 +43,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tarball"
+	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedtracing "github.com/vibed-project/vibeD/internal/tracing"
 	"github.com/vibed-project/vibeD/pkg/api"
 	vibedhttp "github.com/vibed-project/vibeD/pkg/vibedapi/http"
@@ -307,6 +308,15 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 				"maxAppsPerOwner", cfg.Quotas.MaxAppsPerOwner,
 				"maxAppsPerDepartment", cfg.Quotas.MaxAppsPerDepartment)
 		}
+		// Tenant resolver: the single-tenant default (every request runs in the
+		// apps namespace) unless an out-of-tree module registered a multi-tenant
+		// resolver.
+		resolver, terr := tenant.Build(tenant.Deps{Default: tenant.Tenant{Namespace: deploySvc.Namespace}})
+		if terr != nil {
+			logger.Error("failed to build tenant resolver", "error", terr)
+			os.Exit(1)
+		}
+		deploySvc.Tenants = resolver
 	}
 
 	// Create MCP server

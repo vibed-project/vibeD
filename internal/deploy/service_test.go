@@ -21,6 +21,7 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/tarball"
+	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -242,13 +243,70 @@ func TestGetListDeleteOwnership(t *testing.T) {
 
 // ---- quota + audit wiring ----
 
+// A configured tenant resolver routes the deploy to the tenant's namespace,
+// stamps the tenant label, and scopes Get/List — the multi-tenant path.
+func TestDeployRoutesToTenantNamespace(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Tenants = tenant.Single(tenant.Tenant{ID: "acme", Namespace: "tenant-acme"})
+
+	markReady(c, "app1", "tenant-acme", 30*time.Millisecond)
+	res, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "<html></html>"})),
+	})
+	if err != nil || !res.Ready {
+		t.Fatalf("Deploy: %v, %+v", err, res)
+	}
+
+	// Created in the tenant namespace with the tenant label...
+	app := &vibedv1.VibedApp{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app1", Namespace: "tenant-acme"}, app); err != nil {
+		t.Fatalf("app not in tenant namespace: %v", err)
+	}
+	if app.Labels[vibedv1.LabelTenant] != "acme" {
+		t.Errorf("tenant label = %q, want acme", app.Labels[vibedv1.LabelTenant])
+	}
+	// ...and NOT in the default namespace.
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app1", Namespace: "vibed-apps"}, &vibedv1.VibedApp{}); err == nil {
+		t.Error("app must not exist in the default namespace")
+	}
+	// Get/List are scoped to the tenant namespace.
+	if got, err := svc.Get(context.Background(), "alice", "app1"); err != nil || got.Namespace != "tenant-acme" {
+		t.Fatalf("Get in tenant: %v %+v", err, got)
+	}
+	if list, err := svc.List(context.Background(), "alice"); err != nil || len(list) != 1 {
+		t.Fatalf("List in tenant: %v n=%d", err, len(list))
+	}
+}
+
+// A named tenant with no namespace is rejected (fail closed), rather than
+// silently falling back to the shared default namespace.
+func TestDeployRejectsNamedTenantWithoutNamespace(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Tenants = tenant.Single(tenant.Tenant{ID: "acme"}) // ID set, Namespace empty
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	})
+	if err == nil || !strings.Contains(err.Error(), "without a namespace") {
+		t.Fatalf("want a 'without a namespace' error, got %v", err)
+	}
+}
+
 type fakeQuota struct {
 	dept    string
 	deny    bool
 	lastNew bool
 }
 
-func (q *fakeQuota) Authorize(_ context.Context, _ string, isNew bool) (string, error) {
+func (q *fakeQuota) Authorize(_ context.Context, _ tenant.Tenant, _ string, isNew bool) (string, error) {
 	q.lastNew = isNew
 	if q.deny {
 		return q.dept, &fakeQuotaErr{}

@@ -32,6 +32,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/entitlements"
 	"github.com/vibed-project/vibeD/internal/store"
+	"github.com/vibed-project/vibeD/internal/tenant"
 )
 
 // --- Store backends ---------------------------------------------------------
@@ -118,3 +119,23 @@ func SetEntitlements(e Entitlements) { entitlements.Set(e) }
 // an error. Provider registrations call it to gate activation, so a build that
 // has not enabled a feature's edition refuses to serve it.
 func RequireFeature(feature string) error { return entitlements.Require(feature) }
+
+// --- Tenancy ---------------------------------------------------------------
+
+// Tenant is the isolation scope a request runs in (ID, Namespace, Limits).
+// TenantLimits are its per-tenant ceilings. TenantResolver maps a request
+// context to its Tenant; TenantDeps is what a resolver factory receives.
+type (
+	Tenant         = tenant.Tenant
+	TenantLimits   = tenant.Limits
+	TenantResolver = tenant.Resolver
+	TenantDeps     = tenant.Deps
+)
+
+// SingleTenant returns a resolver that yields t for every request.
+func SingleTenant(t Tenant) TenantResolver { return tenant.Single(t) }
+
+// RegisterTenantResolver installs the process tenant-resolver factory (at most
+// one). An out-of-tree module calls it to enable multi-tenancy: the core resolves
+// each request to its tenant (namespace + limits) instead of the single default.
+func RegisterTenantResolver(f func(TenantDeps) (TenantResolver, error)) { tenant.Register(f) }

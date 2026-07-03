@@ -43,7 +43,7 @@ func (s *Service) StreamLogs(ctx context.Context, owner, id string, follow bool,
 	if tail > 0 {
 		opts.TailLines = &tail
 	}
-	stream, err := s.Clientset.CoreV1().Pods(s.Namespace).GetLogs(podName, opts).Stream(ctx)
+	stream, err := s.Clientset.CoreV1().Pods(app.Namespace).GetLogs(podName, opts).Stream(ctx)
 	if err != nil {
 		return fmt.Errorf("stream pod logs: %w", err)
 	}
@@ -65,7 +65,7 @@ func (s *Service) boundPodName(ctx context.Context, app *vibedv1.VibedApp) (stri
 	if app.Status.PodIP == "" {
 		return "", ErrNoPod
 	}
-	pods, err := s.Clientset.CoreV1().Pods(s.Namespace).List(ctx, metav1.ListOptions{LabelSelector: claimUIDLabel})
+	pods, err := s.Clientset.CoreV1().Pods(app.Namespace).List(ctx, metav1.ListOptions{LabelSelector: claimUIDLabel})
 	if err != nil {
 		return "", fmt.Errorf("list bound pods: %w", err)
 	}
