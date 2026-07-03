@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
-
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/store"
 )
@@ -14,25 +12,25 @@ import (
 // the previous switch in Middleware performed. Enterprise modes (saml, …) are
 // registered by the closed enterprise module via RegisterProvider.
 func init() {
-	RegisterProvider("apikey", func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (mcpauth.TokenVerifier, error) {
+	RegisterProvider("apikey", func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (*Provider, error) {
 		if len(cfg.APIKeys) == 0 {
 			return nil, fmt.Errorf("auth.mode is 'apikey' but no API keys are configured")
 		}
-		return apiKeyVerifier(cfg.APIKeys, userStore, logger), nil
+		return &Provider{Verifier: apiKeyVerifier(cfg.APIKeys, userStore, logger)}, nil
 	})
 
-	RegisterProvider("oauth", func(cfg config.AuthConfig, _ store.UserStore, logger *slog.Logger) (mcpauth.TokenVerifier, error) {
+	RegisterProvider("oauth", func(cfg config.AuthConfig, _ store.UserStore, logger *slog.Logger) (*Provider, error) {
 		if len(cfg.APIKeys) == 0 {
 			return nil, fmt.Errorf("auth.mode is 'oauth' but no API keys (proxy secrets) are configured")
 		}
-		return oauthPassthroughVerifier(cfg.APIKeys, logger), nil
+		return &Provider{Verifier: oauthPassthroughVerifier(cfg.APIKeys, logger)}, nil
 	})
 
-	RegisterProvider("oidc", func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (mcpauth.TokenVerifier, error) {
+	RegisterProvider("oidc", func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (*Provider, error) {
 		v, err := newOIDCVerifier(cfg.OIDC, userStore, logger)
 		if err != nil {
 			return nil, fmt.Errorf("initializing OIDC verifier: %w", err)
 		}
-		return v, nil
+		return &Provider{Verifier: v}, nil
 	})
 }

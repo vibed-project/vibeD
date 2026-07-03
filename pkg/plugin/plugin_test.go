@@ -43,9 +43,12 @@ func TestRegisterStoreBackend(t *testing.T) {
 }
 
 func TestRegisterAuthProvider(t *testing.T) {
-	plugin.RegisterAuthProvider("plugin-test-auth", func(plugin.AuthConfig, plugin.UserStore, *slog.Logger) (plugin.TokenVerifier, error) {
-		return func(context.Context, string, *http.Request) (*plugin.TokenInfo, error) {
-			return &plugin.TokenInfo{UserID: "ext"}, nil
+	plugin.RegisterAuthProvider("plugin-test-auth", func(plugin.AuthConfig, plugin.UserStore, *slog.Logger) (*plugin.Provider, error) {
+		return &plugin.Provider{
+			Verifier: func(context.Context, string, *http.Request) (*plugin.TokenInfo, error) {
+				return &plugin.TokenInfo{UserID: "ext"}, nil
+			},
+			Routes: []plugin.Route{{Pattern: "GET /plugin-test/metadata", Handler: http.NotFoundHandler()}},
 		}, nil
 	})
 	if !contains(plugin.AuthProviders(), "plugin-test-auth") {

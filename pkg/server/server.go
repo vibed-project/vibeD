@@ -313,8 +313,9 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	// Create MCP server
 	mcpServer := mcppkg.NewServer(orch, deploySvc, cfg.Limits, userStore, auditRec)
 
-	// Initialize authentication middleware
-	authMiddleware, err := vibedauth.Middleware(cfg.Auth, userStore, logger)
+	// Initialize authentication middleware and any public login routes the
+	// selected provider contributes (e.g. a SAML SP's /saml/metadata + /saml/acs).
+	authMiddleware, authRoutes, err := vibedauth.Build(cfg.Auth, userStore, logger)
 	if err != nil {
 		logger.Error("failed to initialize authentication", "error", err)
 		os.Exit(1)
@@ -343,9 +344,9 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, auditRec, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
+		runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, auditRec, m, checker, bus, authMiddleware, authRoutes, tlsConfig, userStore, k8sClients, logger)
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, auditRec, m, checker, bus, authMiddleware, tlsConfig, userStore, k8sClients, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, auditRec, m, checker, bus, authMiddleware, authRoutes, tlsConfig, userStore, k8sClients, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -358,8 +359,16 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, auditRec *audit.Recorder, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, auditRec *audit.Recorder, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, authRoutes []vibedauth.Route, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
 	mux := http.NewServeMux()
+
+	// Mount the auth provider's public login routes (e.g. a SAML SP's
+	// metadata/ACS/login). They sit on public paths so SkipAuthPaths lets them
+	// through without a bearer token — they are how a session is obtained.
+	for _, rt := range authRoutes {
+		mux.Handle(rt.Pattern, rt.Handler)
+		logger.Info("mounted auth login route", "pattern", rt.Pattern)
+	}
 
 	// /v1/* HTTP API + /healthz, /readyz, /metrics are mounted via
 	// oapi-codegen's HandlerFromMux so the OpenAPI spec is the single source

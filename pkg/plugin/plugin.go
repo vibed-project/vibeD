@@ -81,8 +81,19 @@ type (
 	TokenInfo     = mcpauth.TokenInfo
 )
 
-// AuthProviderFactory builds the TokenVerifier for one auth mode. It does its
-// own config validation and returns a descriptive error.
+// Provider is what an auth mode contributes: a required token Verifier plus any
+// public HTTP Routes its login flow needs (e.g. a SAML SP's metadata/ACS/login
+// endpoints). Bearer-only modes leave Routes empty.
+type Provider = auth.Provider
+
+// Route is a public HTTP endpoint an auth provider serves as part of its login
+// flow. It is mounted outside the bearer-auth middleware. Pattern is a net/http
+// ServeMux pattern (e.g. "POST /saml/acs"); keep it off the authenticated
+// prefixes (/api, /v1, /mcp, /internal/sources).
+type Route = auth.Route
+
+// AuthProviderFactory builds the Provider for one auth mode. It does its own
+// config validation and returns a descriptive error.
 type AuthProviderFactory = auth.ProviderFactory
 
 // RegisterAuthProvider registers an auth mode under name (e.g. "saml"). Call it

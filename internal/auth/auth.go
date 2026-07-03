@@ -28,31 +28,36 @@ import (
 	"github.com/vibed-project/vibeD/pkg/api"
 )
 
-// Middleware creates the MCP-compatible auth middleware from the config.
-// It wraps the SDK's auth.RequireBearerToken with a custom TokenVerifier
-// that validates against configured API keys, external OAuth, or OIDC JWTs.
-// The userStore parameter is optional (may be nil when auth is disabled or mode is not OIDC).
-func Middleware(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
+// Build resolves the auth provider for cfg.Mode and returns (1) the
+// MCP-compatible bearer-auth middleware (SDK RequireBearerToken + a suspended-
+// user check) and (2) the provider's public login routes, if any (e.g. a SAML
+// SP's metadata/ACS/login endpoints). When auth is disabled it returns a
+// passthrough middleware and no routes. userStore is optional (may be nil).
+//
+// OSS registers apikey/oauth/oidc (see providers.go); a closed enterprise module
+// registers additional modes (e.g. saml) via RegisterProvider. An empty mode
+// defaults to apikey.
+func Build(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (func(http.Handler) http.Handler, []Route, error) {
+	passthrough := func(next http.Handler) http.Handler { return next }
 	if !cfg.Enabled {
-		return func(next http.Handler) http.Handler { return next }, nil
+		return passthrough, nil, nil
 	}
 
-	// Resolve the verifier for cfg.Mode from the provider registry. OSS registers
-	// apikey/oauth/oidc (see providers.go); a closed enterprise module registers
-	// additional modes (e.g. saml) via RegisterProvider. An empty mode defaults
-	// to apikey.
 	factory, ok := lookupProvider(cfg.Mode)
 	if !ok {
-		return nil, fmt.Errorf("unknown auth.mode: %q (must be one of: %s)", cfg.Mode, strings.Join(Providers(), ", "))
+		return nil, nil, fmt.Errorf("unknown auth.mode: %q (must be one of: %s)", cfg.Mode, strings.Join(Providers(), ", "))
 	}
-	verifier, err := factory(cfg, userStore, logger)
+	prov, err := factory(cfg, userStore, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	if prov == nil || prov.Verifier == nil {
+		return nil, nil, fmt.Errorf("auth provider %q returned no verifier", cfg.Mode)
 	}
 
 	opts := &mcpauth.RequireBearerTokenOptions{}
-	tokenMiddleware := mcpauth.RequireBearerToken(verifier, opts)
-	logger.Info("authentication enabled", "mode", cfg.Mode)
+	tokenMiddleware := mcpauth.RequireBearerToken(prov.Verifier, opts)
+	logger.Info("authentication enabled", "mode", cfg.Mode, "loginRoutes", len(prov.Routes))
 
 	// Wrap with suspended user check
 	middleware := func(next http.Handler) http.Handler {
@@ -74,7 +79,14 @@ func Middleware(cfg config.AuthConfig, userStore store.UserStore, logger *slog.L
 		})
 	}
 
-	return middleware, nil
+	return middleware, prov.Routes, nil
+}
+
+// Middleware is the routes-less form of Build, kept for callers (and tests) that
+// only need the bearer-auth middleware.
+func Middleware(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (func(http.Handler) http.Handler, error) {
+	mw, _, err := Build(cfg, userStore, logger)
+	return mw, err
 }
 
 // NoAuthAdminMiddleware returns a middleware that injects the admin role into every

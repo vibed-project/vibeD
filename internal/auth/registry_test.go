@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"context"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -62,7 +64,7 @@ func TestMiddleware_ApikeyRequiresKeys(t *testing.T) {
 
 // A closed enterprise module registers a new mode exactly this way.
 func TestRegisterProvider_Extensibility(t *testing.T) {
-	RegisterProvider("test-saml", func(config.AuthConfig, store.UserStore, *slog.Logger) (mcpauth.TokenVerifier, error) {
+	RegisterProvider("test-saml", func(config.AuthConfig, store.UserStore, *slog.Logger) (*Provider, error) {
 		return nil, nil
 	})
 	if _, ok := lookupProvider("test-saml"); !ok {
@@ -74,7 +76,29 @@ func TestRegisterProvider_Extensibility(t *testing.T) {
 			t.Error("duplicate RegisterProvider should panic")
 		}
 	}()
-	RegisterProvider("test-saml", func(config.AuthConfig, store.UserStore, *slog.Logger) (mcpauth.TokenVerifier, error) {
+	RegisterProvider("test-saml", func(config.AuthConfig, store.UserStore, *slog.Logger) (*Provider, error) {
 		return nil, nil
 	})
+}
+
+// A provider that contributes public login routes (like a SAML SP) has them
+// surfaced by Build so the server can mount them outside the auth middleware.
+func TestBuild_SurfacesProviderRoutes(t *testing.T) {
+	RegisterProvider("test-routes", func(config.AuthConfig, store.UserStore, *slog.Logger) (*Provider, error) {
+		return &Provider{
+			Verifier: func(context.Context, string, *http.Request) (*mcpauth.TokenInfo, error) { return nil, nil },
+			Routes:   []Route{{Pattern: "GET /test/metadata", Handler: http.NotFoundHandler()}},
+		}, nil
+	})
+
+	mw, routes, err := Build(config.AuthConfig{Enabled: true, Mode: "test-routes"}, nil, slog.Default())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if mw == nil {
+		t.Error("Build returned a nil middleware")
+	}
+	if len(routes) != 1 || routes[0].Pattern != "GET /test/metadata" {
+		t.Fatalf("routes = %+v, want one GET /test/metadata", routes)
+	}
 }

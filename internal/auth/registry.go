@@ -2,6 +2,7 @@ package auth
 
 import (
 	"log/slog"
+	"net/http"
 	"sort"
 	"sync"
 
@@ -11,13 +12,33 @@ import (
 	"github.com/vibed-project/vibeD/internal/store"
 )
 
-// ProviderFactory builds the mcpauth.TokenVerifier for one auth mode. It does
-// its own config validation and returns a descriptive error (e.g. "no API keys
-// configured"). userStore may be nil. Registered from init(): the OSS core
-// registers apikey/oauth/oidc; a closed enterprise module registers additional
-// modes (e.g. saml) the same way, reading any settings it needs from
-// cfg.Options so no field has to be added to config.AuthConfig.
-type ProviderFactory func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (mcpauth.TokenVerifier, error)
+// Route is a public HTTP endpoint an auth provider serves as part of its login
+// flow — e.g. a SAML SP's metadata, IdP-redirect, and assertion-consumer (ACS)
+// endpoints. Provider routes are mounted OUTSIDE the bearer-auth middleware:
+// they are how a user obtains a session in the first place, so they cannot
+// themselves require a session. Pattern is a net/http ServeMux pattern
+// ("GET /saml/metadata", "POST /saml/acs"). Keep provider routes on public
+// paths (not under /api, /v1, /mcp, or /internal/sources).
+type Route struct {
+	Pattern string
+	Handler http.Handler
+}
+
+// Provider is what one auth mode contributes: a required token Verifier (checked
+// on every authenticated request) and, optionally, the public Routes its login
+// flow needs. Bearer-only modes (apikey/oauth/oidc) leave Routes empty.
+type Provider struct {
+	Verifier mcpauth.TokenVerifier
+	Routes   []Route
+}
+
+// ProviderFactory builds the Provider for one auth mode. It does its own config
+// validation and returns a descriptive error (e.g. "no API keys configured").
+// userStore may be nil. Registered from init(): the OSS core registers
+// apikey/oauth/oidc; a closed enterprise module registers additional modes (e.g.
+// saml) the same way, reading any settings it needs from cfg.Options so no field
+// has to be added to config.AuthConfig.
+type ProviderFactory func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (*Provider, error)
 
 var (
 	providerMu       sync.RWMutex
