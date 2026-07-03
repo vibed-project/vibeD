@@ -37,30 +37,17 @@ func Middleware(cfg config.AuthConfig, userStore store.UserStore, logger *slog.L
 		return func(next http.Handler) http.Handler { return next }, nil
 	}
 
-	var verifier mcpauth.TokenVerifier
-
-	switch cfg.Mode {
-	case "apikey", "":
-		if len(cfg.APIKeys) == 0 {
-			return nil, fmt.Errorf("auth.mode is 'apikey' but no API keys are configured")
-		}
-		verifier = apiKeyVerifier(cfg.APIKeys, userStore, logger)
-
-	case "oauth":
-		if len(cfg.APIKeys) == 0 {
-			return nil, fmt.Errorf("auth.mode is 'oauth' but no API keys (proxy secrets) are configured")
-		}
-		verifier = oauthPassthroughVerifier(cfg.APIKeys, logger)
-
-	case "oidc":
-		v, err := newOIDCVerifier(cfg.OIDC, userStore, logger)
-		if err != nil {
-			return nil, fmt.Errorf("initializing OIDC verifier: %w", err)
-		}
-		verifier = v
-
-	default:
-		return nil, fmt.Errorf("unknown auth.mode: %q (must be 'apikey', 'oauth', or 'oidc')", cfg.Mode)
+	// Resolve the verifier for cfg.Mode from the provider registry. OSS registers
+	// apikey/oauth/oidc (see providers.go); a closed enterprise module registers
+	// additional modes (e.g. saml) via RegisterProvider. An empty mode defaults
+	// to apikey.
+	factory, ok := lookupProvider(cfg.Mode)
+	if !ok {
+		return nil, fmt.Errorf("unknown auth.mode: %q (must be one of: %s)", cfg.Mode, strings.Join(Providers(), ", "))
+	}
+	verifier, err := factory(cfg, userStore, logger)
+	if err != nil {
+		return nil, err
 	}
 
 	opts := &mcpauth.RequireBearerTokenOptions{}

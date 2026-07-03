@@ -74,10 +74,14 @@ type LimitsConfig struct {
 // AuthConfig holds authentication and TLS settings.
 type AuthConfig struct {
 	Enabled bool         `yaml:"enabled"`
-	Mode    string       `yaml:"mode"` // "apikey", "oauth", or "oidc"
+	Mode    string       `yaml:"mode"` // "apikey", "oauth", or "oidc" (+ modes registered by out-of-tree providers)
 	APIKeys []APIKeyConf `yaml:"apiKeys"`
 	OIDC    OIDCConfig   `yaml:"oidc"`
 	TLS     TLSConf      `yaml:"tls"`
+	// Options is a generic bag read by out-of-tree auth providers (e.g. an
+	// enterprise SAML mode). Core providers (apikey/oauth/oidc) ignore it, so a
+	// new mode needs no field added to this struct.
+	Options map[string]string `yaml:"options,omitempty"`
 }
 
 // OIDCConfig configures OIDC (OpenID Connect) authentication.
