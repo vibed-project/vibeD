@@ -46,6 +46,31 @@ The control plane runs in the release namespace (e.g. `vibed-system`). All workl
 The original design (`refactor.md` §7.1) split the data plane into `vibed-pools` + `vibed-apps`. In practice agent-sandbox binds a `SandboxClaim` only within the namespace its `SandboxTemplate` lives in — there is no cross-namespace pod move — so VibedApps, claims, templates, and warm pools must co-locate. vibeD uses a single workloads namespace.
 :::
 
+## Tenant model
+
+Every request runs inside a **tenant** — an isolation scope of `(ID, Namespace, Limits)`. By default the control plane runs a **single implicit tenant**: an empty ID, the server-default apps namespace, and no per-tenant limits. Behavior is identical to a build with no notion of tenancy: all apps land in the one workloads namespace described above.
+
+The tenant is resolved per request by a `TenantResolver`. The built-in resolver (`SingleTenant`) yields the same default tenant for every request. An out-of-tree module can register its own resolver to map each request to its own namespace and limits (`TenantLimits.MaxApps` caps live apps per tenant); the core then scopes each deploy to the resolved namespace instead of the single default. See [Tenancy](../extending/tenancy.md).
+
+## Extension points
+
+The control plane keeps its pluggable seams behind a stable public package, [`pkg/plugin`](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/plugin). A **separate** Go module supplies its own implementation, blank-imports its provider package (whose `init()` calls the relevant `Register*` function), and then calls `server.Main()` to run a custom `vibed` binary. Because the package re-exports the core interfaces as **type aliases**, an implementation that satisfies `plugin.ArtifactStore` also satisfies the internal interface — no adapter is needed.
+
+| Seam | Registry | Selected by | Default |
+|---|---|---|---|
+| **Store backend** | `RegisterStoreBackend(name, factory)` | `store.backend` config | built-in `sqlite` / `configmap` |
+| **Auth provider** | `RegisterAuthProvider(mode, factory)` | `auth.mode` config | built-in `apikey` / `oidc` |
+| **Tenancy** | `RegisterTenantResolver(factory)` | at most one, process-wide | single implicit tenant |
+| **Policy gate** | `RegisterPolicyGate(factory)` | at most one, process-wide | no gate (deploys unrestricted) |
+| **Metering sink** | `RegisterMeterSink(factory)` | at most one, process-wide | `PrometheusMeterSink` |
+| **Secret scheme** | `RegisterSecretScheme(scheme, resolver)` | `<scheme>:` prefix in a secret value | built-in `env:` / `file:` |
+
+A store backend implements `ArtifactStore` and may additionally implement `UserStore`, `AuditStore`, `ShareLinkStore`, and `io.Closer`; the core feature-detects those by type assertion. An auth provider contributes a `TokenVerifier` plus any public `Route`s its login flow needs. `TeeMeterSinks` composes a custom sink with the Prometheus default.
+
+Feature availability is governed by an `Entitlements` seam (`SetEntitlements` / `RequireFeature`). The core never sets entitlements, and the default edition enables **all** features; an out-of-tree build can install its own edition to gate features on or off.
+
+For the full guide and per-seam examples, see the [Extending](../extending/overview.md) section.
+
 ## CRD ownership
 
 vibeD owns exactly one CRD, `vibedapps.vibed.dev`. See [App lifecycle](app-lifecycle.md) for the schema and phases. Everything else is an agent-sandbox CRD.
