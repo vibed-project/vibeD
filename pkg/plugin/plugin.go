@@ -178,3 +178,14 @@ func RegisterMeterSink(f func(MeterDeps) (MeterSink, error)) { meter.Register(f)
 // sink).
 func PrometheusMeterSink() MeterSink             { return meter.Prometheus() }
 func TeeMeterSinks(sinks ...MeterSink) MeterSink { return meter.Tee(sinks...) }
+
+// --- Secret schemes --------------------------------------------------------
+
+// SecretSchemeResolver resolves the reference part of a "<scheme>:<ref>" secret
+// value (config.ResolveSecret). The core handles env: and file:.
+type SecretSchemeResolver = config.SchemeResolver
+
+// RegisterSecretScheme installs a resolver for a secret scheme (e.g. "vault",
+// "kms"), so config values like "vault:secret/data/db#password" resolve through
+// it. Call it from an init(); panics on a duplicate scheme.
+func RegisterSecretScheme(scheme string, r SecretSchemeResolver) { config.RegisterScheme(scheme, r) }
