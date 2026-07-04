@@ -8,6 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/vibed-project/vibeD/internal/audit"
+	"github.com/vibed-project/vibeD/internal/meter"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -16,11 +18,17 @@ import (
 // existence of other users' apps).
 var ErrNotFound = fmt.Errorf("app not found")
 
-// Get returns the VibedApp named id if owner owns it, else ErrNotFound.
+// Get returns the VibedApp named id if owner owns it, else ErrNotFound. The
+// lookup is scoped to the request's tenant namespace, so ownership can never
+// cross a tenant boundary.
 func (s *Service) Get(ctx context.Context, owner, id string) (*vibedv1.VibedApp, error) {
 	s.defaults()
+	t, err := s.tenant(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve tenant: %w", err)
+	}
 	app := &vibedv1.VibedApp{}
-	err := s.Client.Get(ctx, types.NamespacedName{Name: id, Namespace: s.Namespace}, app)
+	err = s.Client.Get(ctx, types.NamespacedName{Name: id, Namespace: t.Namespace}, app)
 	if apierrors.IsNotFound(err) {
 		return nil, ErrNotFound
 	}
@@ -33,11 +41,15 @@ func (s *Service) Get(ctx context.Context, owner, id string) (*vibedv1.VibedApp,
 	return app, nil
 }
 
-// List returns every VibedApp owned by owner in the service namespace.
+// List returns every VibedApp owned by owner in the request's tenant namespace.
 func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, error) {
 	s.defaults()
+	t, err := s.tenant(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve tenant: %w", err)
+	}
 	var list vibedv1.VibedAppList
-	if err := s.Client.List(ctx, &list, client.InNamespace(s.Namespace)); err != nil {
+	if err := s.Client.List(ctx, &list, client.InNamespace(t.Namespace)); err != nil {
 		return nil, fmt.Errorf("list VibedApps: %w", err)
 	}
 	out := make([]vibedv1.VibedApp, 0, len(list.Items))
@@ -79,6 +91,11 @@ func (s *Service) SetSuspended(ctx context.Context, owner, id string, suspended 
 // Delete removes the VibedApp (and its tarball) if owner owns it. The
 // controller's ownerRef on the SandboxClaim reaps the bound pod.
 func (s *Service) Delete(ctx context.Context, owner, id string) error {
+	// Resolve the tenant once and enrich the audit events + reuse it for the
+	// usage event below.
+	t, _ := s.tenant(ctx)
+	ctx = audit.WithFields(ctx, audit.Fields{TenantID: t.ID})
+
 	app, err := s.Get(ctx, owner, id)
 	if err != nil {
 		return err
@@ -92,5 +109,7 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 	if err := s.record(ctx, "delete", id, "ok", ""); err != nil {
 		return fmt.Errorf("delete succeeded but audit failed: %w", err)
 	}
+	// Usage event, reusing the tenant resolved above.
+	s.meter(ctx, meter.Event{Kind: "delete", Tenant: t.ID, Owner: owner, App: id, Namespace: t.Namespace})
 	return nil
 }

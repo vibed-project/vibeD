@@ -25,14 +25,16 @@ import (
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
+	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/tarball"
+	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
 // newDeployRouter wires a Server with a real deploy.Service (fake k8s client
 // + served tarball store) behind a middleware that injects an authenticated
 // owner — mirroring how main.go stacks auth in front of the API.
-func newDeployRouter(t *testing.T, owner string) (http.Handler, client.Client) {
+func newDeployRouter(t *testing.T, owner string, gates ...policy.Gate) (http.Handler, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := vibedv1.AddToScheme(scheme); err != nil {
@@ -56,6 +58,9 @@ func newDeployRouter(t *testing.T, owner string) (http.Handler, client.Client) {
 		Namespace:     "vibed-apps",
 		DeployTimeout: time.Second,
 		PollInterval:  10 * time.Millisecond,
+	}
+	if len(gates) > 0 {
+		srv.Deploy.Policy = gates[0]
 	}
 
 	mux := http.NewServeMux()
@@ -151,6 +156,28 @@ func TestDeployEndpoint202WhenPending(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.StatusUrl == nil || *resp.StatusUrl != "/v1/apps/pending" {
 		t.Errorf("expected status_url /v1/apps/pending, got %+v", resp)
+	}
+}
+
+type denyGate struct{}
+
+func (denyGate) Evaluate(context.Context, policy.Input) error {
+	return &policy.DeniedError{Reason: "template not allowed"}
+}
+
+func TestDeployEndpoint403WhenPolicyDenies(t *testing.T) {
+	h, _ := newDeployRouter(t, "alice@example.com", denyGate{})
+	body, ct := multipartDeploy(t, "blocked", map[string]string{"index.html": "<h1>x</h1>"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/deploy", body)
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "policy_denied") {
+		t.Errorf("body missing policy_denied code: %s", rec.Body.String())
 	}
 }
 
@@ -322,14 +349,14 @@ func TestStreamLogsSSE(t *testing.T) {
 // pulling the internal package in.
 type quotaDenied struct{}
 
-func (quotaDenied) Authorize(context.Context, string, bool) (string, error) {
+func (quotaDenied) Authorize(context.Context, tenant.Tenant, string, bool) (string, error) {
 	return "", quotaErr{}
 }
 
 type quotaErr struct{}
 
-func (quotaErr) Error() string        { return "owner \"alice\" quota exceeded: 5/5 apps already deployed" }
-func (quotaErr) QuotaExceeded() bool  { return true }
+func (quotaErr) Error() string       { return "owner \"alice\" quota exceeded: 5/5 apps already deployed" }
+func (quotaErr) QuotaExceeded() bool { return true }
 
 // TestDeployEndpointReturns429OnQuotaExceeded locks in the contract the CLI
 // and clients rely on: a quota rejection at the deploy path must surface as

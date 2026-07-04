@@ -19,8 +19,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/classifier"
+	"github.com/vibed-project/vibeD/internal/meter"
+	"github.com/vibed-project/vibeD/internal/policy"
+	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tarball"
+	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -242,13 +247,128 @@ func TestGetListDeleteOwnership(t *testing.T) {
 
 // ---- quota + audit wiring ----
 
+// A configured tenant resolver routes the deploy to the tenant's namespace,
+// stamps the tenant label, and scopes Get/List — the multi-tenant path.
+func TestDeployRoutesToTenantNamespace(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Tenants = tenant.Single(tenant.Tenant{ID: "acme", Namespace: "tenant-acme"})
+
+	markReady(c, "app1", "tenant-acme", 30*time.Millisecond)
+	res, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "<html></html>"})),
+	})
+	if err != nil || !res.Ready {
+		t.Fatalf("Deploy: %v, %+v", err, res)
+	}
+
+	// Created in the tenant namespace with the tenant label...
+	app := &vibedv1.VibedApp{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app1", Namespace: "tenant-acme"}, app); err != nil {
+		t.Fatalf("app not in tenant namespace: %v", err)
+	}
+	if app.Labels[vibedv1.LabelTenant] != "acme" {
+		t.Errorf("tenant label = %q, want acme", app.Labels[vibedv1.LabelTenant])
+	}
+	// ...and NOT in the default namespace.
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app1", Namespace: "vibed-apps"}, &vibedv1.VibedApp{}); err == nil {
+		t.Error("app must not exist in the default namespace")
+	}
+	// Get/List are scoped to the tenant namespace.
+	if got, err := svc.Get(context.Background(), "alice", "app1"); err != nil || got.Namespace != "tenant-acme" {
+		t.Fatalf("Get in tenant: %v %+v", err, got)
+	}
+	if list, err := svc.List(context.Background(), "alice"); err != nil || len(list) != 1 {
+		t.Fatalf("List in tenant: %v n=%d", err, len(list))
+	}
+}
+
+// A named tenant with no namespace is rejected (fail closed), rather than
+// silently falling back to the shared default namespace.
+func TestDeployRejectsNamedTenantWithoutNamespace(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Tenants = tenant.Single(tenant.Tenant{ID: "acme"}) // ID set, Namespace empty
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	})
+	if err == nil || !strings.Contains(err.Error(), "without a namespace") {
+		t.Fatalf("want a 'without a namespace' error, got %v", err)
+	}
+}
+
+type denyPolicy struct{}
+
+func (denyPolicy) Evaluate(context.Context, policy.Input) error {
+	return &policy.DeniedError{Reason: "not allowed"}
+}
+
+type recordingMeter struct{ events []meter.Event }
+
+func (m *recordingMeter) Record(_ context.Context, e meter.Event) { m.events = append(m.events, e) }
+
+// A Policy that denies aborts the deploy (403-tagged error) and no CR is created.
+func TestDeployPolicyDenies(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Policy = denyPolicy{}
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	})
+	var pe interface{ PolicyDenied() bool }
+	if !errors.As(err, &pe) || !pe.PolicyDenied() {
+		t.Fatalf("want a PolicyDenied error, got %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app1", Namespace: "vibed-apps"}, &vibedv1.VibedApp{}); err == nil {
+		t.Error("a policy-denied deploy must not create a CR")
+	}
+}
+
+// The meter records a "deploy" then a "delete" usage event with owner/app.
+func TestMeterRecordsDeployAndDelete(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	rec := &recordingMeter{}
+	svc.Meter = rec
+
+	markReady(c, "app1", "vibed-apps", 30*time.Millisecond)
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if err := svc.Delete(context.Background(), "alice", "app1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(rec.events) != 2 || rec.events[0].Kind != "deploy" || rec.events[1].Kind != "delete" {
+		t.Fatalf("events = %+v", rec.events)
+	}
+	if rec.events[0].App != "app1" || rec.events[0].Owner != "alice" {
+		t.Errorf("deploy event = %+v", rec.events[0])
+	}
+}
+
 type fakeQuota struct {
 	dept    string
 	deny    bool
 	lastNew bool
 }
 
-func (q *fakeQuota) Authorize(_ context.Context, _ string, isNew bool) (string, error) {
+func (q *fakeQuota) Authorize(_ context.Context, _ tenant.Tenant, _ string, isNew bool) (string, error) {
 	q.lastNew = isNew
 	if q.deny {
 		return q.dept, &fakeQuotaErr{}
@@ -349,6 +469,54 @@ func TestDeployStampsLabelsAndAudits(t *testing.T) {
 	}
 	if got := aud.got(); len(got) != 1 || got[0] != "deploy:ok" {
 		t.Errorf("audit = %v, want [deploy:ok]", got)
+	}
+}
+
+// TestDeployEnrichesAuditWithTenantAndSourceHash proves the deploy path pushes
+// the resolved tenant and the source tarball's content hash into the persisted
+// audit event, and that Delete carries the tenant through as well. It wires a
+// real audit.Recorder over a memory store so the enrichment is observed exactly
+// as it lands in the audit trail.
+func TestDeployEnrichesAuditWithTenantAndSourceHash(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	mem := store.NewMemoryStore()
+	svc := newService(c, newFakeStore())
+	svc.Audit = audit.New(mem, nil, false)
+	svc.Tenants = tenant.Single(tenant.Tenant{ID: "acme", Namespace: "tenant-acme"})
+	markReady(c, "app1", "tenant-acme", 20*time.Millisecond)
+
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if err := svc.Delete(context.Background(), "alice", "app1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	events, err := mem.ListAudit(context.Background(), store.AuditQuery{})
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d audit events, want 2", len(events))
+	}
+	// Newest first: delete then deploy.
+	del, dep := events[0], events[1]
+	if del.Action != "delete" || del.TenantID != "acme" {
+		t.Errorf("delete event = %+v, want tenant acme", del)
+	}
+	if dep.Action != "deploy" || dep.TenantID != "acme" {
+		t.Errorf("deploy event = %+v, want tenant acme", dep)
+	}
+	if dep.SourceHash == "" {
+		t.Error("deploy event should carry a non-empty SourceHash")
+	}
+	// Delete has no source, so no hash.
+	if del.SourceHash != "" {
+		t.Errorf("delete event should not carry a SourceHash, got %q", del.SourceHash)
 	}
 }
 

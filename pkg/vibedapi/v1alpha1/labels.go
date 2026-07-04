@@ -6,6 +6,10 @@ package v1alpha1
 const (
 	LabelOwner      = "vibed.dev/owner"
 	LabelDepartment = "vibed.dev/department"
+	// LabelTenant identifies the tenant an app belongs to. It is stamped only in
+	// multi-tenant mode (a non-empty tenant ID); the single-tenant default omits
+	// it, so existing single-tenant apps are unchanged.
+	LabelTenant = "vibed.dev/tenant"
 )
 
 // SanitizeLabel makes an arbitrary identity safe as a Kubernetes label value

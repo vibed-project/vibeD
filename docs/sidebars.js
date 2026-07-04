@@ -10,12 +10,17 @@ const sidebars = {
     {
       type: 'category',
       label: 'Concepts',
-      items: ['concepts/architecture', 'concepts/lanes-and-templates', 'concepts/app-lifecycle'],
+      items: ['concepts/architecture', 'concepts/control-plane', 'concepts/deploy-pipeline', 'concepts/lanes-and-templates', 'concepts/app-lifecycle'],
     },
     {
       type: 'category',
       label: 'Configuration',
       items: ['configuration/config-reference', 'configuration/authentication', 'configuration/storage', 'configuration/custom-base-images', 'configuration/egress-control', 'configuration/quotas', 'configuration/audit-log', 'configuration/registry'],
+    },
+    {
+      type: 'category',
+      label: 'Extending vibeD',
+      items: ['extending/overview', 'extending/store-backends', 'extending/auth-providers', 'extending/tenancy', 'extending/policy-and-metering', 'extending/secrets-and-features'],
     },
     {
       type: 'category',
@@ -45,7 +50,13 @@ const sidebars = {
         'mcp-tools/create-share-link',
         'mcp-tools/list-share-links',
         'mcp-tools/revoke-share-link',
+        'mcp-tools/user-management',
       ],
+    },
+    {
+      type: 'category',
+      label: 'Reference',
+      items: ['reference/http-api'],
     },
     {
       type: 'category',

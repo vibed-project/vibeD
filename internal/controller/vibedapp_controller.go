@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/vibed-project/vibeD/internal/meter"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -140,6 +141,11 @@ type Reconciler struct {
 	// RequeueDelay is how often to re-check transitional phases when no
 	// external signal triggers a reconcile. Defaults to 2s.
 	RequeueDelay time.Duration
+
+	// Meter, when set, records app lifecycle usage events on Ready/stopped
+	// transitions (a ready→stopped pair bounds a billable runtime interval).
+	// nil disables lifecycle metering.
+	Meter meter.Sink
 }
 
 // SetupWithManager registers the reconciler with the manager. The
@@ -537,7 +543,38 @@ func (r *Reconciler) patchStatusIfChanged(ctx context.Context, app *vibedv1.Vibe
 	// Build the patch by re-fetching the latest object and updating its
 	// status subresource. Using Status().Update keeps us safe against
 	// spec-side changes racing with reconciles.
-	return r.Status().Update(ctx, app)
+	if err := r.Status().Update(ctx, app); err != nil {
+		return err
+	}
+	// Every persisted status change funnels through here, so this is the single
+	// place to observe a phase transition exactly once.
+	r.emitLifecycle(ctx, app, before.Phase, app.Status.Phase)
+	return nil
+}
+
+// emitLifecycle records a usage event when an app crosses the Ready boundary:
+// entering Ready starts a billable runtime interval, leaving Ready ends it.
+// Transitions that don't cross Ready (e.g. Pending→Claiming) emit nothing.
+func (r *Reconciler) emitLifecycle(ctx context.Context, app *vibedv1.VibedApp, old, current vibedv1.Phase) {
+	if r.Meter == nil || old == current {
+		return
+	}
+	var kind string
+	switch {
+	case current == vibedv1.PhaseReady:
+		kind = "app.ready"
+	case old == vibedv1.PhaseReady:
+		kind = "app.stopped"
+	default:
+		return
+	}
+	r.Meter.Record(ctx, meter.Event{
+		Kind:      kind,
+		Tenant:    app.Labels[vibedv1.LabelTenant],
+		Owner:     app.Spec.Owner,
+		App:       app.Name,
+		Namespace: app.Namespace,
+	})
 }
 
 // statusEqual is a cheap "did anything I care about change?" check. We

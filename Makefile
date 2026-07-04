@@ -24,7 +24,7 @@ TB_KEYCLOAK := $(TESTBED)/keycloak
 TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
 
 .PHONY: build build-controller build-router build-workerd-loader run run-http web-install web-build docs-install docs-build docs-dev build-all \
-        test e2e e2e-cluster test-integration test-integration-short test-integration-setup test-cleanup lint \
+        test e2e e2e-cluster test-integration test-integration-short test-integration-setup test-cleanup lint boundary \
         generate manifests controller-gen openapi-gen oapi-codegen \
         image load-image \
         runner-images runner-image-python runner-image-node load-runner-images \
@@ -105,8 +105,13 @@ test-integration-short: test-integration-setup
 test-cleanup:
 	kubectl delete ns -l vibed-test=true --ignore-not-found
 
-lint:
+lint: boundary
 	golangci-lint run ./...
+
+# Assert this module stays self-contained (no sibling github.com/vibed-project
+# module dependency). Also run in CI (.github/workflows/ci.yaml).
+boundary:
+	./scripts/check-import-boundary.sh
 
 ## Code generation (CRDs + DeepCopy)
 

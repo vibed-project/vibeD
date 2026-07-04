@@ -39,6 +39,36 @@ func TestRecorderPersistsWithActorFromContext(t *testing.T) {
 	}
 }
 
+func TestRecordMergesContextFields(t *testing.T) {
+	rec := New(store.NewMemoryStore(), nil, false)
+
+	ctx := WithFields(vibedauth.WithUserID(context.Background(), "alice"),
+		Fields{TenantID: "acme", SourceHash: "cafebabe", PolicyDecision: "allowed"})
+	if err := rec.Record(ctx, "deploy", "app1", "ok", ""); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	// A record under a bare context leaves the enrichment empty.
+	if err := rec.Record(context.Background(), "delete", "app1", "ok", ""); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	events, err := rec.List(context.Background(), store.AuditQuery{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	// Newest first: the un-enriched delete.
+	if events[0].TenantID != "" || events[0].SourceHash != "" || events[0].PolicyDecision != "" {
+		t.Errorf("un-enriched event carried fields: %+v", events[0])
+	}
+	// The enriched deploy.
+	if events[1].TenantID != "acme" || events[1].SourceHash != "cafebabe" || events[1].PolicyDecision != "allowed" {
+		t.Errorf("enriched fields not merged: %+v", events[1])
+	}
+}
+
 func TestNilRecorderIsNoop(t *testing.T) {
 	var rec *Recorder
 	if err := rec.Record(context.Background(), "deploy", "x", "ok", ""); err != nil { // must not panic

@@ -88,13 +88,19 @@ CREATE TABLE IF NOT EXISTS departments (
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (
-        id      TEXT PRIMARY KEY,
-        ts      TEXT NOT NULL,
-        actor   TEXT NOT NULL DEFAULT '',
-        action  TEXT NOT NULL DEFAULT '',
-        target  TEXT NOT NULL DEFAULT '',
-        outcome TEXT NOT NULL DEFAULT '',
-        detail  TEXT NOT NULL DEFAULT ''
+        id              TEXT PRIMARY KEY,
+        ts              TEXT NOT NULL,
+        actor           TEXT NOT NULL DEFAULT '',
+        action          TEXT NOT NULL DEFAULT '',
+        target          TEXT NOT NULL DEFAULT '',
+        outcome         TEXT NOT NULL DEFAULT '',
+        detail          TEXT NOT NULL DEFAULT '',
+        tenant_id       TEXT NOT NULL DEFAULT '',
+        session_id      TEXT NOT NULL DEFAULT '',
+        source_hash     TEXT NOT NULL DEFAULT '',
+        policy_decision TEXT NOT NULL DEFAULT '',
+        before_state    TEXT NOT NULL DEFAULT '',
+        after_state     TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts);`
@@ -113,6 +119,10 @@ type SQLiteStore struct {
 	stmtListVersions      *sql.Stmt
 	stmtGetUser           *sql.Stmt
 	stmtGetUserByName     *sql.Stmt
+}
+
+func init() {
+	Register("sqlite", func(d Deps) (ArtifactStore, error) { return NewSQLiteStore(d.SQLitePath) })
 }
 
 // NewSQLiteStore opens (or creates) a SQLite database at the given path
@@ -170,6 +180,16 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN api_key_hash TEXT NOT NULL DEFAULT ''`); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("migrating users table (api_key_hash): %w", err)
+		}
+	}
+
+	// Migration: add the enriched audit columns if missing (older DBs).
+	for _, col := range []string{"tenant_id", "session_id", "source_hash", "policy_decision", "before_state", "after_state"} {
+		if !columnExists(db, "audit_events", col) {
+			if _, err := db.Exec(`ALTER TABLE audit_events ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("migrating audit_events table (%s): %w", col, err)
+			}
 		}
 	}
 

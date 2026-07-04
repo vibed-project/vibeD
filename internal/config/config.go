@@ -74,10 +74,14 @@ type LimitsConfig struct {
 // AuthConfig holds authentication and TLS settings.
 type AuthConfig struct {
 	Enabled bool         `yaml:"enabled"`
-	Mode    string       `yaml:"mode"` // "apikey", "oauth", or "oidc"
+	Mode    string       `yaml:"mode"` // "apikey", "oauth", or "oidc" (+ modes registered by out-of-tree providers)
 	APIKeys []APIKeyConf `yaml:"apiKeys"`
 	OIDC    OIDCConfig   `yaml:"oidc"`
 	TLS     TLSConf      `yaml:"tls"`
+	// Options is a generic bag read by out-of-tree auth providers. Core providers
+	// (apikey/oauth/oidc) ignore it, so a new mode needs no field added to this
+	// struct.
+	Options map[string]string `yaml:"options,omitempty"`
 }
 
 // OIDCConfig configures OIDC (OpenID Connect) authentication.
@@ -228,6 +232,11 @@ type StoreConfig struct {
 	Backend   string          `yaml:"backend"` // "sqlite" (default), "memory", or "configmap"
 	ConfigMap ConfigMapConfig `yaml:"configmap"`
 	SQLite    SQLiteConfig    `yaml:"sqlite"`
+	// Options is a generic bag passed verbatim to the store backend factory.
+	// Core backends ignore it; an out-of-tree backend reads its own settings from
+	// here (a DSN, pool size, …) so adding a backend needs no change to this
+	// struct.
+	Options map[string]string `yaml:"options,omitempty"`
 }
 
 // SQLiteConfig configures the SQLite artifact store.

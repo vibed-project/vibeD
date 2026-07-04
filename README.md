@@ -196,8 +196,8 @@ cmd/
   vibed-controller/   VibedApp reconciler (claims sandboxes, injects source)
   vibed-router/       Programs Caddy routes from VibedApp status
   vibed-agent/        PID 1 inside every sandbox (pulls + starts the app)
-  vibed-egress-authz/ Egress authorization for sandboxes
-  vibed-workerd-loader/ Loads workers into the fast-lane workerd runtime
+  vibed-egress-authz/ Per-connection egress authorizer for the Squid forward proxy
+  vibed-workerd-loader/ Fast-lane workerd sidecar that loads workers into the V8 runtime
 internal/
   classifier/         Deterministic lane + template selection
   controller/         Reconcile logic for VibedApp
@@ -238,6 +238,25 @@ Full documentation is available in the `docs/` directory (Docusaurus site):
 make docs-install   # Install doc dependencies
 make docs-dev       # Start docs dev server
 ```
+
+## Extending vibeD
+
+vibeD's control plane is assembled from **registries**: storage, authentication, tenancy, deploy-time policy, usage metering, and secret schemes are all looked up at startup by name. You can supply your own implementation of any of them from a **separate, out-of-tree Go module** — no fork, no patch, no rebuild of the core.
+
+The seam is the public [`pkg/plugin`](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/plugin) package plus the reusable [`pkg/server`](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/server) entry point. `pkg/plugin` re-exports the internal registry interfaces as **type aliases**, so a value in your module that satisfies `plugin.ArtifactStore` is the same type the core expects — no adapter needed. (Go forbids importing another module's `internal/` packages, which is why the aliases exist.)
+
+| Extension point | Register with | Selected by |
+|-----------------|---------------|-------------|
+| Store backends (`ArtifactStore`, `UserStore`, `AuditStore`, `ShareLinkStore`) | `RegisterStoreBackend(name, factory)` | `store.backend` |
+| Auth providers (`TokenVerifier` + login `Route`s) | `RegisterAuthProvider(mode, factory)` | `auth.mode` |
+| Tenancy (`TenantResolver`) | `RegisterTenantResolver(factory)` | — |
+| Deploy-time policy (`PolicyGate`) | `RegisterPolicyGate(factory)` | — |
+| Usage metering (`MeterSink`) | `RegisterMeterSink(factory)` | — |
+| Secret schemes (`SecretSchemeResolver`) | `RegisterSecretScheme(scheme, resolver)` | `<scheme>:<ref>` |
+
+The pattern is always the same: your provider package's `init()` calls the matching `plugin.Register…` function, your `main.go` blank-imports that package and calls `server.Main()`, and vibeD picks up your provider through the ordinary `vibed.yaml` config keys. Gated features are controlled by an editions/feature-flag seam (`Entitlements`) whose default enables every feature.
+
+See [Extending vibeD](https://vibed-project.github.io/vibeD/docs/extending/overview) for full guides on each extension point.
 
 ## License
 

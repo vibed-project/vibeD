@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vibed-project/vibeD/internal/config"
+	"github.com/vibed-project/vibeD/internal/tenant"
 	"github.com/vibed-project/vibeD/pkg/api"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
@@ -29,14 +30,15 @@ type UserResolver interface {
 var rejections = promauto.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "vibed",
 	Name:      "quota_rejections_total",
-	Help:      "Deploys rejected by quota, by scope (owner|department).",
+	Help:      "Deploys rejected by quota, by scope (tenant|owner|department).",
 }, []string{"scope"})
 
 // ExceededError reports which ceiling a deploy would have crossed. The deploy
 // HTTP layer detects it via the QuotaExceeded() method (no import needed) and
 // maps it to 429.
 type ExceededError struct {
-	Scope      string // "owner" or "department"
+	Scope      string // "tenant", "owner", or "department"
+	Tenant     string
 	Owner      string
 	Department string
 	Limit      int
@@ -45,6 +47,8 @@ type ExceededError struct {
 
 func (e *ExceededError) Error() string {
 	switch e.Scope {
+	case "tenant":
+		return fmt.Sprintf("tenant %q quota exceeded: %d/%d apps already deployed", e.Tenant, e.Current, e.Limit)
 	case "department":
 		return fmt.Sprintf("department %q quota exceeded: %d/%d apps already deployed", e.Department, e.Current, e.Limit)
 	default:
@@ -71,17 +75,36 @@ func NewEnforcer(c client.Client, users UserResolver, namespace string, cfg conf
 }
 
 // Authorize resolves owner's department (returned so the caller can label the
-// app) and, when isNew, rejects the deploy if it would exceed the per-owner or
-// per-department ceiling. Redeploys (isNew=false) skip the ceiling checks but
-// still return the department for labeling.
-func (e *Enforcer) Authorize(ctx context.Context, owner string, isNew bool) (department string, err error) {
+// app) and, when isNew, rejects the deploy if it would exceed the tenant's total
+// ceiling or the per-owner/per-department ceiling. All counts are scoped to the
+// tenant's namespace (falling back to the enforcer's default namespace when the
+// tenant leaves it empty), so ceilings are enforced per tenant. Redeploys
+// (isNew=false) skip the ceiling checks but still return the department.
+func (e *Enforcer) Authorize(ctx context.Context, t tenant.Tenant, owner string, isNew bool) (department string, err error) {
+	ns := t.Namespace
+	if ns == "" {
+		ns = e.namespace
+	}
+
 	department = e.departmentFor(ctx, owner)
 	if !isNew {
 		return department, nil
 	}
 
+	// Per-tenant total ceiling (all apps in the tenant namespace).
+	if max := t.Limits.MaxApps; max > 0 {
+		n, cerr := e.countAll(ctx, ns)
+		if cerr != nil {
+			return department, cerr
+		}
+		if n >= max {
+			rejections.WithLabelValues("tenant").Inc()
+			return department, &ExceededError{Scope: "tenant", Tenant: t.ID, Limit: max, Current: n}
+		}
+	}
+
 	if max := e.cfg.MaxAppsPerOwner; max > 0 {
-		n, cerr := e.count(ctx, vibedv1.LabelOwner, vibedv1.SanitizeLabel(owner))
+		n, cerr := e.count(ctx, ns, vibedv1.LabelOwner, vibedv1.SanitizeLabel(owner))
 		if cerr != nil {
 			return department, cerr
 		}
@@ -93,7 +116,7 @@ func (e *Enforcer) Authorize(ctx context.Context, owner string, isNew bool) (dep
 
 	if department != "" {
 		if max := e.deptCeiling(department); max > 0 {
-			n, cerr := e.count(ctx, vibedv1.LabelDepartment, vibedv1.SanitizeLabel(department))
+			n, cerr := e.count(ctx, ns, vibedv1.LabelDepartment, vibedv1.SanitizeLabel(department))
 			if cerr != nil {
 				return department, cerr
 			}
@@ -115,11 +138,21 @@ func (e *Enforcer) deptCeiling(dept string) int {
 	return e.cfg.MaxAppsPerDepartment
 }
 
-// count returns the number of live VibedApps carrying the given label value.
-func (e *Enforcer) count(ctx context.Context, key, val string) (int, error) {
+// count returns the number of live VibedApps in namespace carrying the given
+// label value.
+func (e *Enforcer) count(ctx context.Context, namespace, key, val string) (int, error) {
 	var list vibedv1.VibedAppList
-	if err := e.client.List(ctx, &list, client.InNamespace(e.namespace), client.MatchingLabels{key: val}); err != nil {
+	if err := e.client.List(ctx, &list, client.InNamespace(namespace), client.MatchingLabels{key: val}); err != nil {
 		return 0, fmt.Errorf("count apps by %s=%s: %w", key, val, err)
+	}
+	return len(list.Items), nil
+}
+
+// countAll returns the total number of live VibedApps in namespace.
+func (e *Enforcer) countAll(ctx context.Context, namespace string) (int, error) {
+	var list vibedv1.VibedAppList
+	if err := e.client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return 0, fmt.Errorf("count apps in %s: %w", namespace, err)
 	}
 	return len(list.Items), nil
 }

@@ -77,3 +77,34 @@ func TestAuditAppendListNewestFirstAndFilter(t *testing.T) {
 		})
 	}
 }
+
+// TestAuditEnrichedFieldsRoundTrip verifies the optional enrichment fields
+// survive an append/list cycle on every backend.
+func TestAuditEnrichedFieldsRoundTrip(t *testing.T) {
+	for name, s := range auditStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			want := api.AuditEvent{
+				ID: "e1", Time: time.Now().UTC(), Actor: "alice", Action: "deploy", Target: "app1", Outcome: "ok",
+				TenantID: "acme", SessionID: "sess-7", SourceHash: "deadbeef",
+				PolicyDecision: "allowed", Before: "v1", After: "v2",
+			}
+			if err := s.AppendAudit(ctx, &want); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+			got, err := s.ListAudit(ctx, AuditQuery{})
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d events, want 1", len(got))
+			}
+			g := got[0]
+			if g.TenantID != want.TenantID || g.SessionID != want.SessionID ||
+				g.SourceHash != want.SourceHash || g.PolicyDecision != want.PolicyDecision ||
+				g.Before != want.Before || g.After != want.After {
+				t.Fatalf("enriched fields not preserved:\n got  %+v\n want %+v", g, want)
+			}
+		})
+	}
+}

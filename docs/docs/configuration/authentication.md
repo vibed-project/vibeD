@@ -102,6 +102,22 @@ The external proxy (e.g., OAuth2 Proxy, Pomerium, or an API gateway) should:
 2. Forward the request to vibeD with the original `Authorization: Bearer` header
 3. Set the `X-Forwarded-User` header with the authenticated user's identity
 
+### Custom Modes (Extensible Registry)
+
+Auth modes are a registry, not a fixed enum. The core registers `apikey`, `oauth`, and `oidc` from `init()`, and an out-of-tree Go module can register additional modes (for example a SAML SP or a bespoke JWT issuer) the same way — without patching the core. Set `auth.mode` to the registered name and vibeD resolves the provider at startup:
+
+```yaml
+auth:
+  enabled: true
+  mode: "saml"   # any registered mode; unknown modes fail fast at startup
+```
+
+An unknown `auth.mode` is rejected at startup with an error listing the registered modes, so a typo can never silently disable auth.
+
+Each mode is a **provider** that contributes a required token `Verifier` — checked on every authenticated request — and, optionally, a set of **public login routes**. The built-in bearer-only modes (`apikey`, `oauth`, `oidc`) contribute no routes. A mode whose login flow needs browser-facing endpoints (for example an SSO metadata document or an assertion-consumer / callback endpoint) declares them as routes, and vibeD mounts those routes **outside** the bearer-auth middleware. That is deliberate: a login route is how a caller obtains a session in the first place, so it cannot itself require one. Login routes must live on public paths — not under `/api`, `/v1`, `/mcp`, or `/internal/sources/`.
+
+See [Custom Auth Providers](../extending/auth-providers.md) for the extension surface, the exported types in `pkg/plugin`, and how to build a custom binary.
+
 ## What Gets Protected
 
 | Endpoint | Authentication |

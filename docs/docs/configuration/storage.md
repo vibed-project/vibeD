@@ -46,6 +46,41 @@ Credentials come from the standard AWS SDK chain (env vars, IRSA, instance profi
 
 agent-sandbox's network model gives sandbox pods no cluster-internal egress and no cluster DNS once a NetworkPolicy is enforced — by design, this is where enterprise data-egress controls live. A pre-signed S3 URL is a *public* (or external-egress-allowed) URL the sandbox can reach without touching the cluster network, which is exactly why `s3` is required in production. See the [production guide](../deployment/production-guide.md).
 
+## Metadata store
+
+The source-blob store above holds the tarball bytes. App **metadata** — the artifact records, version history, users, share links, and the audit log — lives in a separate **metadata store**, selected by the top-level `store.backend` key (this is `store.*`, not `storage.tarball.*`).
+
+| Backend    | `store.backend` | Persistence                                   | Use                                  |
+| ---------- | --------------- | --------------------------------------------- | ------------------------------------ |
+| `sqlite`   | default         | SQLite file on vibeD's PVC                     | Single-replica default; full audit log |
+| `memory`   | `memory`        | In-process; lost on restart                   | Tests and throwaway dev              |
+| `configmap`| `configmap`     | A Kubernetes ConfigMap                         | No PVC available; no audit log        |
+
+```yaml
+store:
+  backend: "sqlite"            # sqlite | memory | configmap
+  sqlite:    { path: "/data/vibed/vibed.db" }
+  configmap: { name: "vibed-artifacts" }
+```
+
+:::note
+The `configmap` backend does not implement the audit log; the server falls back to an in-memory audit log there. Use `sqlite` if you need a persistent audit trail.
+:::
+
+### Custom backends
+
+The metadata store is a registry: each backend registers a factory under a name from its `init()`, and the server builds the one named by `store.backend`. An out-of-tree Go module can add its own backend (for example a hosted SQL or key-value store) by calling `RegisterStoreBackend` and reading its settings from the generic `store.options` map:
+
+```yaml
+store:
+  backend: "my-backend"        # name your factory registered
+  options:                     # passed verbatim to the factory
+    dsn: "postgres://..."
+    poolSize: "10"
+```
+
+`store.options` is a `map[string]string` passed through unchanged, so adding a backend needs no change to the core config schema. See [Extending → Store backends](../extending/store-backends.md) for the `pkg/plugin` interfaces and a worked example.
+
 ## App ownership
 
 App metadata is keyed by the authenticated `owner`. With auth enabled, `GET /v1/apps` returns only the caller's apps, and get/delete check ownership. With auth disabled (dev), all apps are visible under the `admin` identity.
