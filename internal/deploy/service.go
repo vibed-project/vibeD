@@ -268,7 +268,7 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	if err := s.record(ctx, "deploy", req.Name, "ok", ""); err != nil {
 		return nil, fmt.Errorf("deploy succeeded but audit failed: %w", err)
 	}
-	s.meter(ctx, meter.Event{Kind: "deploy", Tenant: t.ID, Owner: req.Owner, App: req.Name})
+	s.meter(ctx, meter.Event{Kind: "deploy", Tenant: t.ID, Owner: req.Owner, App: req.Name, Namespace: t.Namespace})
 	return s.waitReady(ctx, t.Namespace, req.Name)
 }
 

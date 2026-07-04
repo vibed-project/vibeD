@@ -30,6 +30,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/vibed-project/vibeD/internal/controller"
+	"github.com/vibed-project/vibeD/internal/meter"
 	"github.com/vibed-project/vibeD/internal/templatevalidate"
 	"github.com/vibed-project/vibeD/internal/workerd"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
@@ -105,6 +106,15 @@ func main() {
 		fatal(logger, "manager init", err)
 	}
 
+	// Usage meter: Prometheus by default; an out-of-tree controller build can
+	// register a different sink (e.g. a billing sink) to receive app lifecycle
+	// events.
+	meterSink, err := meter.Build(meter.Deps{})
+	if err != nil {
+		logger.Error("failed to build usage meter", "error", err)
+		os.Exit(1)
+	}
+
 	reconciler := &controller.Reconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -116,6 +126,7 @@ func main() {
 		Injector: controller.NewHTTPInjector(agentToken),
 		Services: &controller.K8sServiceManager{Client: mgr.GetClient(), AppPort: 8080},
 		Router:   controller.DeterministicRouter{Domain: domain, Scheme: urlScheme, Port: urlPort},
+		Meter:    meterSink,
 	}
 	if validateImages {
 		reconciler.Gate = &controller.ConfigMapTemplateGate{

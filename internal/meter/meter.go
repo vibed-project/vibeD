@@ -17,10 +17,14 @@ import (
 
 // Event is one usage record.
 type Event struct {
-	Kind   string // "deploy" | "delete"
-	Tenant string
-	Owner  string
-	App    string
+	// Kind is the event type: "deploy" / "delete" (from the deploy service) or
+	// "app.ready" / "app.stopped" (app lifecycle transitions from the controller;
+	// a ready→stopped pair bounds a billable runtime interval).
+	Kind      string
+	Tenant    string
+	Owner     string
+	App       string
+	Namespace string
 }
 
 // Sink records usage events.

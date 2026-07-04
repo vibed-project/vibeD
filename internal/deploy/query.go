@@ -106,6 +106,6 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 	// Usage event. The tenant resolves from the same context Get used, so this
 	// can't error here (Get already succeeded); a zero tenant id is fine.
 	t, _ := s.tenant(ctx)
-	s.meter(ctx, meter.Event{Kind: "delete", Tenant: t.ID, Owner: owner, App: id})
+	s.meter(ctx, meter.Event{Kind: "delete", Tenant: t.ID, Owner: owner, App: id, Namespace: t.Namespace})
 	return nil
 }
