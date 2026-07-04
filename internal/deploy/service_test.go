@@ -19,9 +19,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/meter"
 	"github.com/vibed-project/vibeD/internal/policy"
+	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tarball"
 	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
@@ -467,6 +469,54 @@ func TestDeployStampsLabelsAndAudits(t *testing.T) {
 	}
 	if got := aud.got(); len(got) != 1 || got[0] != "deploy:ok" {
 		t.Errorf("audit = %v, want [deploy:ok]", got)
+	}
+}
+
+// TestDeployEnrichesAuditWithTenantAndSourceHash proves the deploy path pushes
+// the resolved tenant and the source tarball's content hash into the persisted
+// audit event, and that Delete carries the tenant through as well. It wires a
+// real audit.Recorder over a memory store so the enrichment is observed exactly
+// as it lands in the audit trail.
+func TestDeployEnrichesAuditWithTenantAndSourceHash(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	mem := store.NewMemoryStore()
+	svc := newService(c, newFakeStore())
+	svc.Audit = audit.New(mem, nil, false)
+	svc.Tenants = tenant.Single(tenant.Tenant{ID: "acme", Namespace: "tenant-acme"})
+	markReady(c, "app1", "tenant-acme", 20*time.Millisecond)
+
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "app1",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if err := svc.Delete(context.Background(), "alice", "app1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	events, err := mem.ListAudit(context.Background(), store.AuditQuery{})
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d audit events, want 2", len(events))
+	}
+	// Newest first: delete then deploy.
+	del, dep := events[0], events[1]
+	if del.Action != "delete" || del.TenantID != "acme" {
+		t.Errorf("delete event = %+v, want tenant acme", del)
+	}
+	if dep.Action != "deploy" || dep.TenantID != "acme" {
+		t.Errorf("deploy event = %+v, want tenant acme", dep)
+	}
+	if dep.SourceHash == "" {
+		t.Error("deploy event should carry a non-empty SourceHash")
+	}
+	// Delete has no source, so no hash.
+	if del.SourceHash != "" {
+		t.Errorf("delete event should not carry a SourceHash, got %q", del.SourceHash)
 	}
 }
 

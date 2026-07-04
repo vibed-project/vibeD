@@ -125,6 +125,11 @@ type Department struct {
 
 // AuditEvent is one recorded mutating action (deploy, delete, rollback) for
 // the governance audit trail. Append-only; queried via the admin audit API.
+//
+// The first block is always populated. The remaining fields are optional
+// enrichment (empty unless a caller supplies them): the core fills TenantID and
+// SourceHash on deploys; SessionID, PolicyDecision, and Before/After are left for
+// an out-of-tree recorder/store (e.g. tamper-evident audit + SIEM export) to use.
 type AuditEvent struct {
 	ID      string    `json:"id"`
 	Time    time.Time `json:"time"`
@@ -133,6 +138,13 @@ type AuditEvent struct {
 	Target  string    `json:"target"`           // app/artifact name
 	Outcome string    `json:"outcome"`          // ok | denied | error
 	Detail  string    `json:"detail,omitempty"` // error message or context, when relevant
+
+	TenantID       string `json:"tenant_id,omitempty"`       // tenant the action belonged to
+	SessionID      string `json:"session_id,omitempty"`      // auth session identifier
+	SourceHash     string `json:"source_hash,omitempty"`     // sha256 of the deployed source
+	PolicyDecision string `json:"policy_decision,omitempty"` // deploy-time policy verdict
+	Before         string `json:"before,omitempty"`          // prior state (governance diff)
+	After          string `json:"after,omitempty"`           // new state (governance diff)
 }
 
 // ShareLink represents a public shareable link to an artifact.

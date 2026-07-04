@@ -50,8 +50,10 @@ func (s *MemoryStore) ListAudit(_ context.Context, q AuditQuery) ([]api.AuditEve
 
 func (s *SQLiteStore) AppendAudit(ctx context.Context, e *api.AuditEvent) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit_events (id, ts, actor, action, target, outcome, detail) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		e.ID, e.Time.UTC().Format(time.RFC3339Nano), e.Actor, e.Action, e.Target, e.Outcome, e.Detail)
+		`INSERT INTO audit_events (id, ts, actor, action, target, outcome, detail, tenant_id, session_id, source_hash, policy_decision, before_state, after_state)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.Time.UTC().Format(time.RFC3339Nano), e.Actor, e.Action, e.Target, e.Outcome, e.Detail,
+		e.TenantID, e.SessionID, e.SourceHash, e.PolicyDecision, e.Before, e.After)
 	return err
 }
 
@@ -84,7 +86,8 @@ func (s *SQLiteStore) ListAudit(ctx context.Context, q AuditQuery) ([]api.AuditE
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, ts, actor, action, target, outcome, detail FROM audit_events `+where+` ORDER BY ts DESC LIMIT ?`, args...)
+		`SELECT id, ts, actor, action, target, outcome, detail, tenant_id, session_id, source_hash, policy_decision, before_state, after_state
+		 FROM audit_events `+where+` ORDER BY ts DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +97,8 @@ func (s *SQLiteStore) ListAudit(ctx context.Context, q AuditQuery) ([]api.AuditE
 	for rows.Next() {
 		var e api.AuditEvent
 		var ts string
-		if err := rows.Scan(&e.ID, &ts, &e.Actor, &e.Action, &e.Target, &e.Outcome, &e.Detail); err != nil {
+		if err := rows.Scan(&e.ID, &ts, &e.Actor, &e.Action, &e.Target, &e.Outcome, &e.Detail,
+			&e.TenantID, &e.SessionID, &e.SourceHash, &e.PolicyDecision, &e.Before, &e.After); err != nil {
 			return nil, err
 		}
 		e.Time, _ = time.Parse(time.RFC3339Nano, ts)

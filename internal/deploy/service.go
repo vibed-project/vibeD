@@ -9,6 +9,8 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"regexp"
@@ -20,6 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/meter"
 	"github.com/vibed-project/vibeD/internal/policy"
@@ -149,6 +152,11 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Enrich the audit events for this deploy with the tenant and a hash of the
+	// exact source (provenance). The context flows through every s.record call.
+	sum := sha256.Sum256(buf)
+	ctx = audit.WithFields(ctx, audit.Fields{TenantID: t.ID, SourceHash: hex.EncodeToString(sum[:])})
 
 	// Classify (unless both lane + template are overridden).
 	lane := req.LaneOverride

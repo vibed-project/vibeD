@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/meter"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
@@ -90,6 +91,11 @@ func (s *Service) SetSuspended(ctx context.Context, owner, id string, suspended 
 // Delete removes the VibedApp (and its tarball) if owner owns it. The
 // controller's ownerRef on the SandboxClaim reaps the bound pod.
 func (s *Service) Delete(ctx context.Context, owner, id string) error {
+	// Resolve the tenant once and enrich the audit events + reuse it for the
+	// usage event below.
+	t, _ := s.tenant(ctx)
+	ctx = audit.WithFields(ctx, audit.Fields{TenantID: t.ID})
+
 	app, err := s.Get(ctx, owner, id)
 	if err != nil {
 		return err
@@ -103,9 +109,7 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 	if err := s.record(ctx, "delete", id, "ok", ""); err != nil {
 		return fmt.Errorf("delete succeeded but audit failed: %w", err)
 	}
-	// Usage event. The tenant resolves from the same context Get used, so this
-	// can't error here (Get already succeeded); a zero tenant id is fine.
-	t, _ := s.tenant(ctx)
+	// Usage event, reusing the tenant resolved above.
 	s.meter(ctx, meter.Event{Kind: "delete", Tenant: t.ID, Owner: owner, App: id, Namespace: t.Namespace})
 	return nil
 }
