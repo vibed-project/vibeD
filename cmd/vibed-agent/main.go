@@ -35,6 +35,7 @@ func main() {
 		ControlAddr:  env("VIBED_AGENT_CONTROL_ADDR", ":9000"),
 		Workdir:      env("VIBED_AGENT_WORKDIR", "/workspace"),
 		Token:        os.Getenv("VIBED_AGENT_TOKEN"),
+		RequireAuth:  os.Getenv("VIBED_AGENT_REQUIRE_AUTH") == "true",
 		AppPort:      envInt("VIBED_AGENT_APP_PORT", 8080),
 		LogLines:     envInt("VIBED_AGENT_LOG_LINES", 500),
 		Logger:       logger,

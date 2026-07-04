@@ -78,6 +78,13 @@ type AuthConfig struct {
 	APIKeys []APIKeyConf `yaml:"apiKeys"`
 	OIDC    OIDCConfig   `yaml:"oidc"`
 	TLS     TLSConf      `yaml:"tls"`
+	// TrustedProxies is a list of CIDRs (e.g. "10.0.0.0/8") for the "oauth"
+	// passthrough mode. The X-Forwarded-User identity header is trusted ONLY when
+	// the request's source IP falls within one of these CIDRs. If empty, the
+	// header is not trusted (every request maps to a generic identity), so a
+	// direct client cannot spoof a user by setting the header. Ignored by the
+	// apikey/oidc modes.
+	TrustedProxies []string `yaml:"trustedProxies,omitempty"`
 	// Options is a generic bag read by out-of-tree auth providers. Core providers
 	// (apikey/oauth/oidc) ignore it, so a new mode needs no field added to this
 	// struct.

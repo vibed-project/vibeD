@@ -78,10 +78,22 @@ spec:
               deploys never leave Starting.
             */}}
             {{- $systemHosts := .Values.egressControl.systemHosts | default list }}
-            {{- if eq (.Values.config.storage.tarball.backend | default "served") "served" }}
+            {{- $backend := .Values.config.storage.tarball.backend | default "served" }}
+            {{- if eq $backend "served" }}
               {{- $servedHost := printf "%s.%s.svc.cluster.local" (include "vibed.fullname" .) .Release.Namespace }}
               {{- if not (has $servedHost $systemHosts) }}
                 {{- $systemHosts = append $systemHosts $servedHost }}
+              {{- end }}
+            {{- else if eq $backend "s3" }}
+              {{- /* The agent pulls the presigned source tarball through the same
+                     HTTP_PROXY path, so the S3 endpoint host must be allowed or
+                     every pull 403s. Auto-add it from the configured endpoint
+                     unless the operator already listed it. */}}
+              {{- with .Values.config.storage.tarball.s3.endpoint }}
+                {{- $s3Host := (urlParse .).host }}
+                {{- if and $s3Host (not (has $s3Host $systemHosts)) }}
+                  {{- $systemHosts = append $systemHosts $s3Host }}
+                {{- end }}
               {{- end }}
             {{- end }}
             - --system-hosts={{ join "," $systemHosts }}

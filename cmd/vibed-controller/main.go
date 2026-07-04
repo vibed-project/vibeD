@@ -77,8 +77,8 @@ func main() {
 		"Strict gate: deny claims for slots without a Valid recorded result AND when the warm-pool pod's current ImageID drifts from the validated digest (mutable-tag bypass guard). Default fail-open during the 2-minute warmup.")
 	flag.StringVar(&poolNamespace, "pool-namespace", "vibed-pools",
 		"Namespace where SandboxWarmPool / SandboxTemplate live (matches templates/*/template.yaml).")
-	flag.StringVar(&agentToken, "agent-token", "",
-		"Bearer token vibed-agent expects on /healthz. Empty = no auth header sent.")
+	flag.StringVar(&agentToken, "agent-token", os.Getenv("VIBED_AGENT_TOKEN"),
+		"Bearer token sent to vibed-agent's control API. Defaults to $VIBED_AGENT_TOKEN (wired from the vibed-agent-token Secret). Empty = no auth header sent.")
 	flag.IntVar(&workerdReplicas, "workerd-replicas", 0,
 		"workerd StatefulSet size. 0 disables the fast lane (workerd apps fail to deploy).")
 	flag.IntVar(&workerdControlPort, "workerd-control-port", 9200,

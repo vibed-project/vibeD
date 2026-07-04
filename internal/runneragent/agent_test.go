@@ -218,6 +218,41 @@ func TestAuthRequired(t *testing.T) {
 	}
 }
 
+// TestRequireAuthFailsClosed verifies that with no token configured, the control
+// API is open by default (legacy single-node behavior) but fails closed when
+// RequireAuth is set — while the health probe stays open in both cases.
+func TestRequireAuthFailsClosed(t *testing.T) {
+	newSrv := func(cfg Config) *httptest.Server {
+		cfg.Workdir = t.TempDir()
+		cfg.AppPort = 8080
+		cfg.StopGrace = time.Second
+		a := New(cfg)
+		srv := httptest.NewServer(a.handler())
+		t.Cleanup(srv.Close)
+		t.Cleanup(func() { a.stopProcess() })
+		return srv
+	}
+
+	// No token, RequireAuth off → control API open (unchanged default).
+	open := newSrv(Config{})
+	if resp, _ := do(t, open, http.MethodGet, PathStatus, "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("no-token/require-off: expected 200 (open), got %d", resp.StatusCode)
+	}
+
+	// No token, RequireAuth on → control API fails closed.
+	closed := newSrv(Config{RequireAuth: true})
+	if resp, _ := do(t, closed, http.MethodGet, PathStatus, "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no-token/require-on: expected 401 (fail closed), got %d", resp.StatusCode)
+	}
+	if resp, _ := do(t, closed, http.MethodPost, PathInject, "", map[string]any{"command": []string{"x"}}); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no-token/require-on: inject expected 401, got %d", resp.StatusCode)
+	}
+	// Health probe stays open even when fail-closed.
+	if resp, _ := do(t, closed, http.MethodGet, PathHealthz, "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("no-token/require-on: healthz must stay open, got %d", resp.StatusCode)
+	}
+}
+
 func TestWriteFilesRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	for _, bad := range []string{"../escape", "/etc/passwd", "a/../../escape"} {
