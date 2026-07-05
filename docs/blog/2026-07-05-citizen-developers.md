@@ -45,7 +45,7 @@ See [authentication](/docs/configuration/authentication).
 
 ## 4. Ownership, teams, and quotas
 
-Every app has an owner, and owners roll up into **departments**, each with its own namespace. Users see and manage their own apps; admins get the fleet view. **Per-owner and per-department quotas** cap how many concurrent apps a person or a team can run, hard-gated at the deploy path — so one enthusiastic team can't quietly consume the whole cluster.
+Every app has an owner and owners roll up into **departments**, each with its own namespace. Users see and manage their own apps; admins get the fleet view. **Per-owner and per-department quotas** cap how many concurrent apps a person or a team can run, hard-gated at the deploy path, so one enthusiastic team can't quietly consume the whole cluster.
 
 See [quotas](/docs/configuration/quotas).
 
@@ -57,13 +57,13 @@ See [the audit log](/docs/configuration/audit-log).
 
 ## 6. Your images, your cluster, your supply chain
 
-The built-in runtimes are a starting point, not a mandate. A platform or security team can **bring their own hardened base images** for any runtime slot, and vibeD's validator rejects images that don't match — including a strict mode that catches a mutable tag being re-pushed underneath you. Everything runs **on your own Kubernetes**, in your environment, so the data never leaves. Every vibeD image ships with an **SBOM and an in-registry attestation**.
+The built-in runtimes are a starting point, not a mandate. A platform or security team can **bring their own hardened base images** for any runtime slot, and vibeD's validator rejects images that don't match, including a strict mode that catches a mutable tag being re-pushed underneath you. Everything runs **on your own Kubernetes**, in your environment, so the data never leaves. Every vibeD image ships with an **SBOM and an in-registry attestation**.
 
 See [custom base images](/docs/configuration/custom-base-images).
 
 ## Governance without the friction
 
-The point of all of this is that it's **not a tradeoff**. A citizen developer still gets their app to a live URL in seconds — the isolation, the egress allow-list, the ownership, the audit entry all happen automatically, around the fast path, not in front of it. That's the only kind of governance that actually sticks: the kind people don't route around, because the governed path is also the *easy* path.
+The point of all of this is that it's **not a tradeoff**. A citizen developer still gets their app to a live URL in seconds, the isolation, the egress allow-list, the ownership, the audit entry all happen automatically, around the fast path, not in front of it. That's the only kind of governance that actually sticks: the kind people don't route around, because the governed path is also the *easy* path.
 
 If your company is already seeing AI-built tools show up in places you can't see, that's the signal. Give them somewhere better to land.
 
