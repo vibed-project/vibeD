@@ -11,7 +11,7 @@ vibeD exposes a uniform API. You don't pick a runtime — a deterministic **clas
 | Lane | Isolation | Used for |
 |---|---|---|
 | **fast** | V8 isolates (workerd) or static nginx | Static sites and small trusted-language workers. Sub-second cold start. |
-| **general** | Kata + Firecracker **microVM** | Arbitrary code — Node, Python, Go, or any image. Hardware-grade isolation. |
+| **general** | Kata **microVM** (QEMU or Firecracker) | Arbitrary code — Node, Python, Go, or any image. Hardware-grade isolation. |
 
 The fast lane has two flavors: `static-nginx` (a sandbox pod serving `/workspace`) and `workerd` (V8 isolates managed by a loader). The general lane always runs on a Kata microVM sandbox.
 
