@@ -22,6 +22,12 @@ import (
 	"github.com/vibed-project/vibeD/pkg/api"
 )
 
+// gcListPageLimit bounds how many objects each GC List request returns. The GC
+// processes each page and discards it before fetching the next (via the
+// Continue token), so peak memory is one page rather than every matching object
+// in the namespace at once (#76).
+const gcListPageLimit = 200
+
 const (
 	// labelManagedBy is used to identify vibeD-managed resources.
 	labelManagedBy = "app.kubernetes.io/managed-by=vibed"
@@ -136,42 +142,51 @@ func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeAr
 		Resource: "sandboxes",
 	}
 
-	list, err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labelManagedBy,
-	})
-	if err != nil {
-		// agent-sandbox CRD not installed in this cluster: silent skip.
-		if k8serrors.IsNotFound(err) {
+	cont := ""
+	for {
+		list, err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: labelManagedBy,
+			Limit:         gcListPageLimit,
+			Continue:      cont,
+		})
+		if err != nil {
+			// agent-sandbox CRD not installed in this cluster: silent skip.
+			if k8serrors.IsNotFound(err) {
+				return
+			}
+			gc.logger.Warn("failed to list sandboxes for GC", "error", err)
 			return
 		}
-		gc.logger.Warn("failed to list sandboxes for GC", "error", err)
-		return
-	}
 
-	for _, sb := range list.Items {
-		labels := sb.GetLabels()
-		artifactID := labels[labelArtifactID]
-		if artifactID == "" {
-			continue
-		}
-		if activeArtifacts[artifactID] {
-			continue
-		}
-
-		if gc.dryRun {
-			gc.logger.Info("dry-run: would delete orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
-			continue
-		}
-
-		if err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).Delete(ctx, sb.GetName(), metav1.DeleteOptions{}); err != nil {
-			if k8serrors.IsNotFound(err) {
+		for _, sb := range list.Items {
+			labels := sb.GetLabels()
+			artifactID := labels[labelArtifactID]
+			if artifactID == "" {
 				continue
 			}
-			gc.logger.Warn("failed to delete orphaned sandbox", "sandbox", sb.GetName(), "error", err)
-			continue
+			if activeArtifacts[artifactID] {
+				continue
+			}
+
+			if gc.dryRun {
+				gc.logger.Info("dry-run: would delete orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
+				continue
+			}
+
+			if err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).Delete(ctx, sb.GetName(), metav1.DeleteOptions{}); err != nil {
+				if k8serrors.IsNotFound(err) {
+					continue
+				}
+				gc.logger.Warn("failed to delete orphaned sandbox", "sandbox", sb.GetName(), "error", err)
+				continue
+			}
+			gc.metrics.GCResourcesCleaned.WithLabelValues("sandbox").Inc()
+			gc.logger.Info("deleted orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
 		}
-		gc.metrics.GCResourcesCleaned.WithLabelValues("sandbox").Inc()
-		gc.logger.Info("deleted orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
+
+		if cont = list.GetContinue(); cont == "" {
+			break
+		}
 	}
 }
 
@@ -179,136 +194,164 @@ func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeAr
 // no longer exists in the store, or that are older than maxAge.
 func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context, activeArtifacts map[string]bool) {
 	selector := labelManagedBy + "," + labelComponent + "=build"
-	jobs, err := gc.clientset.BatchV1().Jobs(gc.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: selector,
-	})
-	if err != nil {
-		gc.logger.Warn("failed to list jobs for GC", "error", err)
-		return
-	}
-
-	for _, job := range jobs.Items {
-		// Skip running jobs.
-		if !isJobFinished(&job) {
-			continue
+	cont := ""
+	for {
+		jobs, err := gc.clientset.BatchV1().Jobs(gc.namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: selector,
+			Limit:         gcListPageLimit,
+			Continue:      cont,
+		})
+		if err != nil {
+			gc.logger.Warn("failed to list jobs for GC", "error", err)
+			return
 		}
 
-		artifactID := job.Labels[labelArtifactID]
-		if artifactID == "" {
-			continue
+		for i := range jobs.Items {
+			job := jobs.Items[i]
+			// Skip running jobs.
+			if !isJobFinished(&job) {
+				continue
+			}
+
+			artifactID := job.Labels[labelArtifactID]
+			if artifactID == "" {
+				continue
+			}
+
+			age := time.Since(job.CreationTimestamp.Time)
+			if age < gc.maxAge {
+				continue
+			}
+
+			// Check if the artifact still exists.
+			exists := activeArtifacts[artifactID]
+			orphaned := !exists
+			stale := exists // artifact exists but job is old and finished
+
+			if !orphaned && !stale {
+				continue
+			}
+
+			if gc.dryRun {
+				gc.logger.Info("dry-run: would delete orphaned job", "job", job.Name, "artifactID", artifactID, "age", age)
+				continue
+			}
+
+			propagation := metav1.DeletePropagationBackground
+			if err := gc.clientset.BatchV1().Jobs(gc.namespace).Delete(ctx, job.Name, metav1.DeleteOptions{
+				PropagationPolicy: &propagation,
+			}); err != nil {
+				gc.logger.Warn("failed to delete orphaned job", "job", job.Name, "error", err)
+				continue
+			}
+			gc.metrics.GCResourcesCleaned.WithLabelValues("job").Inc()
+			gc.logger.Info("deleted orphaned job", "job", job.Name, "artifactID", artifactID)
 		}
 
-		age := time.Since(job.CreationTimestamp.Time)
-		if age < gc.maxAge {
-			continue
+		if cont = jobs.Continue; cont == "" {
+			break
 		}
-
-		// Check if the artifact still exists.
-		exists := activeArtifacts[artifactID]
-		orphaned := !exists
-		stale := exists // artifact exists but job is old and finished
-
-		if !orphaned && !stale {
-			continue
-		}
-
-		if gc.dryRun {
-			gc.logger.Info("dry-run: would delete orphaned job", "job", job.Name, "artifactID", artifactID, "age", age)
-			continue
-		}
-
-		propagation := metav1.DeletePropagationBackground
-		if err := gc.clientset.BatchV1().Jobs(gc.namespace).Delete(ctx, job.Name, metav1.DeleteOptions{
-			PropagationPolicy: &propagation,
-		}); err != nil {
-			gc.logger.Warn("failed to delete orphaned job", "job", job.Name, "error", err)
-			continue
-		}
-		gc.metrics.GCResourcesCleaned.WithLabelValues("job").Inc()
-		gc.logger.Info("deleted orphaned job", "job", job.Name, "artifactID", artifactID)
 	}
 }
 
 // cleanOrphanedConfigMaps deletes ConfigMaps whose artifact no longer exists.
 func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context, activeArtifacts map[string]bool) {
 	selector := labelManagedBy + "," + labelArtifactID
-	cms, err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: selector,
-	})
-	if err != nil {
-		gc.logger.Warn("failed to list configmaps for GC", "error", err)
-		return
-	}
-
-	for _, cm := range cms.Items {
-		// Skip artifact-store ConfigMaps (metadata store, not deploy CMs).
-		if cm.Labels[labelStoreComponent] == "artifact-store" {
-			continue
+	cont := ""
+	for {
+		cms, err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: selector,
+			Limit:         gcListPageLimit,
+			Continue:      cont,
+		})
+		if err != nil {
+			gc.logger.Warn("failed to list configmaps for GC", "error", err)
+			return
 		}
 
-		artifactID := cm.Labels[labelArtifactID]
-		if artifactID == "" {
-			continue
+		for _, cm := range cms.Items {
+			// Skip artifact-store ConfigMaps (metadata store, not deploy CMs).
+			if cm.Labels[labelStoreComponent] == "artifact-store" {
+				continue
+			}
+
+			artifactID := cm.Labels[labelArtifactID]
+			if artifactID == "" {
+				continue
+			}
+
+			if activeArtifacts[artifactID] {
+				continue
+			}
+
+			if gc.dryRun {
+				gc.logger.Info("dry-run: would delete orphaned configmap", "configmap", cm.Name, "artifactID", artifactID)
+				continue
+			}
+
+			if err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).Delete(ctx, cm.Name, metav1.DeleteOptions{}); err != nil {
+				gc.logger.Warn("failed to delete orphaned configmap", "configmap", cm.Name, "error", err)
+				continue
+			}
+			gc.metrics.GCResourcesCleaned.WithLabelValues("configmap").Inc()
+			gc.logger.Info("deleted orphaned configmap", "configmap", cm.Name, "artifactID", artifactID)
 		}
 
-		if activeArtifacts[artifactID] {
-			continue
+		if cont = cms.Continue; cont == "" {
+			break
 		}
-
-		if gc.dryRun {
-			gc.logger.Info("dry-run: would delete orphaned configmap", "configmap", cm.Name, "artifactID", artifactID)
-			continue
-		}
-
-		if err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).Delete(ctx, cm.Name, metav1.DeleteOptions{}); err != nil {
-			gc.logger.Warn("failed to delete orphaned configmap", "configmap", cm.Name, "error", err)
-			continue
-		}
-		gc.metrics.GCResourcesCleaned.WithLabelValues("configmap").Inc()
-		gc.logger.Info("deleted orphaned configmap", "configmap", cm.Name, "artifactID", artifactID)
 	}
 }
 
 // cleanOrphanedDeployments deletes Deployments (and their matching Services)
 // whose artifact no longer exists in the store.
 func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context, activeArtifacts map[string]bool) {
-	deployments, err := gc.clientset.AppsV1().Deployments(gc.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labelManagedBy,
-	})
-	if err != nil {
-		gc.logger.Warn("failed to list deployments for GC", "error", err)
-		return
-	}
-
-	for _, deploy := range deployments.Items {
-		artifactID := deploy.Labels[labelArtifactID]
-		if artifactID == "" {
-			continue
+	cont := ""
+	for {
+		deployments, err := gc.clientset.AppsV1().Deployments(gc.namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: labelManagedBy,
+			Limit:         gcListPageLimit,
+			Continue:      cont,
+		})
+		if err != nil {
+			gc.logger.Warn("failed to list deployments for GC", "error", err)
+			return
 		}
 
-		if activeArtifacts[artifactID] {
-			continue
+		for _, deploy := range deployments.Items {
+			artifactID := deploy.Labels[labelArtifactID]
+			if artifactID == "" {
+				continue
+			}
+
+			if activeArtifacts[artifactID] {
+				continue
+			}
+
+			if gc.dryRun {
+				gc.logger.Info("dry-run: would delete orphaned deployment", "deployment", deploy.Name, "artifactID", artifactID)
+				continue
+			}
+
+			// Delete the Deployment.
+			if err := gc.clientset.AppsV1().Deployments(gc.namespace).Delete(ctx, deploy.Name, metav1.DeleteOptions{}); err != nil {
+				gc.logger.Warn("failed to delete orphaned deployment", "deployment", deploy.Name, "error", err)
+				continue
+			}
+			gc.metrics.GCResourcesCleaned.WithLabelValues("deployment").Inc()
+			gc.logger.Info("deleted orphaned deployment", "deployment", deploy.Name, "artifactID", artifactID)
+
+			// Also delete the matching Service (same name convention used by kubernetes deployer).
+			if err := gc.clientset.CoreV1().Services(gc.namespace).Delete(ctx, deploy.Name, metav1.DeleteOptions{}); err != nil {
+				gc.logger.Warn("failed to delete matching service", "service", deploy.Name, "error", err)
+			} else {
+				gc.metrics.GCResourcesCleaned.WithLabelValues("service").Inc()
+				gc.logger.Info("deleted orphaned service", "service", deploy.Name, "artifactID", artifactID)
+			}
 		}
 
-		if gc.dryRun {
-			gc.logger.Info("dry-run: would delete orphaned deployment", "deployment", deploy.Name, "artifactID", artifactID)
-			continue
-		}
-
-		// Delete the Deployment.
-		if err := gc.clientset.AppsV1().Deployments(gc.namespace).Delete(ctx, deploy.Name, metav1.DeleteOptions{}); err != nil {
-			gc.logger.Warn("failed to delete orphaned deployment", "deployment", deploy.Name, "error", err)
-			continue
-		}
-		gc.metrics.GCResourcesCleaned.WithLabelValues("deployment").Inc()
-		gc.logger.Info("deleted orphaned deployment", "deployment", deploy.Name, "artifactID", artifactID)
-
-		// Also delete the matching Service (same name convention used by kubernetes deployer).
-		if err := gc.clientset.CoreV1().Services(gc.namespace).Delete(ctx, deploy.Name, metav1.DeleteOptions{}); err != nil {
-			gc.logger.Warn("failed to delete matching service", "service", deploy.Name, "error", err)
-		} else {
-			gc.metrics.GCResourcesCleaned.WithLabelValues("service").Inc()
-			gc.logger.Info("deleted orphaned service", "service", deploy.Name, "artifactID", artifactID)
+		if cont = deployments.Continue; cont == "" {
+			break
 		}
 	}
 }

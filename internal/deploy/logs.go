@@ -59,13 +59,20 @@ func (s *Service) StreamLogs(ctx context.Context, owner, id string, follow bool,
 	return sc.Err()
 }
 
-// boundPodName resolves the app's currently bound Sandbox pod by matching its
-// status.podIP against the claim-labeled pods in the namespace.
+// boundPodName resolves the app's currently bound Sandbox pod by its
+// status.podIP. The lookup is pushed to the API server via a field selector so
+// we fetch only the matching pod, not every claim-labeled pod in the namespace
+// (#77 — that scan grew with cluster size on every log request). The claim-uid
+// label selector still restricts the result to bound app pods, and we re-check
+// the IP in-process as a safety net.
 func (s *Service) boundPodName(ctx context.Context, app *vibedv1.VibedApp) (string, error) {
 	if app.Status.PodIP == "" {
 		return "", ErrNoPod
 	}
-	pods, err := s.Clientset.CoreV1().Pods(app.Namespace).List(ctx, metav1.ListOptions{LabelSelector: claimUIDLabel})
+	pods, err := s.Clientset.CoreV1().Pods(app.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: claimUIDLabel,
+		FieldSelector: "status.podIP=" + app.Status.PodIP,
+	})
 	if err != nil {
 		return "", fmt.Errorf("list bound pods: %w", err)
 	}

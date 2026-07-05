@@ -224,10 +224,15 @@ func TestDeployHonorsOverride(t *testing.T) {
 
 func TestGetListDeleteOwnership(t *testing.T) {
 	s := newScheme(t)
+	// Apps carry the owner label the Deploy path stamps (List now uses it as a
+	// server-side pre-filter, #74).
+	ownerLabel := func(o string) map[string]string {
+		return map[string]string{vibedv1.LabelOwner: vibedv1.SanitizeLabel(o)}
+	}
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).
 		WithObjects(
-			&vibedv1.VibedApp{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "vibed-apps"}, Spec: vibedv1.VibedAppSpec{Owner: "alice"}},
-			&vibedv1.VibedApp{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "vibed-apps"}, Spec: vibedv1.VibedAppSpec{Owner: "bob"}},
+			&vibedv1.VibedApp{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "vibed-apps", Labels: ownerLabel("alice")}, Spec: vibedv1.VibedAppSpec{Owner: "alice"}},
+			&vibedv1.VibedApp{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "vibed-apps", Labels: ownerLabel("bob")}, Spec: vibedv1.VibedAppSpec{Owner: "bob"}},
 		).Build()
 	svc := newService(c, newFakeStore())
 

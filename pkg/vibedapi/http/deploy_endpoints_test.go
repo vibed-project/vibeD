@@ -197,9 +197,15 @@ func TestDeployEndpoint401WithoutOwner(t *testing.T) {
 func TestGetAndListAndDelete(t *testing.T) {
 	h, c := newDeployRouter(t, "alice@example.com")
 	// Seed a ready app directly.
+	// Stamp the owner label the Deploy path always sets — List uses it as a
+	// server-side pre-filter (#74).
 	app := &vibedv1.VibedApp{
-		ObjectMeta: metav1.ObjectMeta{Name: "seeded", Namespace: "vibed-apps"},
-		Spec:       vibedv1.VibedAppSpec{Owner: "alice@example.com", Runtime: vibedv1.Runtime{Lane: vibedv1.LaneGeneral, Template: "node-24"}},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "seeded",
+			Namespace: "vibed-apps",
+			Labels:    map[string]string{vibedv1.LabelOwner: vibedv1.SanitizeLabel("alice@example.com")},
+		},
+		Spec: vibedv1.VibedAppSpec{Owner: "alice@example.com", Runtime: vibedv1.Runtime{Lane: vibedv1.LaneGeneral, Template: "node-24"}},
 	}
 	if err := c.Create(context.Background(), app); err != nil {
 		t.Fatal(err)

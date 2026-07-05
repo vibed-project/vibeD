@@ -284,7 +284,9 @@ func (s *ConfigMapStore) getOrCreateConfigMap(ctx context.Context, name string) 
 
 	created, err := s.client.CoreV1().ConfigMaps(s.namespace).Create(ctx, cm, metav1.CreateOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("creating configmap: %w", err)
+		// Return the raw API error (unwrapped) so callers can classify it — a
+		// concurrent creator triggers AlreadyExists, which mutate retries.
+		return nil, err
 	}
 	return created, nil
 }
@@ -319,7 +321,13 @@ func configMapDataBytes(data map[string]string) int {
 // not-found or already-exists precondition) without retrying.
 func (s *ConfigMapStore) mutate(ctx context.Context, name string, create bool, apply func(cm *corev1.ConfigMap) error) error {
 	var applyErr error
-	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	// Retry on Conflict (a concurrent Update won the ResourceVersion race) AND
+	// on AlreadyExists (two writers raced to first-create the ConfigMap via the
+	// getOrCreate path — the loser re-reads the now-existing object next pass).
+	shouldRetry := func(err error) bool {
+		return k8serrors.IsConflict(err) || k8serrors.IsAlreadyExists(err)
+	}
+	retryErr := retry.OnError(retry.DefaultRetry, shouldRetry, func() error {
 		var (
 			cm  *corev1.ConfigMap
 			err error

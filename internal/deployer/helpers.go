@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -143,8 +144,18 @@ func FetchPodLogs(ctx context.Context, clientset kubernetes.Interface, namespace
 	}
 	defer stream.Close()
 
+	return scanLogLines(stream)
+}
+
+// scanLogLines reads r into individual log lines. It raises the scanner token
+// limit above bufio's 64 KB default: a single long log line (e.g. a serialized
+// stack trace or JSON blob) would otherwise trip bufio.ErrTooLong and fail the
+// WHOLE fetch, losing every line — not just truncating the long one (#78).
+// Matches the streaming path in deploy/logs.go.
+func scanLogLines(r io.Reader) ([]string, error) {
 	var logLines []string
-	scanner := bufio.NewScanner(stream)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		logLines = append(logLines, scanner.Text())
 	}

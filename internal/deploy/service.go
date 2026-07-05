@@ -364,6 +364,13 @@ func (s *Service) waitReady(ctx context.Context, namespace, name string) (*Resul
 	}
 }
 
+// readCapped reads the source tarball into memory, bounded by max. The bytes
+// are buffered (not streamed) because the deploy path consumes them three times
+// — sha256, classify, and Store.Put — and the input is a one-shot io.Reader.
+// The buffer is hard-capped at max (MaxTarballBytes, 50 MB), so per-deploy
+// memory is bounded; a fuller optimization would spill to a temp file and make
+// the three passes read from disk (deferred: the disk-spill + cleanup adds risk
+// to the deploy hot path for a bounded, already-capped buffer). (#73)
 func readCapped(r io.Reader, max int64) ([]byte, error) {
 	buf, err := io.ReadAll(io.LimitReader(r, max+1))
 	if err != nil {
