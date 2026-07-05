@@ -60,6 +60,10 @@ With egress control on, the agent pulls source **through the proxy** too — so 
 The proxy speaks HTTP/HTTPS (CONNECT) only, and the NetworkPolicy blocks everything else — so a sandbox can't open arbitrary raw TCP/UDP connections at all. That's intentional for web apps; workloads needing other protocols aren't supported under egress control.
 :::
 
+:::caution DNS tunnelling (residual)
+The NetworkPolicy lets sandboxes reach only the **cluster** DNS resolver, not an arbitrary external one. That stops the obvious exfiltration channel, but recursive DNS is still a covert channel: code can encode data into the labels of names it asks the cluster resolver to resolve (e.g. `<chunk>.exfil.attacker.example`), and CoreDNS forwards those upstream. To close it, point `networkPolicy.dnsSelector` at a **non-forwarding** resolver that serves only your internal zones (external lookups just fail), and/or enable CoreDNS query logging + rate-limiting or a response-policy zone. See the "DNS tunnelling" note in `SECURITY.md`.
+:::
+
 ## Observing denials
 
 `vibed-egress-authz` logs each denied connection (`egress denied src=… host=…`), and Squid's access log records allow/deny per request. These feed the deploy/egress **audit trail** (a later governance milestone).

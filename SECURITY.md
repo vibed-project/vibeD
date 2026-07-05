@@ -55,10 +55,21 @@ Because the allow-list is a property of the `VibedApp` spec, egress policy is se
 In the production posture, sandboxes run under a vibeD-owned Kubernetes `NetworkPolicy` (Helm `networkPolicy.enabled`, paired with `runtime.sandboxNetworkPolicy: Unmanaged`). The policy is default-deny, then admits only:
 
 - Control-plane → sandbox traffic on the ports vibeD needs
-- DNS to a specific, selectable set of cluster-DNS pods only — so untrusted code cannot exfiltrate data by tunnelling it to an arbitrary external DNS server
+- DNS to a specific, selectable set of cluster-DNS pods only — so untrusted code cannot point its resolver at an arbitrary external DNS server
 - The egress path required for the agent to pull source, while blocking arbitrary cluster-internal egress
 
+When per-app egress control is off, the egress-off baseline additionally denies cluster-internal ranges over **both** IPv4 and IPv6 (RFC1918 / link-local / loopback / ULA), so a dual-stack cluster does not leave IPv6 egress unconstrained.
+
 The DNS selector defaults to upstream CoreDNS in `kube-system` and is configurable for clusters that label their DNS differently. In dev/Kind, sandboxes run unmanaged and fully open for convenience — the locked-down posture is a production configuration.
+
+**Residual risk — DNS tunnelling.** Restricting DNS to the cluster resolver stops a sandbox from talking to an *attacker-controlled* resolver directly, but it does **not** by itself stop DNS-based exfiltration: untrusted code can still encode data into the labels of names it asks the cluster resolver to resolve (e.g. `<base32-chunk>.exfil.attacker.example`), and CoreDNS will forward those queries upstream, leaking the data one query at a time. This is inherent to allowing recursive DNS at all. vibeD does not fully close this path today; operators who need to are advised to layer one or more of these cheap mitigations, none of which require vibeD changes:
+
+- **Split-horizon / non-forwarding resolver for sandboxes** — point the sandbox DNS selector at a CoreDNS instance whose Corefile serves only the internal zones vibeD needs and does **not** forward to the public internet (queries for external names simply fail). This removes the upstream leak channel while keeping in-cluster service discovery.
+- **Egress control on** — with per-app egress control enabled, apps resolve names through the authorizing proxy path against their allow-list, so arbitrary external lookups are already curtailed.
+- **DNS monitoring / rate-limiting** — CoreDNS query logging plus per-client QPS limits make high-volume tunnelling detectable and slow.
+- **Response-policy / allow-list zones** — an RPZ or allow-list plugin on the sandbox resolver restricts which external zones can be resolved at all.
+
+The DNS egress rule is deliberately a *selector* (`networkPolicy.dnsSelector`) precisely so operators can aim sandboxes at a hardened, non-forwarding resolver rather than the shared cluster CoreDNS.
 
 ### Authentication and authorization
 

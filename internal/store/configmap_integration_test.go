@@ -160,7 +160,7 @@ func TestConfigMapStore_List(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, failed.Artifacts, 1)
 	assert.Equal(t, "list-app-2", failed.Artifacts[0].Name)
-	}
+}
 
 func TestConfigMapStore_GetNotFound(t *testing.T) {
 	testutil.SkipIfNoCluster(t)
