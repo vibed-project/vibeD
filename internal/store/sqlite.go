@@ -76,8 +76,16 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_id ON artifacts(owner_id);
+-- List() always sorts by created_at DESC; without this the query does a full
+-- scan + filesort on every list. A composite (owner_id, created_at) also serves
+-- the common per-owner list.
+CREATE INDEX IF NOT EXISTS idx_artifacts_created_at ON artifacts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_owner_created ON artifacts(owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact_id ON artifact_versions(artifact_id);
 CREATE INDEX IF NOT EXISTS idx_share_links_artifact_id ON share_links(artifact_id);
+-- Indexes for users.api_key_hash and users.department_id are created after the
+-- column migrations below (those columns don't exist in the base CREATE TABLE
+-- on older DBs). Audit-column indexes are defined after the audit_events table.
 
 CREATE TABLE IF NOT EXISTS departments (
         id         TEXT PRIMARY KEY,
@@ -103,7 +111,11 @@ CREATE TABLE IF NOT EXISTS audit_events (
         after_state     TEXT NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts);`
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts);
+-- ListAudit filters by actor/action/target (each optional) and orders by ts.
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_events(action);
+CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_events(target);`
 
 // SQLiteStore is a persistent ArtifactStore backed by SQLite.
 type SQLiteStore struct {
@@ -190,6 +202,26 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 				db.Close()
 				return nil, fmt.Errorf("migrating audit_events table (%s): %w", col, err)
 			}
+		}
+	}
+
+	// Post-migration indexes: these reference columns added by the migrations
+	// above (api_key_hash, department_id), so they can't live in the base
+	// schema DDL, which runs before the migrations on an older DB. IF NOT EXISTS
+	// keeps this idempotent.
+	//   - api_key_hash: GetUserByAPIKeyHash is on the auth hot path (every
+	//     runtime-key request); without the index it scans the whole users
+	//     table. The partial predicate excludes empty-hash rows (static-key /
+	//     OIDC users) so the index stays small.
+	//   - department_id: ListUsers filters by it.
+	postMigrationIndexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_users_api_key_hash ON users(api_key_hash) WHERE api_key_hash != ''`,
+		`CREATE INDEX IF NOT EXISTS idx_users_department_id ON users(department_id)`,
+	}
+	for _, stmt := range postMigrationIndexes {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("creating post-migration index: %w", err)
 		}
 	}
 

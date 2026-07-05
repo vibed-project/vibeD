@@ -353,6 +353,10 @@ func (quotaDenied) Authorize(context.Context, tenant.Tenant, string, bool) (stri
 	return "", quotaErr{}
 }
 
+func (quotaDenied) VerifyAfterCreate(context.Context, tenant.Tenant, string, string) error {
+	return nil // Authorize already denies here; post-create check is unused
+}
+
 type quotaErr struct{}
 
 func (quotaErr) Error() string       { return "owner \"alice\" quota exceeded: 5/5 apps already deployed" }

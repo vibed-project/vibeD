@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -155,5 +156,40 @@ func TestNoResolverSkipsDepartmentGate(t *testing.T) {
 	// applies, so the deploy is allowed.
 	if _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "bob", true); err != nil {
 		t.Fatalf("missing resolver should skip the department gate: %v", err)
+	}
+}
+
+// TestVerifyAfterCreate is the proof for #75: after apps are created, only the
+// newest ones beyond the ceiling are asked to roll back (older ones are kept),
+// so two racers don't both self-delete and the limit self-heals.
+func TestVerifyAfterCreate(t *testing.T) {
+	older := app("a", "alice", "")
+	older.CreationTimestamp = metav1.NewTime(time.Unix(100, 0))
+	mid := app("b", "alice", "")
+	mid.CreationTimestamp = metav1.NewTime(time.Unix(200, 0))
+	newest := app("c", "alice", "")
+	newest.CreationTimestamp = metav1.NewTime(time.Unix(300, 0))
+
+	c := newClient(t, older, mid, newest)
+	e := NewEnforcer(c, nil, ns, config.QuotasConfig{Enabled: true, MaxAppsPerOwner: 2})
+	ctx := context.Background()
+	tn := tenant.Tenant{Namespace: ns}
+
+	if err := e.VerifyAfterCreate(ctx, tn, "alice", "c"); err == nil {
+		t.Error("newest over-limit app should be asked to roll back")
+	}
+	if err := e.VerifyAfterCreate(ctx, tn, "alice", "a"); err != nil {
+		t.Errorf("oldest (within-limit) app must be kept, got %v", err)
+	}
+	if err := e.VerifyAfterCreate(ctx, tn, "alice", "b"); err != nil {
+		t.Errorf("second-oldest (within-limit) app must be kept, got %v", err)
+	}
+}
+
+func TestVerifyAfterCreateNoOvershoot(t *testing.T) {
+	c := newClient(t, app("a", "alice", ""))
+	e := NewEnforcer(c, nil, ns, config.QuotasConfig{Enabled: true, MaxAppsPerOwner: 2})
+	if err := e.VerifyAfterCreate(context.Background(), tenant.Tenant{Namespace: ns}, "alice", "a"); err != nil {
+		t.Errorf("under-limit app must not roll back, got %v", err)
 	}
 }

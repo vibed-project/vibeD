@@ -20,6 +20,33 @@ func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	return s
 }
 
+// TestSQLiteIndexesExist pins the performance indexes added for #80 so a schema
+// refactor can't silently drop them (each backs a hot query path).
+func TestSQLiteIndexesExist(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	rows, err := s.db.Query(`SELECT name FROM sqlite_master WHERE type='index'`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		have[name] = true
+	}
+	for _, idx := range []string{
+		"idx_artifacts_created_at",
+		"idx_artifacts_owner_created",
+		"idx_users_api_key_hash",
+		"idx_users_department_id",
+		"idx_audit_actor",
+		"idx_audit_action",
+		"idx_audit_target",
+	} {
+		assert.True(t, have[idx], "expected index %s to exist", idx)
+	}
+}
+
 func testArtifact(id, name string) *api.Artifact {
 	now := time.Now().Truncate(time.Microsecond)
 	return &api.Artifact{

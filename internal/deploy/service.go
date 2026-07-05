@@ -76,9 +76,13 @@ type Service struct {
 }
 
 // Quota gates new deploys within a tenant and resolves the owner's department
-// (for labeling).
+// (for labeling). VerifyAfterCreate re-checks the ceiling once the app CR is
+// visible, closing the TOCTOU window between Authorize and Create (#75); it
+// returns a quota error when THIS app is the one that overshot, so the caller
+// rolls it back.
 type Quota interface {
 	Authorize(ctx context.Context, t tenant.Tenant, owner string, isNew bool) (department string, err error)
+	VerifyAfterCreate(ctx context.Context, t tenant.Tenant, owner, appName string) error
 }
 
 // Auditor records a mutating action; implementations read the actor from ctx.
@@ -253,6 +257,17 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 			_ = s.Store.Delete(ctx, req.Name) // don't leave an orphan blob
 			_ = s.record(ctx, "deploy", req.Name, "error", cerr.Error())
 			return nil, fmt.Errorf("create VibedApp: %w", cerr)
+		}
+		// Post-create quota re-check closes the Authorize→Create TOCTOU (#75):
+		// if concurrent deploys overshot the ceiling, the app(s) that overshot
+		// roll back so the limit self-heals instead of staying exceeded.
+		if s.Quota != nil {
+			if verr := s.Quota.VerifyAfterCreate(ctx, t, req.Owner, req.Name); verr != nil {
+				_ = s.Client.Delete(ctx, app)     // compensating delete
+				_ = s.Store.Delete(ctx, req.Name) // and the orphan blob
+				_ = s.record(ctx, "deploy", req.Name, "denied", verr.Error())
+				return nil, verr
+			}
 		}
 	} else {
 		existing.Spec = spec

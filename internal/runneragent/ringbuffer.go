@@ -9,10 +9,17 @@ import (
 // io.Writer so it can be wired directly into a process's stdout/stderr, and
 // keeps only the most recent `capacity` complete lines. It is safe for
 // concurrent use.
+//
+// Lines are stored in a true circular buffer: appending at capacity overwrites
+// the oldest slot in O(1). The previous implementation shifted the whole slice
+// left on every line once full (O(n) per line → O(n²) for a chatty process);
+// the ring makes steady-state logging O(1) per line regardless of capacity.
 type ringBuffer struct {
 	mu       sync.Mutex
 	capacity int
-	lines    []string // most recent at the end
+	buf      []string // circular; len==capacity once filled
+	start    int      // index of the oldest line
+	count    int      // number of valid lines (<= capacity)
 	partial  []byte   // bytes since the last newline
 }
 
@@ -20,7 +27,7 @@ func newRingBuffer(capacity int) *ringBuffer {
 	if capacity < 1 {
 		capacity = 1
 	}
-	return &ringBuffer{capacity: capacity}
+	return &ringBuffer{capacity: capacity, buf: make([]string, capacity)}
 }
 
 // Write splits incoming bytes on newlines, appending complete lines to the
@@ -46,13 +53,17 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// appendLine adds a line, evicting the oldest if at capacity. Caller holds mu.
+// appendLine adds a line in O(1), overwriting the oldest slot when at capacity.
+// Caller holds mu.
 func (r *ringBuffer) appendLine(line string) {
-	if len(r.lines) >= r.capacity {
-		// Drop the oldest. Copy to keep the backing array bounded.
-		r.lines = append(r.lines[:0], r.lines[1:]...)
+	if r.count < r.capacity {
+		r.buf[(r.start+r.count)%r.capacity] = line
+		r.count++
+		return
 	}
-	r.lines = append(r.lines, line)
+	// Full: overwrite the oldest and advance start.
+	r.buf[r.start] = line
+	r.start = (r.start + 1) % r.capacity
 }
 
 // snapshot returns up to the last n captured lines (all of them when n <= 0),
@@ -61,8 +72,10 @@ func (r *ringBuffer) snapshot(n int) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	out := make([]string, len(r.lines))
-	copy(out, r.lines)
+	out := make([]string, 0, r.count+1)
+	for i := 0; i < r.count; i++ {
+		out = append(out, r.buf[(r.start+i)%r.capacity])
+	}
 	if len(r.partial) > 0 {
 		out = append(out, string(r.partial))
 	}
@@ -76,6 +89,7 @@ func (r *ringBuffer) snapshot(n int) []string {
 func (r *ringBuffer) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lines = r.lines[:0]
+	r.start = 0
+	r.count = 0
 	r.partial = r.partial[:0]
 }

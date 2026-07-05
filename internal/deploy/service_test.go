@@ -65,6 +65,12 @@ func (f *fakeStore) puts() int {
 	return f.putCount
 }
 
+func (f *fakeStore) deletes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.delCount
+}
+
 // compile-time: fakeStore is a real tarball.Store.
 var _ tarball.Store = (*fakeStore)(nil)
 
@@ -363,9 +369,11 @@ func TestMeterRecordsDeployAndDelete(t *testing.T) {
 }
 
 type fakeQuota struct {
-	dept    string
-	deny    bool
-	lastNew bool
+	dept         string
+	deny         bool
+	denyAfter    bool // fail the post-create verification (TOCTOU rollback path)
+	lastNew      bool
+	verifyCalled bool
 }
 
 func (q *fakeQuota) Authorize(_ context.Context, _ tenant.Tenant, _ string, isNew bool) (string, error) {
@@ -374,6 +382,14 @@ func (q *fakeQuota) Authorize(_ context.Context, _ tenant.Tenant, _ string, isNe
 		return q.dept, &fakeQuotaErr{}
 	}
 	return q.dept, nil
+}
+
+func (q *fakeQuota) VerifyAfterCreate(_ context.Context, _ tenant.Tenant, _, _ string) error {
+	q.verifyCalled = true
+	if q.denyAfter {
+		return &fakeQuotaErr{}
+	}
+	return nil
 }
 
 type fakeQuotaErr struct{}
@@ -440,6 +456,41 @@ func TestDeployQuotaDeniesNewApp(t *testing.T) {
 	}
 	if got := aud.got(); len(got) != 1 || got[0] != "deploy:denied" {
 		t.Errorf("audit = %v, want [deploy:denied]", got)
+	}
+}
+
+// TestDeployQuotaTOCTOURollback is the proof for #75 in the deploy path: when
+// the post-create verification fails (a concurrent deploy overshot the
+// ceiling), the just-created app is rolled back — no orphan CR, no stored blob
+// — and a quota error is returned.
+func TestDeployQuotaTOCTOURollback(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	store := newFakeStore()
+	svc := newService(c, store)
+	q := &fakeQuota{denyAfter: true} // Authorize passes; VerifyAfterCreate fails
+	svc.Quota = q
+
+	_, err := svc.Deploy(context.Background(), Request{
+		Name:    "raced-app",
+		Owner:   "alice",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+	})
+	var qe interface{ QuotaExceeded() bool }
+	if !errors.As(err, &qe) {
+		t.Fatalf("want a quota error from the post-create check, got %v", err)
+	}
+	if !q.verifyCalled {
+		t.Error("VerifyAfterCreate should have been called")
+	}
+	// The compensating delete removed the CR.
+	var got vibedv1.VibedApp
+	gerr := c.Get(context.Background(), client.ObjectKey{Name: "raced-app", Namespace: "vibed-apps"}, &got)
+	if gerr == nil {
+		t.Error("the over-limit app CR should have been rolled back (deleted)")
+	}
+	// And the blob was cleaned up.
+	if store.deletes() == 0 {
+		t.Error("the orphan source blob should have been deleted on rollback")
 	}
 }
 

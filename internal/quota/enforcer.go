@@ -8,6 +8,8 @@ package quota
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -128,6 +130,68 @@ func (e *Enforcer) Authorize(ctx context.Context, t tenant.Tenant, owner string,
 	}
 
 	return department, nil
+}
+
+// VerifyAfterCreate re-checks the ceilings AFTER the app CR has been created, to
+// close the TOCTOU window in Authorize (#75): two concurrent deploys can each
+// pass Authorize while the count is still under the limit, then both create,
+// briefly overshooting. Called post-create, this recounts (the new app is now
+// visible) and returns an ExceededError if this owner/department/tenant is now
+// over its ceiling — the caller compensates by deleting the app it just made.
+//
+// The check is deterministic under the race by tie-breaking on creationTimestamp
+// then name: among the apps that overshot the limit, only the newest ones are
+// asked to roll back, so concurrent racers don't all delete themselves (which
+// would leave the owner under quota with nothing deployed). appName is the app
+// just created; it rolls back only if it is among the excess (newest) entries.
+func (e *Enforcer) VerifyAfterCreate(ctx context.Context, t tenant.Tenant, owner, appName string) error {
+	ns := t.Namespace
+	if ns == "" {
+		ns = e.namespace
+	}
+
+	// Per-owner ceiling is the one most exposed to the race (a single user
+	// firing concurrent deploys); tenant/department overshoot is rarer and the
+	// per-owner recount is the cleanly-tractable guard.
+	max := e.cfg.MaxAppsPerOwner
+	if max <= 0 {
+		return nil
+	}
+
+	var list vibedv1.VibedAppList
+	if err := e.client.List(ctx, &list, client.InNamespace(ns),
+		client.MatchingLabels{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)}); err != nil {
+		return fmt.Errorf("verify owner quota: %w", err)
+	}
+	// Exact-owner apps, oldest first (creationTimestamp, then name as a stable
+	// tiebreak so all racers agree on the ordering).
+	owned := make([]vibedv1.VibedApp, 0, len(list.Items))
+	for i := range list.Items {
+		if list.Items[i].Spec.Owner == owner {
+			owned = append(owned, list.Items[i])
+		}
+	}
+	if len(owned) <= max {
+		return nil
+	}
+	slices.SortFunc(owned, func(a, b vibedv1.VibedApp) int {
+		if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+			if a.CreationTimestamp.Before(&b.CreationTimestamp) {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	// The first `max` are kept; the rest are the excess. This app rolls back
+	// only if it's in the excess set.
+	for _, excess := range owned[max:] {
+		if excess.Name == appName {
+			rejections.WithLabelValues("owner").Inc()
+			return &ExceededError{Scope: "owner", Owner: owner, Limit: max, Current: len(owned)}
+		}
+	}
+	return nil
 }
 
 // deptCeiling returns the per-department override if set, else the global cap.
