@@ -30,8 +30,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/vibed-project/vibeD/internal/meter"
@@ -138,9 +140,23 @@ type Reconciler struct {
 	// default allows everything (no validation wired).
 	Gate TemplateGate
 
-	// RequeueDelay is how often to re-check transitional phases when no
-	// external signal triggers a reconcile. Defaults to 2s.
+	// RequeueDelay is the BASE delay for re-checking a transitional phase when
+	// no external signal triggers a reconcile. Defaults to 2s. Transitional
+	// requeues apply a capped exponential backoff keyed on the app's observed
+	// time-in-phase, so a stuck app is polled less aggressively over time
+	// instead of hammering the API server every 2s indefinitely.
 	RequeueDelay time.Duration
+
+	// MaxRequeueDelay caps the exponential backoff for transitional requeues.
+	// Defaults to 60s.
+	MaxRequeueDelay time.Duration
+
+	// MaxConcurrentReconciles is how many VibedApps the controller reconciles in
+	// parallel. A single worker is serialized behind the synchronous source
+	// inject (which can take up to ~60s), so one slow app stalls every other
+	// app's progress. Defaults to 4. (A fuller fix makes inject asynchronous;
+	// raising concurrency is the low-risk mitigation.)
+	MaxConcurrentReconciles int
 
 	// Meter, when set, records app lifecycle usage events on Ready/stopped
 	// transitions (a ready→stopped pair bounds a billable runtime interval).
@@ -161,11 +177,17 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	claimGVKType.SetGroupVersionKind(SandboxClaimGVK)
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&vibedv1.VibedApp{}, builder.WithPredicates()).
+		// GenerationChangedPredicate ignores updates that don't bump
+		// metadata.generation — i.e. the reconciler's OWN status writes. Without
+		// it, every status patch re-enqueued the same object, so the controller
+		// reconciled its own writes in a tight loop (#69). Spec changes (which do
+		// bump generation) and deletes still trigger reconciles.
+		For(&vibedv1.VibedApp{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(
 			claimGVKType,
 			handler.EnqueueRequestsFromMapFunc(claimToVibedApp),
 		).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		Named("vibedapp").
 		Complete(r)
 }
@@ -209,6 +231,54 @@ func (r *Reconciler) applyDefaults() {
 	if r.RequeueDelay == 0 {
 		r.RequeueDelay = 2 * time.Second
 	}
+	if r.MaxRequeueDelay == 0 {
+		r.MaxRequeueDelay = 60 * time.Second
+	}
+	if r.MaxConcurrentReconciles == 0 {
+		r.MaxConcurrentReconciles = 4
+	}
+}
+
+// transitionalRequeue returns the RequeueAfter delay for an app that is still
+// mid-state-machine. It applies a capped exponential backoff based on how long
+// the app has been in its current (non-Ready) state, using the Ready
+// condition's LastTransitionTime as the anchor. A freshly-transitioned app is
+// re-checked at the base RequeueDelay; an app stuck for a while is polled ever
+// less aggressively, up to MaxRequeueDelay — so a wedged app doesn't hammer the
+// API server every 2s forever, while a healthy app still progresses quickly.
+func (r *Reconciler) transitionalRequeue(app *vibedv1.VibedApp) time.Duration {
+	base := r.RequeueDelay
+	if base <= 0 {
+		base = 2 * time.Second
+	}
+	max := r.MaxRequeueDelay
+	if max < base {
+		max = base
+	}
+
+	var since time.Duration
+	for i := range app.Status.Conditions {
+		if app.Status.Conditions[i].Type == ConditionReady {
+			if t := app.Status.Conditions[i].LastTransitionTime.Time; !t.IsZero() {
+				since = time.Since(t)
+			}
+			break
+		}
+	}
+	if since <= 0 {
+		return base
+	}
+
+	// Double the delay for each full "base" interval elapsed, capped at max.
+	// intervals grows slowly; guard against overflow by capping the shift.
+	delay := base
+	for elapsed := since; elapsed >= base && delay < max; elapsed -= base {
+		delay *= 2
+	}
+	if delay > max {
+		delay = max
+	}
+	return delay
 }
 
 // Reconcile drives the state machine forward by one step.
@@ -296,7 +366,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: r.transitionalRequeue(&app)}, nil
 		}
 		if !bound {
 			// SandboxClaim exists but agent-sandbox hasn't bound a pod yet.
@@ -306,7 +376,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: r.transitionalRequeue(&app)}, nil
 		}
 		app.Status.SandboxRef = sandboxRef
 		app.Status.PodIP = podIP
@@ -331,12 +401,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: r.transitionalRequeue(&app)}, nil
 		}
 		if !ready {
 			// Agent reachable but user process not yet listening — requeue
 			// without rewriting status (nothing changed).
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: r.transitionalRequeue(&app)}, nil
 		}
 		// Agent is up — inject the user's source (refactor.md §5.3 step 2).
 		// The agent pulls the tarball from spec.source.tarballRef and starts
@@ -348,14 +418,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: r.transitionalRequeue(&app)}, nil
 		}
 		if !running {
 			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonStarting, "user process starting")
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: r.transitionalRequeue(&app)}, nil
 		}
 		// Publish a stable upstream for the router: a per-app Service that
 		// re-selects the bound pod across restarts, so the route doesn't go
@@ -366,7 +436,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: r.transitionalRequeue(&app)}, nil
 		}
 		app.Status.RouteTarget = routeTarget
 		url, err := r.Router.Publish(ctx, &app, app.Status.SandboxRef)
@@ -375,7 +445,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: r.transitionalRequeue(&app)}, nil
 		}
 		app.Status.URL = url
 		app.Status.Phase = vibedv1.PhaseReady
@@ -444,7 +514,7 @@ func (r *Reconciler) reconcileSuspension(ctx context.Context, app *vibedv1.Vibed
 			if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
 				return true, reconcile.Result{}, perr
 			}
-			return true, reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return true, reconcile.Result{RequeueAfter: r.transitionalRequeue(app)}, nil
 		}
 		app.Status.PodIP = ""
 		app.Status.SandboxRef = ""
@@ -499,7 +569,7 @@ func (r *Reconciler) reconcileFastLane(ctx context.Context, app *vibedv1.VibedAp
 		if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
 			return reconcile.Result{}, perr
 		}
-		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		return reconcile.Result{RequeueAfter: r.transitionalRequeue(app)}, nil
 	}
 
 	url, err := r.Router.Publish(ctx, app, target)
@@ -508,7 +578,7 @@ func (r *Reconciler) reconcileFastLane(ctx context.Context, app *vibedv1.VibedAp
 		if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
 			return reconcile.Result{}, perr
 		}
-		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		return reconcile.Result{RequeueAfter: r.transitionalRequeue(app)}, nil
 	}
 
 	// RouteTarget carries the routable upstream. For the fast lane it's the
@@ -531,7 +601,7 @@ func (r *Reconciler) finish(ctx context.Context, app *vibedv1.VibedApp, before *
 		return reconcile.Result{}, err
 	}
 	if requeue {
-		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		return reconcile.Result{RequeueAfter: r.transitionalRequeue(app)}, nil
 	}
 	return reconcile.Result{}, nil
 }

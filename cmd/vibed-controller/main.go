@@ -114,6 +114,10 @@ func main() {
 		logger.Error("failed to build usage meter", "error", err)
 		os.Exit(1)
 	}
+	// Expose the usage counter on controller-runtime's metrics registry so the
+	// app.ready/app.stopped events this controller emits are actually scraped
+	// (the default registry the counter also lives on is not served here).
+	meter.RegisterMetrics()
 
 	reconciler := &controller.Reconciler{
 		Client: mgr.GetClient(),

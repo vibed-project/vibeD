@@ -12,7 +12,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // Event is one usage record.
@@ -39,11 +39,35 @@ type nop struct{}
 
 func (nop) Record(context.Context, Event) {}
 
-var eventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+// eventsTotal is created (not auto-registered) so it can be registered on the
+// right registry per process. The main vibeD server scrapes the DEFAULT
+// Prometheus registry (promhttp.Handler); the controller scrapes only
+// controller-runtime's Registry. Because lifecycle events (app.ready/stopped)
+// are emitted from the CONTROLLER, registering only on the default registry
+// left those counters unscraped (#67). We register on the default registry at
+// init (for the server) and expose RegisterMetrics for the controller to also
+// register on ctrlmetrics.Registry.
+var eventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "vibed",
 	Name:      "usage_events_total",
 	Help:      "Usage events by kind and tenant.",
 }, []string{"kind", "tenant"})
+
+var registerCtrlOnce sync.Once
+
+func init() {
+	// Default registry — scraped by the main server's promhttp /metrics.
+	// MustRegister is safe here: the collector is registered exactly once.
+	prometheus.MustRegister(eventsTotal)
+}
+
+// RegisterMetrics registers the usage counter with controller-runtime's
+// Prometheus registry so the controller's /metrics exposes lifecycle events
+// (app.ready/app.stopped) it emits. Idempotent; mirror of
+// templatevalidate.RegisterMetrics. Call from the controller's setup.
+func RegisterMetrics() {
+	registerCtrlOnce.Do(func() { ctrlmetrics.Registry.MustRegister(eventsTotal) })
+}
 
 // Prometheus returns a Sink that counts events by kind and tenant (tenant id,
 // not name, to bound cardinality; the single-tenant default reports "default").
