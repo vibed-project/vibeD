@@ -1,12 +1,38 @@
 package runneragent
 
 import (
+	"archive/tar"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// TestExtractEntryContainment is the proof for #64: extractEntry rejects any
+// entry whose resolved path escapes the destination dir — matching (and no
+// weaker than) the sibling writeFiles filepath.Rel containment check.
+func TestExtractEntryContainment(t *testing.T) {
+	dir := t.TempDir()
+	escapes := []string{
+		"../evil.txt",
+		"../../evil.txt",
+		"a/../../evil.txt",
+		"/abs/evil.txt",
+		"..",
+	}
+	for _, name := range escapes {
+		hdr := &tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644}
+		if _, err := extractEntry(dir, hdr, strings.NewReader("x"), MaxEntryBytes); err == nil {
+			t.Errorf("extractEntry(%q) should be rejected as path escape", name)
+		}
+	}
+	// A legitimate nested path is accepted.
+	hdr := &tar.Header{Name: "sub/dir/ok.txt", Typeflag: tar.TypeReg, Mode: 0o644}
+	if _, err := extractEntry(dir, hdr, strings.NewReader("hi"), MaxEntryBytes); err != nil {
+		t.Errorf("legitimate nested entry rejected: %v", err)
+	}
+}
 
 // TestFetchRejectsNonHTTPSScheme: with the scheme guard on (default), an http://
 // or file:// source URL is rejected before any connection is made.

@@ -74,6 +74,12 @@ spec:
     {{- else }}
     # Egress control OFF: public internet allowed, cluster-internal denied (the
     # §7.4 baseline). Enable egressControl for per-app hostname allow-listing.
+    #
+    # Both IPv4 and IPv6 are covered. On a dual-stack cluster an IPv4-only
+    # ipBlock leaves the entire IPv6 space (incl. ULA fd00::/8, link-local
+    # fe80::/10, loopback ::1, and IPv6 pod/service CIDRs) reachable — a private
+    # egress bypass. The ::/0 block with the same-intent IPv6 except ranges
+    # closes that hole. On an IPv4-only cluster the IPv6 rule is simply inert.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -82,6 +88,12 @@ spec:
               - 172.16.0.0/12
               - 192.168.0.0/16
               - 169.254.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::1/128
+              - fe80::/10
+              - fd00::/8
     {{- end }}
     {{- with .Values.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}

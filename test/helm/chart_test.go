@@ -158,6 +158,25 @@ func TestSandboxNetworkPolicyDNSLockdown(t *testing.T) {
 	}
 }
 
+// TestSandboxNetworkPolicyBlocksIPv6Private pins the IPv6 egress except-ranges
+// (#60). With egress control off, an IPv4-only ipBlock would leave the whole
+// IPv6 space reachable on a dual-stack cluster, a private-egress bypass. The
+// ::/0 block must carry the IPv6 loopback/link-local/ULA except ranges.
+func TestSandboxNetworkPolicyBlocksIPv6Private(t *testing.T) {
+	r := helmTemplate(t, "networkPolicy.enabled=true")
+	containsAll(t, "sandbox NP IPv6 except ranges", r,
+		"cidr: ::/0",
+		"::1/128",
+		"fe80::/10",
+		"fd00::/8",
+	)
+	// The IPv4 ranges must still be present too.
+	containsAll(t, "sandbox NP IPv4 except ranges", r,
+		"cidr: 0.0.0.0/0",
+		"169.254.0.0/16",
+	)
+}
+
 // TestControllerStrictFlagWiring pins the --template-validation-strict CLI
 // flag that flips the BYO gate from fail-open to fail-closed.
 func TestControllerStrictFlagWiring(t *testing.T) {

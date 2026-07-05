@@ -215,6 +215,13 @@ func extractEntry(dir string, hdr *tar.Header, r io.Reader, budget int64) (int64
 		return 0, fmt.Errorf("illegal tar entry path %q", hdr.Name)
 	}
 	dest := filepath.Join(dir, clean)
+	// Defence in depth (mirrors writeFiles in agent.go): after Join, re-derive
+	// the path relative to dir and confirm it stays inside. This makes the
+	// extractor no weaker than the sibling writeFiles containment check —
+	// catching any residual traversal the prefix check above might miss.
+	if rel, err := filepath.Rel(dir, dest); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return 0, fmt.Errorf("illegal tar entry path %q", hdr.Name)
+	}
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:

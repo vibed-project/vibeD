@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 
@@ -19,17 +20,21 @@ type UserStorageRouter struct {
 	userConfigs    map[string]*config.UserStorageConf // from API key configs
 	fallback       Storage                            // default for users without config
 	localCacheBase string                             // base dir for per-user local caches
+	logger         *slog.Logger
 }
 
 // NewUserStorageRouter creates a router that directs storage calls to per-user backends.
 // Only API keys that have a Storage config will get per-user routing; all others
-// use the fallback storage.
-func NewUserStorageRouter(apiKeys []config.APIKeyConf, fallback Storage, localCacheBase string) *UserStorageRouter {
+// use the fallback storage. A nil logger falls back to slog.Default().
+func NewUserStorageRouter(apiKeys []config.APIKeyConf, fallback Storage, localCacheBase string, logger *slog.Logger) *UserStorageRouter {
 	userConfigs := make(map[string]*config.UserStorageConf)
 	for i := range apiKeys {
 		if apiKeys[i].Storage != nil {
 			userConfigs[apiKeys[i].Name] = apiKeys[i].Storage
 		}
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	return &UserStorageRouter{
@@ -37,6 +42,7 @@ func NewUserStorageRouter(apiKeys []config.APIKeyConf, fallback Storage, localCa
 		userConfigs:    userConfigs,
 		fallback:       fallback,
 		localCacheBase: localCacheBase,
+		logger:         logger,
 	}
 }
 
@@ -103,8 +109,13 @@ func (r *UserStorageRouter) resolve(ctx context.Context) Storage {
 
 	stg, err := r.createUserStorage(userID, cfg)
 	if err != nil {
-		// On error, fall back to default (don't crash)
-		fmt.Printf("WARNING: failed to create per-user storage for %q: %v (falling back to default)\n", userID, err)
+		// On error, fall back to default (don't crash). Route through slog at
+		// Warn and never print to stdout — a secret-resolution error can carry
+		// backend/credential-reference details, so the structured error goes at
+		// Debug and the Warn line stays generic.
+		r.logger.Warn("per-user storage init failed; using default storage",
+			"user", userID, "backend", cfg.Backend)
+		r.logger.Debug("per-user storage init error detail", "user", userID, "error", err)
 		return r.fallback
 	}
 

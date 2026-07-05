@@ -193,7 +193,7 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 
 	// Wrap storage with per-user routing if any API key has per-user storage configured
 	if cfg.Auth.Enabled && storage.HasPerUserConfigs(cfg.Auth.APIKeys) {
-		stg = storage.NewUserStorageRouter(cfg.Auth.APIKeys, stg, cfg.Storage.Local.BasePath)
+		stg = storage.NewUserStorageRouter(cfg.Auth.APIKeys, stg, cfg.Storage.Local.BasePath, logger)
 		logger.Info("per-user storage routing enabled")
 	}
 	checker.SetReady("storage")

@@ -104,7 +104,7 @@ func (e *Enforcer) Authorize(ctx context.Context, t tenant.Tenant, owner string,
 	}
 
 	if max := e.cfg.MaxAppsPerOwner; max > 0 {
-		n, cerr := e.count(ctx, ns, vibedv1.LabelOwner, vibedv1.SanitizeLabel(owner))
+		n, cerr := e.countOwner(ctx, ns, owner)
 		if cerr != nil {
 			return department, cerr
 		}
@@ -146,6 +146,27 @@ func (e *Enforcer) count(ctx context.Context, namespace, key, val string) (int, 
 		return 0, fmt.Errorf("count apps by %s=%s: %w", key, val, err)
 	}
 	return len(list.Items), nil
+}
+
+// countOwner counts live VibedApps owned EXACTLY by owner. The owner label is a
+// lossy, sanitized mirror of spec.owner (SanitizeLabel replaces invalid chars
+// and truncates to 63), so two distinct owners can collide onto one label value
+// — counting by the label alone would conflate their quotas (#66). We use the
+// label only as an indexed pre-filter, then match the authoritative spec.owner
+// exactly.
+func (e *Enforcer) countOwner(ctx context.Context, namespace, owner string) (int, error) {
+	var list vibedv1.VibedAppList
+	if err := e.client.List(ctx, &list, client.InNamespace(namespace),
+		client.MatchingLabels{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)}); err != nil {
+		return 0, fmt.Errorf("count apps by owner: %w", err)
+	}
+	n := 0
+	for i := range list.Items {
+		if list.Items[i].Spec.Owner == owner {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // countAll returns the total number of live VibedApps in namespace.
