@@ -11,7 +11,7 @@ vibeD ships as a Helm chart and runs on any Kubernetes 1.29+ cluster with a comp
 1. **A Kubernetes cluster** (EKS/GKE/AKS or on-prem), 1.29+.
 2. **[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) installed** (v0.4.5+). vibeD builds on its `Sandbox`, `SandboxTemplate`, `SandboxClaim`, and `SandboxWarmPool` CRDs and its controller. Install it before vibeD.
 3. **A Kata RuntimeClass** for the general lane — `kata-qemu` (works without nested virt) or `kata-fc` (Firecracker, needs KVM). The general lane runs user code in Kata microVMs.
-4. **A sandbox node pool** labeled `vibed.dev/sandbox-node: "true"` running `containerd` + `containerd-shim-kata-v2`. Kata + Firecracker needs KVM (bare metal, `*.metal` on AWS, or nested-virt images on GCP).
+4. **A sandbox node pool** labeled `vibed.dev/sandbox-node: "true"` running `containerd` + `containerd-shim-kata-v2`. Firecracker (`kata-fc`) needs KVM (bare metal, `*.metal` on AWS, or nested-virt images on GCP); `kata-qemu` runs without it.
 5. **Object storage** (S3 or MinIO) for source tarballs in production — see [storage](../configuration/storage.md).
 6. **A DNS-01 capable DNS provider** (Cloudflare, Route53, …) for Caddy's wildcard TLS cert on `*.<your-domain>`.
 

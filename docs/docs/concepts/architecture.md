@@ -20,7 +20,7 @@ The control plane is stateless. Durable state lives in the Kubernetes API (the `
 ## Data plane
 
 - **Warm pools** — one `SandboxWarmPool` + `SandboxTemplate` per runtime template, pre-booting idle sandboxes so a deploy never waits on a cold boot or an image build.
-- **Sandboxes** — a claimed warm sandbox runs the user's app. General-lane sandboxes are Kata + Firecracker microVMs; the fast lane uses workerd isolates / static nginx.
+- **Sandboxes** — a claimed warm sandbox runs the user's app. General-lane sandboxes are Kata microVMs (QEMU by default, or Firecracker on KVM/bare-metal); the fast lane uses workerd isolates / static nginx.
 - **vibed-agent** — a small Go binary baked into every template image, running as PID 1 inside the sandbox. The controller POSTs it the source URL; it pulls, extracts into `/workspace`, autodetects the entrypoint, and starts the user process. It exposes a control API on `:9000` and the app listens on `:8080`.
 
 ## The deploy flow
