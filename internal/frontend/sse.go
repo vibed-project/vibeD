@@ -39,8 +39,21 @@ func handleSSE(bus *events.EventBus, m *metrics.Metrics) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		// NOTE: do NOT set "Connection: keep-alive" here. Connection is a
+		// hop-by-hop header that is FORBIDDEN under HTTP/2; Go's http2 server
+		// rejects a response that sets it, which broke the /api/events SSE
+		// stream when the dashboard was served over HTTP/2 — and because the
+		// SPA bootstraps off that stream, the login form never appeared (#41).
+		// keep-alive is already the default on HTTP/1.1, so setting it added
+		// nothing there and only hurt HTTP/2.
 		w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
+
+		// Flush the response headers immediately so the client's request
+		// completes (headers received) as soon as the stream opens, rather than
+		// blocking until the first event/heartbeat. This also confirms to the
+		// SPA that the event channel is live at page load.
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
 
 		m.SSEConnectionsActive.Inc()
 		defer m.SSEConnectionsActive.Dec()

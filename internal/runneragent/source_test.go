@@ -45,6 +45,12 @@ func tarballFromMap(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
+// testFetcher returns a SourceFetcher with the SSRF guards relaxed so tests can
+// serve tarballs from an httptest.Server on 127.0.0.1 over http.
+func testFetcher() *SourceFetcher {
+	return &SourceFetcher{AllowInsecureScheme: true, AllowPrivateHosts: true}
+}
+
 func TestSourceFetcherExtractsTarball(t *testing.T) {
 	tarball := tarballFromMap(t, map[string]string{
 		"app.py":           "print('hi')\n",
@@ -57,7 +63,7 @@ func TestSourceFetcherExtractsTarball(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	if err := NewSourceFetcher().Fetch(context.Background(), srv.URL, dir); err != nil {
+	if err := testFetcher().Fetch(context.Background(), srv.URL, dir); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 
@@ -83,7 +89,7 @@ func TestSourceFetcherRejectsPathEscape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := NewSourceFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
+	err := testFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "illegal tar entry") {
 		t.Fatalf("expected illegal-tar-entry error, got %v", err)
 	}
@@ -95,7 +101,7 @@ func TestSourceFetcherRejectsNon2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := NewSourceFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
+	err := testFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("expected 403 surfaced, got %v", err)
 	}
@@ -118,6 +124,7 @@ func TestInjectWithSourceURL(t *testing.T) {
 		AppPort:   8080,
 		StopGrace: 200 * time.Millisecond,
 	})
+	a.Fetcher = testFetcher() // relax SSRF guards for the 127.0.0.1 http test server
 	t.Cleanup(func() { a.stopProcess() })
 
 	srv := httptest.NewServer(a.handler())

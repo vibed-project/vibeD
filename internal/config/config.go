@@ -101,6 +101,30 @@ type OIDCConfig struct {
 	AdminRole       string   `yaml:"adminRole"`       // Role value that maps to vibeD admin (default: "vibed-admin")
 	DepartmentClaim string   `yaml:"departmentClaim"` // JWT claim for department name (e.g. "department")
 	Scopes          []string `yaml:"scopes"`          // Scopes to advertise (default: ["openid", "profile"])
+
+	// --- ID-token verification hardening (safe defaults; tune per provider) ---
+
+	// ClockSkewLeeway bounds the tolerance applied to the exp/iat/nbf time
+	// checks to absorb small clock differences between vibeD and the identity
+	// provider. Empty defaults to 60s. It is CLAMPED to a maximum (5m) so a
+	// misconfiguration can't effectively disable expiry enforcement. A duration
+	// string such as "60s" or "2m".
+	ClockSkewLeeway string `yaml:"clockSkewLeeway"`
+
+	// AllowedSigningAlgs restricts the JWT signing algorithms accepted for the
+	// ID token. Empty defaults to the asymmetric set (RS256/384/512,
+	// ES256/384/512, PS256/384/512). The "none" algorithm and symmetric HMAC
+	// algorithms (HS*) are ALWAYS rejected regardless of this setting.
+	AllowedSigningAlgs []string `yaml:"allowedSigningAlgs"`
+
+	// RequireIssuedAt rejects an ID token that omits the "iat" claim. Default
+	// true. "exp" is always required.
+	RequireIssuedAt *bool `yaml:"requireIssuedAt"`
+
+	// RequireAuthorizedParty, when true, requires the "azp" (authorized party)
+	// claim to equal Audience whenever the token's "aud" is multi-valued (per
+	// the OIDC core spec). Default true. Single-audience tokens are unaffected.
+	RequireAuthorizedParty *bool `yaml:"requireAuthorizedParty"`
 }
 
 // APIKeyConf represents a configured API key with optional per-user storage.
@@ -151,6 +175,12 @@ type ServerConfig struct {
 	LogFormat string          `yaml:"logFormat"` // "text" (default) or "json"
 	LogLevel  string          `yaml:"logLevel"`  // "debug", "info" (default), "warn", "error"
 	RateLimit RateLimitConfig `yaml:"rateLimit"`
+	// DevInsecure acknowledges running with authentication DISABLED on a
+	// non-loopback bind. Without it, an auth-disabled server that would bind a
+	// public interface is forced to loopback (127.0.0.1) so an unauthenticated
+	// control plane is not accidentally exposed. Set via --dev-insecure or
+	// VIBED_DEV_INSECURE=1. Ignored when auth is enabled.
+	DevInsecure bool `yaml:"devInsecure"`
 }
 
 // RateLimitConfig configures HTTP rate limiting per client.
@@ -385,6 +415,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("VIBED_SERVER_HTTP_ADDR"); v != "" {
 		cfg.Server.HTTPAddr = v
+	}
+	if v := os.Getenv("VIBED_DEV_INSECURE"); v != "" {
+		cfg.Server.DevInsecure, _ = strconv.ParseBool(v)
 	}
 	if v := os.Getenv("VIBED_SERVER_BASE_URL"); v != "" {
 		cfg.Server.BaseURL = v

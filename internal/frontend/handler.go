@@ -1,24 +1,24 @@
 package frontend
 
 import (
-        "context"
-        "crypto/rand"
-        "crypto/sha256"
-        "encoding/hex"
-        "encoding/json"
-        "fmt"
-        "io"
-        "io/fs"
-        "net/http"
-        "strconv"
-        "strings"
-        "time"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
-        corev1 "k8s.io/api/core/v1"
-        metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-        vibedauth "github.com/vibed-project/vibeD/internal/auth"
-        "github.com/vibed-project/vibeD/internal/config"
+	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/events"
 	"github.com/vibed-project/vibeD/internal/k8s"
 	"github.com/vibed-project/vibeD/internal/metrics"
@@ -48,25 +48,25 @@ func writeError(w http.ResponseWriter, err error, fallbackStatus int) {
 
 // NewHandler creates an HTTP handler that serves the frontend and REST API.
 func NewHandler(orch *orchestrator.Orchestrator, cfg *config.Config, bus *events.EventBus, m *metrics.Metrics, userStore store.UserStore, k8sClients *k8s.Clients) http.Handler {
-        mux := http.NewServeMux()
+	mux := http.NewServeMux()
 
-        // API documentation (Swagger UI)
-        mux.Handle("/api/docs", http.RedirectHandler("/api/docs/", http.StatusMovedPermanently))
-        mux.Handle("/api/docs/", http.StripPrefix("/api/docs", swaggerUIHandler()))
+	// API documentation (Swagger UI)
+	mux.Handle("/api/docs", http.RedirectHandler("/api/docs/", http.StatusMovedPermanently))
+	mux.Handle("/api/docs/", http.StripPrefix("/api/docs", swaggerUIHandler()))
 
-        // SSE event stream
-        mux.HandleFunc("/api/events", handleSSE(bus, m))
+	// SSE event stream
+	mux.HandleFunc("/api/events", handleSSE(bus, m))
 
-        // API routes
-        mux.HandleFunc("/api/artifacts", handleArtifacts(orch))
-        mux.HandleFunc("/api/artifacts/", handleArtifacts(orch))
-        mux.HandleFunc("/api/targets", handleTargets(orch))
-        mux.HandleFunc("/api/whoami", handleWhoami(userStore))
-        mux.HandleFunc("/api/organization", handleOrganization(cfg))
-        mux.HandleFunc("/api/users", handleUsers(userStore))
-        mux.HandleFunc("/api/users/", handleUserDetail(userStore))
-        mux.HandleFunc("/api/departments", handleDepartments(userStore, k8sClients))
-        mux.HandleFunc("/api/departments/", handleDepartmentDetail(userStore, k8sClients))
+	// API routes
+	mux.HandleFunc("/api/artifacts", handleArtifacts(orch))
+	mux.HandleFunc("/api/artifacts/", handleArtifacts(orch))
+	mux.HandleFunc("/api/targets", handleTargets(orch))
+	mux.HandleFunc("/api/whoami", handleWhoami(userStore))
+	mux.HandleFunc("/api/organization", handleOrganization(cfg))
+	mux.HandleFunc("/api/users", handleUsers(userStore))
+	mux.HandleFunc("/api/users/", handleUserDetail(userStore))
+	mux.HandleFunc("/api/departments", handleDepartments(userStore, k8sClients))
+	mux.HandleFunc("/api/departments/", handleDepartmentDetail(userStore, k8sClients))
 	// Share link routes (public — auth bypassed in SkipAuthPaths)
 	mux.HandleFunc("/api/share/", handlePublicShareLink(orch))
 	mux.HandleFunc("/api/share-links/", handleShareLinkRevoke(orch))
@@ -567,35 +567,35 @@ func handleDepartments(userStore store.UserStore, k8sClients *k8s.Clients) http.
 			now := time.Now()
 			nsName := "vibed-dept-" + strings.ToLower(strings.ReplaceAll(body.Name, " ", "-"))
 			dept := &api.Department{
-			        ID:        fmt.Sprintf("dept-%x", now.UnixNano()),
-			        Name:      body.Name,
-			        Namespace: nsName,
-			        CreatedAt: now,
-			        UpdatedAt: now,
+				ID:        fmt.Sprintf("dept-%x", now.UnixNano()),
+				Name:      body.Name,
+				Namespace: nsName,
+				CreatedAt: now,
+				UpdatedAt: now,
 			}
 
 			if k8sClients != nil {
-			        nsObj := &corev1.Namespace{
-			                ObjectMeta: metav1.ObjectMeta{
-			                        Name: nsName,
-			                        Labels: map[string]string{
-			                                "vibed.dev/tenant": dept.ID,
-			                        },
-			                },
-			        }
-			        if _, err := k8sClients.Clientset.CoreV1().Namespaces().Create(r.Context(), nsObj, metav1.CreateOptions{}); err != nil {
-			                writeError(w, fmt.Errorf("failed to provision namespace: %w", err), http.StatusInternalServerError)
-			                return
-			        }
+				nsObj := &corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: nsName,
+						Labels: map[string]string{
+							"vibed.dev/tenant": dept.ID,
+						},
+					},
+				}
+				if _, err := k8sClients.Clientset.CoreV1().Namespaces().Create(r.Context(), nsObj, metav1.CreateOptions{}); err != nil {
+					writeError(w, fmt.Errorf("failed to provision namespace: %w", err), http.StatusInternalServerError)
+					return
+				}
 			}
 
 			if err := userStore.CreateDepartment(r.Context(), dept); err != nil {
-			        // Attempt rollback if db save fails
-			        if k8sClients != nil {
-			                _ = k8sClients.Clientset.CoreV1().Namespaces().Delete(context.Background(), nsName, metav1.DeleteOptions{})
-			        }
-			        writeError(w, err, http.StatusConflict)
-			        return
+				// Attempt rollback if db save fails
+				if k8sClients != nil {
+					_ = k8sClients.Clientset.CoreV1().Namespaces().Delete(context.Background(), nsName, metav1.DeleteOptions{})
+				}
+				writeError(w, err, http.StatusConflict)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -659,25 +659,25 @@ func handleDepartmentDetail(userStore store.UserStore, k8sClients *k8s.Clients) 
 			json.NewEncoder(w).Encode(dept)
 
 		case http.MethodDelete:
-		        // Get department to find namespace
-		        dept, err := userStore.GetDepartment(r.Context(), deptID)
-		        if err != nil {
-		                http.Error(w, "not found", http.StatusNotFound)
-		                return
-		        }
+			// Get department to find namespace
+			dept, err := userStore.GetDepartment(r.Context(), deptID)
+			if err != nil {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
 
-		        if err := userStore.DeleteDepartment(r.Context(), deptID); err != nil {
-		                writeError(w, err, http.StatusInternalServerError)
-		                return
-		        }
+			if err := userStore.DeleteDepartment(r.Context(), deptID); err != nil {
+				writeError(w, err, http.StatusInternalServerError)
+				return
+			}
 
-		        // Cascade delete K8s namespace
-		        if k8sClients != nil && dept.Namespace != "" {
-		                _ = k8sClients.Clientset.CoreV1().Namespaces().Delete(context.Background(), dept.Namespace, metav1.DeleteOptions{})
-		        }
+			// Cascade delete K8s namespace
+			if k8sClients != nil && dept.Namespace != "" {
+				_ = k8sClients.Clientset.CoreV1().Namespaces().Delete(context.Background(), dept.Namespace, metav1.DeleteOptions{})
+			}
 
-		        w.Header().Set("Content-Type", "application/json")
-		        json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -724,18 +724,12 @@ func handleArtifactShareLink(orch *orchestrator.Orchestrator, artifactID string,
 		json.NewDecoder(r.Body).Decode(&body)
 	}
 
-	var expiresIn time.Duration
-	if body.ExpiresIn != "" {
-		// Support "7d" as shorthand for 7 days
-		s := body.ExpiresIn
-		if strings.HasSuffix(s, "d") {
-			days := strings.TrimSuffix(s, "d")
-			if d, err := time.ParseDuration(days + "h"); err == nil {
-				expiresIn = d * 24
-			}
-		} else {
-			expiresIn, _ = time.ParseDuration(s)
-		}
+	expiresIn, err := orchestrator.ParseExpiresIn(body.ExpiresIn)
+	if err != nil {
+		// A malformed (non-empty) expires_in must NOT silently create a
+		// permanent link — reject with 400.
+		writeError(w, err, http.StatusBadRequest)
+		return
 	}
 
 	link, err := orch.CreateShareLink(r.Context(), artifactID, body.Password, expiresIn)

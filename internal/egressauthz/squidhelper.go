@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -88,22 +89,30 @@ func parseHelperLine(line string) (id, src, uri string) {
 }
 
 // hostFromURI extracts the hostname from a Squid %>ru value: "host:443" (a
-// CONNECT target) or "http://host/path" (a forward-proxied HTTP request).
+// CONNECT target) or "http://host/path" (a forward-proxied HTTP request). It is
+// IPv6-aware: "[2001:db8::1]:443" and "[::1]:443" yield the bracketed address
+// without the port, not a mangled prefix. An empty or unparseable value yields
+// "" so the caller fails closed (deny).
 func hostFromURI(uri string) string {
 	uri = strings.TrimSpace(uri)
 	if uri == "" {
 		return ""
 	}
 	if strings.Contains(uri, "://") {
-		if u, err := url.Parse(uri); err == nil && u.Hostname() != "" {
-			return u.Hostname()
+		u, err := url.Parse(uri)
+		if err != nil || u.Hostname() == "" {
+			return "" // unparseable proxied URL → deny
 		}
+		return u.Hostname()
 	}
-	host := uri
-	if i := strings.LastIndexByte(host, ':'); i >= 0 {
-		host = host[:i] // strip :port from the CONNECT target
+	// CONNECT target "host:port". net.SplitHostPort is IPv6-aware (handles the
+	// [addr]:port form); it errors when there is no port, in which case the
+	// whole value is the host (a bare hostname, or a bracketed IPv6 literal).
+	if host, _, err := net.SplitHostPort(uri); err == nil {
+		return strings.Trim(host, "[]")
 	}
-	return host
+	// No port present. Strip surrounding brackets from a bare IPv6 literal.
+	return strings.Trim(uri, "[]")
 }
 
 func allowEgress(ctx context.Context, hc *http.Client, authzURL, src, host string) bool {

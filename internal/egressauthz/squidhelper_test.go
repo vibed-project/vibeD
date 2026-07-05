@@ -14,6 +14,12 @@ func TestHostFromURI(t *testing.T) {
 		"https://a.example.com:8443/p": "a.example.com",
 		"plainhost":                    "plainhost",
 		"":                             "",
+		// IPv6-aware parsing (#57): brackets stripped, port removed, no mangling.
+		"[2001:db8::1]:443":       "2001:db8::1", // CONNECT to bracketed IPv6 + port
+		"[::1]:8080":              "::1",         // bracketed IPv6 loopback + port
+		"[fe80::1]":               "fe80::1",     // bracketed IPv6, no port
+		"http://[2001:db8::2]/p":  "2001:db8::2", // proxied URL with IPv6 host
+		"https://[::1]:9000/path": "::1",         // proxied URL, IPv6 + port
 	}
 	for in, want := range cases {
 		if got := hostFromURI(in); got != want {
@@ -24,8 +30,8 @@ func TestHostFromURI(t *testing.T) {
 
 func TestParseHelperLine(t *testing.T) {
 	cases := []struct {
-		name             string
-		in               string
+		name                     string
+		in                       string
 		wantID, wantSrc, wantURI string
 	}{
 		{

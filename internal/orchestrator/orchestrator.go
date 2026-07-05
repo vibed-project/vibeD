@@ -1308,6 +1308,35 @@ func (o *Orchestrator) UnshareArtifact(ctx context.Context, artifactID string, u
 
 // --- Share Link methods ---
 
+// ParseExpiresIn parses a share-link expiration such as "24h" or "7d" (the "d"
+// suffix is day shorthand). An empty string means "no expiration" (zero
+// duration). A NON-EMPTY but unparseable value returns an error rather than
+// silently falling back to zero — otherwise a malformed expires_in would
+// quietly mint a PERMANENT share link. A non-positive duration is also
+// rejected. Callers should surface the error as a 400 (HTTP) or tool error.
+func ParseExpiresIn(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	var d time.Duration
+	var err error
+	if rest, ok := strings.CutSuffix(s, "d"); ok {
+		var hours time.Duration
+		hours, err = time.ParseDuration(rest + "h")
+		d = hours * 24
+	} else {
+		d, err = time.ParseDuration(s)
+	}
+	if err != nil {
+		return 0, &api.ErrInvalidInput{Field: "expires_in", Message: fmt.Sprintf("invalid duration %q: use e.g. \"24h\" or \"7d\"", s)}
+	}
+	if d <= 0 {
+		return 0, &api.ErrInvalidInput{Field: "expires_in", Message: fmt.Sprintf("duration %q must be positive", s)}
+	}
+	return d, nil
+}
+
 // CreateShareLink generates a public share link for an artifact.
 func (o *Orchestrator) CreateShareLink(ctx context.Context, artifactID, password string, expiresIn time.Duration) (*api.ShareLink, error) {
 	if o.shareLinkStore == nil {

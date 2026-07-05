@@ -392,6 +392,65 @@ func resolveKeyValue(key string) string {
 
 // newOIDCVerifier creates a TokenVerifier that validates JWTs against an OIDC provider.
 // It auto-provisions user records in the store on first login.
+// parseOIDCLeeway parses the configured clock-skew leeway (a Go duration).
+// Empty means no leeway; a negative or malformed value is a configuration error.
+func parseOIDCLeeway(s string) (time.Duration, error) {
+	if strings.TrimSpace(s) == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("invalid oidc.clockSkewLeeway %q (want a non-negative Go duration, e.g. \"2m\")", s)
+	}
+	return d, nil
+}
+
+// claimSeconds reads a numeric date claim (JSON numbers decode to float64) as
+// int64 unix seconds.
+func claimSeconds(claims map[string]interface{}, key string) (int64, bool) {
+	if v, ok := claims[key].(float64); ok {
+		return int64(v), true
+	}
+	return 0, false
+}
+
+// checkOIDCTimes validates exp/iat/nbf with the given leeway. When leeway is 0
+// it is a no-op (go-oidc already enforced expiry); when >0 it re-checks with
+// tolerance, since go-oidc's zero-leeway expiry check was skipped.
+func checkOIDCTimes(idToken *oidc.IDToken, claims map[string]interface{}, leeway time.Duration, now time.Time) error {
+	if leeway <= 0 {
+		return nil
+	}
+	if !idToken.Expiry.IsZero() && now.After(idToken.Expiry.Add(leeway)) {
+		return fmt.Errorf("token expired")
+	}
+	if !idToken.IssuedAt.IsZero() && idToken.IssuedAt.After(now.Add(leeway)) {
+		return fmt.Errorf("token issued in the future")
+	}
+	if nbf, ok := claimSeconds(claims, "nbf"); ok {
+		if time.Unix(nbf, 0).After(now.Add(leeway)) {
+			return fmt.Errorf("token not yet valid")
+		}
+	}
+	return nil
+}
+
+// checkAuthorizedParty enforces the azp (authorized party) claim: when present
+// it must name our audience, and it must be present when the token carries
+// multiple audiences (per the OIDC spec).
+func checkAuthorizedParty(claims map[string]interface{}, audience string) error {
+	if azp := extractStringClaim(claims, "azp"); azp != "" {
+		if azp != audience {
+			return fmt.Errorf("azp %q does not match audience", azp)
+		}
+		return nil
+	}
+	if audArr, ok := claims["aud"].([]interface{}); ok && len(audArr) > 1 {
+		return fmt.Errorf("azp required for a multi-audience token")
+	}
+	return nil
+}
+
 func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *slog.Logger) (mcpauth.TokenVerifier, error) {
 	provider, err := oidc.NewProvider(context.Background(), cfg.Issuer)
 	if err != nil {
@@ -402,8 +461,24 @@ func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *s
 		return nil, fmt.Errorf("OIDC audience (client ID) must be configured to prevent cross-app token reuse")
 	}
 
+	// OIDC hardening: restrict accepted signing algorithms to an asymmetric-only
+	// set by default (never alg=none or HMAC), overridable via config; and parse
+	// the clock-skew leeway applied to the time checks below.
+	algs := cfg.AllowedSigningAlgs
+	if len(algs) == 0 {
+		algs = []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"}
+	}
+	leeway, err := parseOIDCLeeway(cfg.ClockSkewLeeway)
+	if err != nil {
+		return nil, err
+	}
+
 	verifierConfig := &oidc.Config{
-		ClientID: cfg.Audience,
+		ClientID:             cfg.Audience,
+		SupportedSigningAlgs: algs,
+		// When a leeway is configured we re-run the expiry/iat/nbf checks below
+		// with that tolerance, so skip go-oidc's zero-leeway expiry check.
+		SkipExpiryCheck: leeway > 0,
 	}
 	idTokenVerifier := provider.Verifier(verifierConfig)
 
@@ -443,6 +518,19 @@ func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *s
 		if err := idToken.Claims(&claims); err != nil {
 			logger.Warn("OIDC claims extraction failed", "error", err)
 			return nil, mcpauth.ErrInvalidToken
+		}
+
+		// OIDC hardening: leeway-aware time validation (go-oidc's own expiry
+		// check is skipped when a leeway is set) and authorized-party check.
+		if err := checkOIDCTimes(idToken, claims, leeway, time.Now()); err != nil {
+			logger.Debug("OIDC token time validation failed", "error", err, "path", req.URL.Path)
+			return nil, mcpauth.ErrInvalidToken
+		}
+		if cfg.RequireAuthorizedParty != nil && *cfg.RequireAuthorizedParty {
+			if err := checkAuthorizedParty(claims, cfg.Audience); err != nil {
+				logger.Debug("OIDC authorized-party check failed", "error", err, "path", req.URL.Path)
+				return nil, mcpauth.ErrInvalidToken
+			}
 		}
 
 		sub := idToken.Subject

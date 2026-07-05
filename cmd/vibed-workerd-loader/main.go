@@ -36,8 +36,13 @@ func main() {
 	flag.StringVar(&compatDate, "compat-date", "2024-01-01", "workerd compatibilityDate applied to every worker.")
 	flag.IntVar(&portBase, "port-base", 9100, "First port assigned to app sockets.")
 	flag.StringVar(&reloadCmd, "reload-cmd", "", "Shell command run after each config change to reload workerd (e.g. send SIGHUP). Empty = no-op (workerd auto-watches its config).")
-	flag.StringVar(&token, "token", os.Getenv("VIBED_AGENT_TOKEN"), "Bearer token required on the control API. Defaults to $VIBED_AGENT_TOKEN.")
+	// Default is empty (NOT os.Getenv) so the token value never appears in the
+	// -help usage text. The env var is read after Parse; an explicit -token flag
+	// still wins if provided.
+	flag.StringVar(&token, "token", "", "Bearer token required on the control API. If empty, read from $VIBED_AGENT_TOKEN.")
 	flag.Parse()
+
+	token = resolveToken(token, os.Getenv("VIBED_AGENT_TOKEN"))
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -73,6 +78,17 @@ func main() {
 		logger.Error("server error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// resolveToken picks the control-API bearer token: an explicit -token flag wins
+// over the environment. Keeping the -token default empty (and reading the env
+// here, after flag.Parse) ensures the token value is never printed in the -help
+// usage text.
+func resolveToken(flagVal, envVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return envVal
 }
 
 // reloadFunc returns the reload hook the loader calls after each config

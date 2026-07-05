@@ -6,11 +6,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/vibed-project/vibeD/internal/netguard"
 )
 
 // MaxTarballBytes caps the on-the-wire tarball size at 50 MB, matching
@@ -38,23 +42,98 @@ const (
 // SourceFetcher fetches the gzipped tarball at sourceURL and extracts it
 // into dir, replacing any existing contents (caller is responsible for
 // clearing the directory first). The default implementation uses an
-// http.Client with a short connect timeout — callers can swap it in tests.
+// SSRF-hardened http.Client — callers can swap it in tests.
+//
+// AllowInsecureScheme and AllowPrivateHosts relax the two SSRF defenses for
+// tests (which serve tarballs from httptest.Server on 127.0.0.1 over http).
+// They are false in production: only https is allowed and dialing a
+// private/link-local/loopback/metadata address is refused.
 type SourceFetcher struct {
-	Client *http.Client
+	Client              *http.Client
+	AllowInsecureScheme bool
+	AllowPrivateHosts   bool
 }
 
-// NewSourceFetcher returns a fetcher with sensible production timeouts.
+// NewSourceFetcher returns a fetcher with sensible production timeouts and the
+// SSRF guards enabled (https-only, private/metadata dials refused at connect
+// time, redirects re-validated).
 func NewSourceFetcher() *SourceFetcher {
-	return &SourceFetcher{Client: &http.Client{Timeout: 60 * time.Second}}
+	f := &SourceFetcher{}
+	f.Client = &http.Client{
+		Timeout:       60 * time.Second,
+		Transport:     &http.Transport{DialContext: guardedDialContext(false)},
+		CheckRedirect: guardedCheckRedirect(false),
+	}
+	return f
+}
+
+// guardedDialContext returns a DialContext that refuses to connect to a
+// private/link-local/loopback/metadata address. The check happens AFTER name
+// resolution (the resolver hands us the concrete IP:port to dial), so a
+// hostname whose DNS points at an internal IP — the DNS-rebinding / SSRF vector
+// — is blocked at connect time regardless of what the URL host looked like.
+// allowPrivate=true disables the check (tests only).
+func guardedDialContext(allowPrivate bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if !allowPrivate {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("refusing to dial malformed address %q: %w", addr, err)
+			}
+			if netguard.IsBlockedHostIP(host) {
+				return nil, fmt.Errorf("refusing to connect to private/link-local address %q", host)
+			}
+		}
+		return d.DialContext(ctx, network, addr)
+	}
+}
+
+// guardedCheckRedirect re-applies the scheme restriction to every redirect hop
+// so a public https URL cannot 30x-bounce the fetcher to http:// or to a
+// different host that (via the dial guard) would still be re-checked at connect
+// time. It also caps the redirect chain length.
+func guardedCheckRedirect(allowInsecureScheme bool) func(req *http.Request, via []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		if !allowInsecureScheme && req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing redirect to non-https URL %q", req.URL.Redacted())
+		}
+		return nil
+	}
 }
 
 // Fetch downloads sourceURL and extracts the resulting gzipped tarball into
 // dir. Errors are returned with enough context for the caller to surface in
 // /inject's response body.
+//
+// SSRF defenses: the scheme must be https (unless AllowInsecureScheme), the
+// dialer refuses private/link-local/loopback/metadata addresses (unless
+// AllowPrivateHosts), and every redirect hop is re-validated. Together these
+// stop an operator-supplied source URL from being used to reach the instance
+// metadata endpoint or internal services.
 func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error {
+	if !f.AllowInsecureScheme {
+		u, err := url.Parse(sourceURL)
+		if err != nil {
+			return fmt.Errorf("parse source URL: %w", err)
+		}
+		if u.Scheme != "https" {
+			return fmt.Errorf("source URL must use https (got scheme %q)", u.Scheme)
+		}
+	}
+
 	client := f.Client
 	if client == nil {
-		client = http.DefaultClient
+		// No explicit client — build one honoring this fetcher's guard flags so
+		// the dial guard and redirect check are always applied.
+		client = &http.Client{
+			Timeout:       60 * time.Second,
+			Transport:     &http.Transport{DialContext: guardedDialContext(f.AllowPrivateHosts)},
+			CheckRedirect: guardedCheckRedirect(f.AllowInsecureScheme),
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {

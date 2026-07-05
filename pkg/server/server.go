@@ -67,11 +67,13 @@ import (
 // boot vibeD without importing internal/.
 func Main() {
 	var (
-		configPath string
-		transport  string
+		configPath  string
+		transport   string
+		devInsecure bool
 	)
 	flag.StringVar(&configPath, "config", "", "Path to vibed.yaml config file")
 	flag.StringVar(&transport, "transport", "", "Override transport: stdio, http, or both")
+	flag.BoolVar(&devInsecure, "dev-insecure", false, "Allow binding a non-loopback address while authentication is DISABLED. Without this, an auth-disabled server is forced to loopback so it is not accidentally exposed.")
 	flag.Parse()
 
 	// Bootstrap logger for config loading (always text, info level).
@@ -85,6 +87,10 @@ func Main() {
 
 	if transport != "" {
 		cfg.Server.Transport = transport
+	}
+	// The flag ORs with any config/env value so either source can opt in.
+	if devInsecure {
+		cfg.Server.DevInsecure = true
 	}
 
 	// Replace the bootstrap logger with the configured format and level.
@@ -457,23 +463,28 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	frontendHandler := frontend.NewHandler(orch, cfg, bus, m, userStore, k8sClients)
 	mux.Handle("/", frontendHandler)
 
-	// Build handler chain: role → auth (selective) → metrics → mux
+	// Build the handler chain. Request flow is outermost-first; each
+	// handler = X(handler) makes X the new OUTER layer. We want auth to run
+	// BEFORE rate limiting so the limiter can key on the authenticated identity
+	// (the trusted-proxy-validated user in oauth mode), not the socket address.
+	// So rate limiting is applied first here (inner layer), then auth/role wrap
+	// around it (outer layers).
 	var handler http.Handler = mux
+
+	// Rate limiting — inner layer, so it sees the identity that auth injected.
+	if cfg.Server.RateLimit.Enabled {
+		handler = middleware.RateLimiter(ctx, cfg.Server.RateLimit, m)(handler)
+	}
 
 	// Apply auth middleware (skips health/metrics/static paths) and role middleware
 	if cfg.Auth.Enabled {
 		roleMap := vibedauth.BuildRoleMap(cfg.Auth.APIKeys)
-		handler = vibedauth.RoleMiddleware(roleMap, userStore)(handler) // inner: inject role into context
-		handler = vibedauth.SkipAuthPaths(authMiddleware)(handler)      // outer: authenticate first
+		handler = vibedauth.RoleMiddleware(roleMap, userStore)(handler) // inject role into context
+		handler = vibedauth.SkipAuthPaths(authMiddleware)(handler)      // outermost: authenticate first
 	} else {
 		// Auth disabled — inject admin role so all API endpoints are accessible.
 		// This makes the dashboard fully functional in no-auth (dev) mode.
 		handler = vibedauth.NoAuthAdminMiddleware()(handler)
-	}
-
-	// Apply rate limiting (after auth so we can key by user)
-	if cfg.Server.RateLimit.Enabled {
-		handler = middleware.RateLimiter(ctx, cfg.Server.RateLimit, m)(handler)
 	}
 
 	// Apply OTel HTTP tracing middleware (extracts/injects trace context)
@@ -487,8 +498,20 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	// Apply metrics middleware (outermost — captures all requests)
 	handler = m.HTTPMiddleware(handler)
 
+	// No-auth exposure policy (#55): when auth is disabled, don't accidentally
+	// expose an unauthenticated control plane off-host. Force loopback unless the
+	// operator explicitly opts in with --dev-insecure.
+	bindAddr, bindWarning, bindErr := config.ResolveDevBind(cfg.Server.HTTPAddr, cfg.Auth.Enabled, cfg.Server.DevInsecure)
+	if bindErr != nil {
+		logger.Error("invalid HTTP bind address", "error", bindErr)
+		os.Exit(1)
+	}
+	if bindWarning != "" {
+		logger.Warn(bindWarning)
+	}
+
 	server := &http.Server{
-		Addr:              cfg.Server.HTTPAddr,
+		Addr:              bindAddr,
 		Handler:           handler,
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -510,13 +533,13 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	if tlsConfig != nil {
 		// TLS enabled — use ListenAndServeTLS with certs from tls.Config
 		scheme := "https"
-		logger.Info("starting HTTPS server", "addr", cfg.Server.HTTPAddr, "scheme", scheme)
+		logger.Info("starting HTTPS server", "addr", bindAddr, "scheme", scheme)
 		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "HTTPS server error: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
-		logger.Info("starting HTTP server", "addr", cfg.Server.HTTPAddr)
+		logger.Info("starting HTTP server", "addr", bindAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "HTTP server error: %v\n", err)
 			os.Exit(1)

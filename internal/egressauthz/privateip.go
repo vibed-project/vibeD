@@ -3,50 +3,25 @@ package egressauthz
 import (
 	"context"
 	"net"
+
+	"github.com/vibed-project/vibeD/internal/netguard"
 )
 
-// blockedCIDRs are the private, link-local, and loopback ranges (including the
-// 169.254.169.254 instance-metadata address) that a sandbox must never reach
-// via an allow-listed hostname. Even when a per-app allow-list authorizes a
-// hostname, we resolve it and deny if it lands in one of these ranges. This is
-// defense-in-depth against a DNS-rebinding attack: an attacker-controlled
-// domain (allow-listed, or matching a wildcard) can point its A/AAAA record at
-// 169.254.169.254 (the link-local instance-metadata endpoint) or an internal
-// service IP, so authorizing the name alone is not enough — the resolved
-// address must be checked too.
-var blockedCIDRs = func() []*net.IPNet {
-	cidrs := []string{
-		"10.0.0.0/8",     // RFC1918 private
-		"172.16.0.0/12",  // RFC1918 private
-		"192.168.0.0/16", // RFC1918 private
-		"169.254.0.0/16", // link-local (incl. 169.254.169.254 instance metadata)
-		"127.0.0.0/8",    // IPv4 loopback
-		"::1/128",        // IPv6 loopback
-		"fe80::/10",      // IPv6 link-local
-		"fd00::/8",       // IPv6 unique-local
-	}
-	nets := make([]*net.IPNet, 0, len(cidrs))
-	for _, c := range cidrs {
-		if _, n, err := net.ParseCIDR(c); err == nil {
-			nets = append(nets, n)
-		}
-	}
-	return nets
-}()
-
-// isBlockedIP reports whether ip falls in any private/link-local/loopback/
-// metadata range. An IPv4 address is also matched against its IPv6-mapped
-// form so callers don't need to normalize.
+// isBlockedIP reports whether ip falls in a private/link-local/loopback range
+// (incl. the 169.254.169.254 instance-metadata address). The range policy is
+// shared with the agent/loader SSRF guards via internal/netguard. This is
+// defense-in-depth against DNS-rebinding: an allow-listed domain can point its
+// A/AAAA record at an internal service IP or the metadata endpoint, so the
+// resolved address must be checked, not just the name.
+//
+// Unlike netguard.IsBlockedIP (which fails closed on nil/unspecified for the
+// dial path), here a nil IP means "no address to check" and is not treated as
+// blocked; resolvesToBlocked only calls this with parsed/resolved addresses.
 func isBlockedIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	for _, n := range blockedCIDRs {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return netguard.IsBlockedIP(ip)
 }
 
 // hostResolver resolves a hostname to its IP addresses. Abstracted so tests can

@@ -69,17 +69,32 @@ type listDepartmentsOutput struct {
 func registerListDepartmentsTool(server *mcp.Server, userStore store.UserStore) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_departments",
-		Description: "List all departments in vibeD.",
+		Description: "List all departments in vibeD. Requires admin role.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input listDepartmentsInput) (*mcp.CallToolResult, *listDepartmentsOutput, error) {
-		depts, err := userStore.ListDepartments(ctx)
+		out, err := listDepartments(ctx, userStore)
 		if err != nil {
 			return nil, nil, err
 		}
-		if depts == nil {
-			depts = []api.Department{}
-		}
-		return nil, &listDepartmentsOutput{Departments: depts}, nil
+		return nil, out, nil
 	})
+}
+
+// listDepartments is the admin-gated body of the list_departments tool,
+// extracted so the authorization check is unit-testable. Department membership
+// is sensitive org structure, so — like list_users and create_department — it
+// requires the admin role.
+func listDepartments(ctx context.Context, userStore store.UserStore) (*listDepartmentsOutput, error) {
+	if !vibedauth.IsAdmin(ctx) {
+		return nil, fmt.Errorf("admin access required")
+	}
+	depts, err := userStore.ListDepartments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if depts == nil {
+		depts = []api.Department{}
+	}
+	return &listDepartmentsOutput{Departments: depts}, nil
 }
 
 type createDepartmentInput struct {

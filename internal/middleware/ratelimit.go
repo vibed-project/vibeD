@@ -23,6 +23,23 @@ type client struct {
 	lastSeen time.Time
 }
 
+// rateLimitKey returns the per-client rate-limit bucket key and its type label.
+// It uses the authenticated user identity from the request context when present
+// — in oauth-passthrough mode that is the trusted-proxy-validated identity, NOT
+// the raw X-Forwarded-User header — and otherwise falls back to the socket peer
+// address (r.RemoteAddr). It deliberately reads no X-Forwarded-* headers, so a
+// client cannot forge or evade a limit by setting a forwarded identity header.
+func rateLimitKey(r *http.Request) (key, clientType string) {
+	if uid := vibedauth.UserIDFromContext(r.Context()); uid != "" {
+		return uid, "apikey"
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || host == "" {
+		host = r.RemoteAddr
+	}
+	return host, "ip"
+}
+
 // RateLimiter returns HTTP middleware that rate-limits requests per client.
 // Clients are identified by authenticated user ID (if available) or by IP address.
 // Only /api/ and /mcp paths are rate-limited; health, metrics, and static are skipped.
@@ -140,16 +157,13 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 				}
 			}
 
-			// Determine client key: authenticated user ID or IP
-			key := vibedauth.UserIDFromContext(r.Context())
-			clientType := "apikey"
-			if key == "" {
-				clientType = "ip"
-				key, _, _ = net.SplitHostPort(r.RemoteAddr)
-				if key == "" {
-					key = r.RemoteAddr
-				}
-			}
+			// Determine the client key. IMPORTANT: never derive it from an
+			// unauthenticated identity header (e.g. X-Forwarded-User) — in
+			// oauth-passthrough mode that header is only trusted by the auth
+			// verifier when it comes from a configured trusted proxy, and the
+			// resulting identity is what UserIDFromContext returns. Keying on the
+			// raw header would let a client evade or forge another user's limit.
+			key, clientType := rateLimitKey(r)
 
 			if !getLimiter(key, false).Allow() {
 				m.RateLimitedTotal.WithLabelValues(clientType).Inc()

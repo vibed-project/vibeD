@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"time"
 
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -21,17 +20,9 @@ func registerCreateShareLinkTool(server *mcp.Server, orch *orchestrator.Orchestr
 		Name:        "create_share_link",
 		Description: "Create a public shareable link for an artifact. Anyone with the link (and optional password) can view the artifact's status and URL without a vibeD account.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input createShareLinkInput) (*mcp.CallToolResult, *api.ShareLink, error) {
-		var expiresIn time.Duration
-		if input.ExpiresIn != "" {
-			s := input.ExpiresIn
-			// Support "7d" shorthand
-			if len(s) > 1 && s[len(s)-1] == 'd' {
-				if d, err := time.ParseDuration(s[:len(s)-1] + "h"); err == nil {
-					expiresIn = d * 24
-				}
-			} else {
-				expiresIn, _ = time.ParseDuration(s)
-			}
+		expiresIn, err := orchestrator.ParseExpiresIn(input.ExpiresIn)
+		if err != nil {
+			return nil, nil, err
 		}
 
 		link, err := orch.CreateShareLink(ctx, input.ArtifactID, input.Password, expiresIn)

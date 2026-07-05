@@ -83,7 +83,7 @@ func TestFetchRejectsPerEntryBomb(t *testing.T) {
 	srv := serveBytes(t, bomb)
 	defer srv.Close()
 
-	err := NewSourceFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
+	err := testFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "uncompressed size limit") {
 		t.Fatalf("expected per-entry uncompressed-limit error, got %v", err)
 	}
@@ -100,7 +100,7 @@ func TestFetchRejectsCumulativeBomb(t *testing.T) {
 	srv := serveBytes(t, bomb)
 	defer srv.Close()
 
-	err := NewSourceFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
+	err := testFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
 	if err == nil {
 		t.Fatal("expected cumulative uncompressed-limit error, got nil")
 	}
@@ -116,7 +116,7 @@ func TestFetchRejectsTooManyEntries(t *testing.T) {
 	srv := serveBytes(t, bomb)
 	defer srv.Close()
 
-	err := NewSourceFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
+	err := testFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "too many entries") {
 		t.Fatalf("expected too-many-entries error, got %v", err)
 	}
@@ -132,7 +132,7 @@ func TestFetchAllowsNormalArchive(t *testing.T) {
 	srv := serveBytes(t, tarball)
 	defer srv.Close()
 
-	if err := NewSourceFetcher().Fetch(context.Background(), srv.URL, t.TempDir()); err != nil {
+	if err := testFetcher().Fetch(context.Background(), srv.URL, t.TempDir()); err != nil {
 		t.Fatalf("normal archive should extract, got %v", err)
 	}
 }
