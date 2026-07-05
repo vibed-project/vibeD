@@ -2,6 +2,7 @@ package runneragent
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,11 @@ type Config struct {
 	// Token, when non-empty, is required as a Bearer token on every control
 	// API request. vibeD passes the same value via the VIBED_AGENT_TOKEN env.
 	Token string
+	// RequireAuth makes the control API (inject/status/logs/stop) fail closed
+	// when no Token is configured, instead of serving those endpoints
+	// unauthenticated. Set via VIBED_AGENT_REQUIRE_AUTH=true. It does not affect
+	// the unauthenticated liveness (/healthz) and image-info (/info) probes.
+	RequireAuth bool
 	// AppPort is the default port the user process should listen on; exported
 	// to the process as PORT. An InjectRequest may override it per-deploy.
 	AppPort int
@@ -156,15 +162,27 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-// auth wraps a handler with Bearer-token authentication when a token is set.
+// auth wraps a control-API handler with Bearer-token authentication.
+//
+// When a Token is configured it is required (constant-time compared). When no
+// Token is configured the behavior depends on RequireAuth: if set, the endpoint
+// fails closed (401) so a misconfiguration cannot silently expose the control
+// API to the untrusted workload sharing the pod; if unset, the endpoint is
+// served without auth (the historical single-node/dev default).
 func (a *Agent) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if a.cfg.Token != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if got != a.cfg.Token {
-				writeError(w, http.StatusUnauthorized, "invalid or missing bearer token")
+		if a.cfg.Token == "" {
+			if a.cfg.RequireAuth {
+				writeError(w, http.StatusUnauthorized, "control API requires authentication but no token is configured")
 				return
 			}
+			next(w, r)
+			return
+		}
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(a.cfg.Token)) != 1 {
+			writeError(w, http.StatusUnauthorized, "invalid or missing bearer token")
+			return
 		}
 		next(w, r)
 	}

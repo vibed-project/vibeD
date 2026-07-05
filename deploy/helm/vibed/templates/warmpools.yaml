@@ -54,20 +54,43 @@ spec:
         - name: runtime
           image: {{ $cfg.image | quote }}
           imagePullPolicy: IfNotPresent
-          {{- if $root.Values.egressControl.enabled }}
-          # Route outbound HTTP(S) through the egress proxy — the NetworkPolicy
-          # blocks every other egress path, so this is the only way out and the
-          # proxy authorizes it against the app's allow-list. lower+upper case
-          # since libraries differ on which they read.
-          {{- $proxy := printf "http://%s-egress-proxy.%s:3128" (include "vibed.fullname" $root) $root.Release.Namespace }}
           env:
+            {{- if $root.Values.egressControl.enabled }}
+            # Route outbound HTTP(S) through the egress proxy — the NetworkPolicy
+            # blocks every other egress path, so this is the only way out and the
+            # proxy authorizes it against the app's allow-list. lower+upper case
+            # since libraries differ on which they read.
+            {{- $proxy := printf "http://%s-egress-proxy.%s:3128" (include "vibed.fullname" $root) $root.Release.Namespace }}
             - { name: HTTP_PROXY,  value: {{ $proxy | quote }} }
             - { name: HTTPS_PROXY, value: {{ $proxy | quote }} }
             - { name: NO_PROXY,    value: "localhost,127.0.0.1" }
             - { name: http_proxy,  value: {{ $proxy | quote }} }
             - { name: https_proxy, value: {{ $proxy | quote }} }
             - { name: no_proxy,    value: "localhost,127.0.0.1" }
-          {{- end }}
+            {{- end }}
+            # Bearer token for the agent control API (:9000). This reads a Secret
+            # of the same name in THIS (apps) namespace; the controller reads a
+            # separate Secret object of the same name in the release namespace, so
+            # create both with the SAME token value or injects 401. optional:true
+            # keeps installs without the Secret working (unauthenticated — dev /
+            # single-node). Create it to authenticate the control API against the
+            # untrusted workload that shares this pod's network namespace:
+            #   kubectl create secret generic {{ include "vibed.fullname" $root }}-agent-token \
+            #     --from-literal=token=$(openssl rand -hex 32) -n {{ $root.Values.namespaces.apps }}
+            # (the controller reads the same Secret in its own namespace).
+            - name: VIBED_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vibed.fullname" $root }}-agent-token
+                  key: token
+                  optional: true
+            {{- with $root.Values.agentAuth }}
+            {{- if .require }}
+            # Fail closed: the control API refuses inject/stop/status/logs when no
+            # token is configured (defense-in-depth against a missing Secret).
+            - { name: VIBED_AGENT_REQUIRE_AUTH, value: "true" }
+            {{- end }}
+            {{- end }}
           ports:
             - { name: control, containerPort: 9000 }
             - { name: http,    containerPort: 8080 }

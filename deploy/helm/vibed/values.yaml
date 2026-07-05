@@ -95,6 +95,23 @@ runtime:
   #               policy = fully open.)
   sandboxNetworkPolicy: Managed
 
+# -- Authentication for the in-sandbox agent control API (:9000), which the
+#    controller uses to inject source and manage the user process. The token is
+#    supplied via a Secret named "<release>-agent-token" (key "token") that both
+#    the controller and the warm-pool pods read. Generate ONE value and apply it
+#    to BOTH the release namespace and namespaces.apps (they must match):
+#      TOKEN=$(openssl rand -hex 32)
+#      for ns in <release-ns> <apps-ns>; do
+#        kubectl create secret generic <release>-agent-token \
+#          --from-literal=token="$TOKEN" -n "$ns"
+#      done
+agentAuth:
+  # -- Fail closed: the agent refuses the control API (inject/stop/status/logs)
+  #    when no token is configured, instead of serving it unauthenticated to the
+  #    untrusted workload sharing the pod. Only enable together with the Secret
+  #    above, or deploys will fail. Health/info probes stay unauthenticated.
+  require: false
+
 # -- Bring-your-own base-image validation. When enabled (default), the
 #    controller periodically boots-checks each warm-pool image (agent /info +
 #    language match + runtime probe) and hard-gates deploys whose image is

@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -235,8 +236,14 @@ func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key
 }
 
 // oauthPassthroughVerifier accepts a Bearer token that must match an API key
-// (acting as a proxy shared secret) and then trusts the X-Forwarded-User header.
-func oauthPassthroughVerifier(keys []config.APIKeyConf, logger *slog.Logger) mcpauth.TokenVerifier {
+// (acting as a proxy shared secret) and then trusts the X-Forwarded-User header
+// — but ONLY when the request originates from a trusted proxy (its source IP is
+// within one of trustedCIDRs). This binds the identity header to the proxy, so a
+// direct client that learns the shared secret cannot spoof an arbitrary user (or
+// an admin) by setting the header itself. When no trusted proxies are
+// configured, the header is never trusted and every request maps to the generic
+// "oauth-user" identity.
+func oauthPassthroughVerifier(keys []config.APIKeyConf, trustedCIDRs []*net.IPNet, logger *slog.Logger) mcpauth.TokenVerifier {
 	return func(ctx context.Context, token string, req *http.Request) (*mcpauth.TokenInfo, error) {
 		if token == "" {
 			return nil, mcpauth.ErrInvalidToken
@@ -256,10 +263,15 @@ func oauthPassthroughVerifier(keys []config.APIKeyConf, logger *slog.Logger) mcp
 			return nil, mcpauth.ErrInvalidToken
 		}
 
-		// Extract user ID from X-Forwarded-User header if set by the proxy
-		userID := req.Header.Get("X-Forwarded-User")
-		if userID == "" {
-			userID = "oauth-user"
+		// Trust the identity header only from a configured trusted proxy.
+		userID := "oauth-user"
+		if fwd := req.Header.Get("X-Forwarded-User"); fwd != "" {
+			if remoteIPTrusted(req.RemoteAddr, trustedCIDRs) {
+				userID = fwd
+			} else {
+				logger.Warn("OAuth passthrough: ignoring X-Forwarded-User from an untrusted source",
+					"remote", req.RemoteAddr, "path", req.URL.Path)
+			}
 		}
 
 		logger.Debug("OAuth passthrough authenticated",
@@ -272,6 +284,42 @@ func oauthPassthroughVerifier(keys []config.APIKeyConf, logger *slog.Logger) mcp
 			Expiration: time.Now().Add(1 * time.Hour),
 		}, nil
 	}
+}
+
+// parseTrustedProxies parses CIDR strings into networks, logging and skipping any
+// that are malformed.
+func parseTrustedProxies(cidrs []string, logger *slog.Logger) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(strings.TrimSpace(c))
+		if err != nil {
+			logger.Warn("ignoring malformed auth.trustedProxies CIDR", "value", c, "error", err)
+			continue
+		}
+		nets = append(nets, n)
+	}
+	return nets
+}
+
+// remoteIPTrusted reports whether remoteAddr's IP is within any trusted CIDR.
+func remoteIPTrusted(remoteAddr string, trusted []*net.IPNet) bool {
+	if len(trusted) == 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr // no port
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, n := range trusted {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildRoleMap creates a mapping from user ID (APIKey Name) to role.

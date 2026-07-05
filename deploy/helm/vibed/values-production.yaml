@@ -6,12 +6,28 @@
 #     -n vibed-system --create-namespace
 #
 # IMPORTANT: Review and customize these values before deploying.
-# At minimum, update: image.tag, config.registry.url, and
-# auth.existingSecret.
+#
+# This file ships a HARDENED, secure-by-default posture: the sandbox
+# NetworkPolicy, per-app egress allow-list, HTTP rate limiting, and agent
+# control-API authentication are all ON. Two of these have prerequisites you
+# MUST satisfy or deploys will fail:
+#   1. The NetworkPolicy blocks cluster-internal egress, so source tarballs must
+#      come from S3 — set config.storage.tarball.s3.* (endpoint/bucket/region)
+#      and provide credentials (IRSA or env).
+#   2. The agent control API is set to fail closed. Generate ONE token and apply
+#      the SAME value to BOTH the release namespace and namespaces.apps (the
+#      controller and the warm-pool pods read it from their own namespace, so
+#      the values must match or injects fail):
+#        TOKEN=$(openssl rand -hex 32)
+#        for ns in vibed-system vibed-apps; do
+#          kubectl create secret generic vibed-agent-token \
+#            --from-literal=token="$TOKEN" -n "$ns"
+#        done
+# At minimum also update: image.tag, config.registry.url, auth.existingSecret.
 
 image:
   # -- Pin to a specific release tag. Never use "latest" in production.
-  tag: "v0.1.0"
+  tag: "v0.4.2"
   pullPolicy: Always
 
 resources:
@@ -41,10 +57,38 @@ auth:
     #   kubectl create secret tls vibed-tls --cert=tls.crt --key=tls.key -n vibed-system
     existingSecret: ""
 
+# -- Sandbox isolation posture. Unmanaged hands networking to vibeD's own
+#    NetworkPolicy (below); required for the egress allow-list to apply.
+runtime:
+  sandboxNetworkPolicy: Unmanaged
+
+# -- Default-deny NetworkPolicy for sandbox pods. With egressControl on, the only
+#    egress is DNS and the egress proxy (no direct public path), so untrusted code
+#    can reach nothing else. The presigned S3 tarball pull goes through the proxy
+#    and is auto-allowed (the egress-authz sidecar adds the S3 endpoint host to
+#    its system-hosts from config.storage.tarball.s3.endpoint).
+networkPolicy:
+  enabled: true
+
+# -- Per-app outbound allow-list enforced by a forward proxy, so untrusted code
+#    can only reach the hosts an app declares.
+egressControl:
+  enabled: true
+
+# -- Fail closed on the in-sandbox agent control API. Requires the
+#    vibed-agent-token Secret (see header); without it, deploys fail.
+agentAuth:
+  require: true
+
 config:
   server:
     transport: "http"
     httpAddr: ":8080"
+    # -- Throttle per-client request rate (the deploy path is expensive).
+    rateLimit:
+      enabled: true
+      requestsPerSecond: 10
+      burst: 20
   deployment:
     preferredTarget: "auto"
     namespace: "default"
@@ -52,6 +96,15 @@ config:
     backend: "local"
     local:
       basePath: "/data/vibed/artifacts"
+    # -- Source tarballs MUST come from S3 in this posture: the NetworkPolicy
+    #    blocks the in-cluster "served" backend. Fill in your bucket + creds.
+    tarball:
+      backend: "s3"
+      s3:
+        endpoint: ""   # e.g. https://s3.us-east-1.amazonaws.com
+        bucket: ""     # e.g. vibed-sources
+        region: ""     # e.g. us-east-1
+        presignTTL: "15m"
   registry:
     enabled: true
     # -- Your production OCI registry (e.g., ghcr.io/myorg/vibed-artifacts)
