@@ -18,6 +18,23 @@ import (
 // io.LimitReader, so an oversized download fails before extraction.
 const MaxTarballBytes = 50 * 1024 * 1024
 
+// Decompression-bomb limits. Capping only the compressed input is not enough:
+// a small gzip can expand to tens of GB, exhausting disk/inodes on the sandbox.
+// We additionally bound the UNCOMPRESSED output — cumulatively, per entry, and
+// by entry count — enforced inside the copy loop so extraction aborts the moment
+// a budget is exceeded rather than after writing the whole bomb.
+const (
+	// MaxUncompressedBytes caps the total uncompressed size across all entries.
+	// 500 MB is 10x the 50 MB compressed cap — generous for real sources while
+	// still bounding a gzip bomb.
+	MaxUncompressedBytes = 500 * 1024 * 1024
+	// MaxEntryBytes caps a single file's uncompressed size.
+	MaxEntryBytes = 100 * 1024 * 1024
+	// MaxEntries caps the number of tar entries, bounding an inode-exhaustion
+	// ("many tiny files") archive.
+	MaxEntries = 20000
+)
+
 // SourceFetcher fetches the gzipped tarball at sourceURL and extracts it
 // into dir, replacing any existing contents (caller is responsible for
 // clearing the directory first). The default implementation uses an
@@ -63,6 +80,8 @@ func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error 
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
+	var totalUncompressed int64
+	var entries int
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -71,8 +90,17 @@ func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error 
 		if err != nil {
 			return fmt.Errorf("read tarball: %w", err)
 		}
-		if err := extractEntry(dir, hdr, tr); err != nil {
+		entries++
+		if entries > MaxEntries {
+			return fmt.Errorf("tarball has too many entries (limit %d)", MaxEntries)
+		}
+		written, err := extractEntry(dir, hdr, tr, remainingBudget(totalUncompressed))
+		if err != nil {
 			return err
+		}
+		totalUncompressed += written
+		if totalUncompressed > MaxUncompressedBytes {
+			return fmt.Errorf("tarball expands beyond the %d-byte uncompressed limit", int64(MaxUncompressedBytes))
 		}
 	}
 
@@ -86,40 +114,64 @@ func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error 
 	return nil
 }
 
-// extractEntry writes a single tar entry under dir. Symlinks and absolute /
-// parent-escaping paths are rejected; the agent runs untrusted code but the
-// extraction itself must not be the attack surface.
-func extractEntry(dir string, hdr *tar.Header, r io.Reader) error {
+// remainingBudget returns how many uncompressed bytes may still be written
+// before the cumulative cap is hit, never negative.
+func remainingBudget(alreadyWritten int64) int64 {
+	rem := int64(MaxUncompressedBytes) - alreadyWritten
+	if rem < 0 {
+		return 0
+	}
+	return rem
+}
+
+// extractEntry writes a single tar entry under dir and returns the number of
+// bytes written. Symlinks and absolute / parent-escaping paths are rejected;
+// the agent runs untrusted code but the extraction itself must not be the
+// attack surface. The copy is bounded by the smaller of MaxEntryBytes and the
+// remaining cumulative budget so a decompression bomb aborts mid-write instead
+// of filling the disk.
+func extractEntry(dir string, hdr *tar.Header, r io.Reader, budget int64) (int64, error) {
 	clean := filepath.Clean(hdr.Name)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("illegal tar entry path %q", hdr.Name)
+		return 0, fmt.Errorf("illegal tar entry path %q", hdr.Name)
 	}
 	dest := filepath.Join(dir, clean)
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
 		if err := os.MkdirAll(dest, 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dest, err)
+			return 0, fmt.Errorf("mkdir %s: %w", dest, err)
 		}
 	case tar.TypeReg, tar.TypeRegA:
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return fmt.Errorf("mkdir parent of %s: %w", dest, err)
+			return 0, fmt.Errorf("mkdir parent of %s: %w", dest, err)
 		}
 		f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o755)
 		if err != nil {
-			return fmt.Errorf("open %s: %w", dest, err)
+			return 0, fmt.Errorf("open %s: %w", dest, err)
 		}
-		if _, err := io.Copy(f, r); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("write %s: %w", dest, err)
+		// Cap this entry at the per-entry limit AND the remaining cumulative
+		// budget. Read one extra byte so we can distinguish "exactly at the
+		// cap" from "over the cap".
+		perEntry := int64(MaxEntryBytes)
+		if budget < perEntry {
+			perEntry = budget
 		}
-		if err := f.Close(); err != nil {
-			return fmt.Errorf("close %s: %w", dest, err)
+		written, err := io.Copy(f, io.LimitReader(r, perEntry+1))
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			return written, fmt.Errorf("close %s: %w", dest, closeErr)
 		}
+		if err != nil {
+			return written, fmt.Errorf("write %s: %w", dest, err)
+		}
+		if written > perEntry {
+			return written, fmt.Errorf("tar entry %q exceeds the uncompressed size limit", hdr.Name)
+		}
+		return written, nil
 	default:
 		// Reject symlinks, hardlinks, devices, FIFOs. Untrusted source code
 		// has no legitimate need for them in this contract.
-		return fmt.Errorf("unsupported tar entry type %d for %q", hdr.Typeflag, hdr.Name)
+		return 0, fmt.Errorf("unsupported tar entry type %d for %q", hdr.Typeflag, hdr.Name)
 	}
-	return nil
+	return 0, nil
 }

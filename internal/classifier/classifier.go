@@ -60,6 +60,18 @@ const (
 // tarballs return a non-nil error.
 const MaxTarballBytes = 50 * 1024 * 1024
 
+// Decompression-bomb limits. The 50 MB cap above bounds only the COMPRESSED
+// input; a small gzip can still expand to tens of GB as the tar reader skips
+// through entries. We additionally bound the UNCOMPRESSED total and the entry
+// count so scanning a malicious archive can't burn unbounded CPU/memory.
+const (
+	// MaxUncompressedBytes caps the total uncompressed size the scan will
+	// process. 500 MB is 10x the compressed cap.
+	MaxUncompressedBytes = 500 * 1024 * 1024
+	// MaxEntries caps the number of tar entries scanned.
+	MaxEntries = 20000
+)
+
 // Decision is the classifier's output. The controller honors Lane +
 // Template; BuildAsync and Rule are advisory metadata.
 type Decision struct {
@@ -162,7 +174,11 @@ func scanTarball(ctx context.Context, r io.Reader) (*scan, error) {
 		hasExt:    map[string]bool{},
 	}
 
-	tr := tar.NewReader(gz)
+	// counted bounds the UNCOMPRESSED bytes the tar reader pulls from gzip, so
+	// a decompression bomb aborts the scan instead of expanding unbounded.
+	counted := &countingReader{r: gz, limit: MaxUncompressedBytes}
+	tr := tar.NewReader(counted)
+	entries := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -171,8 +187,15 @@ func scanTarball(ctx context.Context, r io.Reader) (*scan, error) {
 		if err == io.EOF {
 			break
 		}
+		if counted.exceeded {
+			return nil, errors.New("tarball expands beyond the uncompressed size limit")
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read tarball: %w", err)
+		}
+		entries++
+		if entries > MaxEntries {
+			return nil, fmt.Errorf("tarball has too many entries (limit %d)", MaxEntries)
 		}
 		// Normalize: strip any "./" prefix and skip pure-directory entries
 		// for the markers map (we still record extensions for asset files).
@@ -218,6 +241,41 @@ func scanTarball(ctx context.Context, r io.Reader) (*scan, error) {
 		return nil, errors.New("tarball exceeds 50MB limit")
 	}
 	return s, nil
+}
+
+// errUncompressedLimit is returned once the counting reader has yielded more
+// uncompressed bytes than the budget allows.
+var errUncompressedLimit = errors.New("tarball expands beyond the uncompressed size limit")
+
+// countingReader counts bytes read from r and fails once more than limit bytes
+// have been produced, bounding uncompressed expansion (decompression-bomb
+// defense). It reads up to limit+1 bytes so the caller can distinguish "exactly
+// at the limit" from "over".
+type countingReader struct {
+	r        io.Reader
+	limit    int64
+	n        int64
+	exceeded bool
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.n > c.limit {
+		c.exceeded = true
+		return 0, errUncompressedLimit
+	}
+	remaining := c.limit + 1 - c.n
+	if int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	if c.n > c.limit {
+		c.exceeded = true
+		if err == nil {
+			err = errUncompressedLimit
+		}
+	}
+	return n, err
 }
 
 func parsePackageJSON(r io.Reader) (*packageJSON, error) {

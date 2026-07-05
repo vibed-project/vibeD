@@ -541,7 +541,7 @@ func bootstrapAPIKeyUsers(keys []config.APIKeyConf, userStore store.UserStore, l
 		}
 		now := time.Now()
 		user := &api.User{
-			ID:        fmt.Sprintf("apikey-%s", key.Name),
+			ID:        vibedauth.APIKeyUserID(key.Name),
 			Name:      key.Name,
 			Role:      role,
 			Status:    "active",

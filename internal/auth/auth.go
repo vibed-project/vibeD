@@ -135,6 +135,19 @@ func SkipAuthPaths(authMiddleware func(http.Handler) http.Handler) func(http.Han
 	}
 }
 
+// APIKeyUserID returns the canonical user ID for a static-API-key user. The ID
+// MUST be identical everywhere the user is referenced — the token verifier's
+// TokenInfo.UserID, the provisioned/bootstrapped store record, and the role map
+// — or lookups (e.g. the suspended-user check) silently miss and fail open.
+// Named users are stored under "apikey-<name>"; an unnamed key has no stable
+// identity, so it maps to the empty string (no per-user record).
+func APIKeyUserID(name string) string {
+	if name == "" {
+		return ""
+	}
+	return "apikey-" + name
+}
+
 // apiKeyVerifier returns a TokenVerifier that validates tokens against configured API keys.
 // If userStore is non-nil, it auto-provisions users on first authentication.
 func apiKeyVerifier(keys []config.APIKeyConf, userStore store.UserStore, logger *slog.Logger) mcpauth.TokenVerifier {
@@ -152,10 +165,12 @@ func apiKeyVerifier(keys []config.APIKeyConf, userStore store.UserStore, logger 
 					autoProvisionAPIKeyUser(ctx, userStore, key, logger)
 				}
 
+				// UserID is the canonical "apikey-<name>" so the suspended-user
+				// check and role lookup resolve the same record the store holds.
 				return &mcpauth.TokenInfo{
 					Scopes:     key.Scopes,
 					Expiration: time.Now().Add(24 * time.Hour),
-					UserID:     key.Name,
+					UserID:     APIKeyUserID(key.Name),
 				}, nil
 			}
 		}
@@ -184,7 +199,7 @@ func apiKeyVerifier(keys []config.APIKeyConf, userStore store.UserStore, logger 
 
 // autoProvisionAPIKeyUser creates a user record on first API key authentication.
 func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key config.APIKeyConf, logger *slog.Logger) {
-	userID := "apikey-" + key.Name
+	userID := APIKeyUserID(key.Name)
 	if _, err := userStore.GetUser(ctx, userID); err == nil {
 		return // user already exists
 	}
@@ -322,16 +337,21 @@ func remoteIPTrusted(remoteAddr string, trusted []*net.IPNet) bool {
 	return false
 }
 
-// BuildRoleMap creates a mapping from user ID (APIKey Name) to role.
+// BuildRoleMap creates a mapping from the canonical user ID ("apikey-<name>")
+// to role. The key MUST match TokenInfo.UserID (see APIKeyUserID) or
+// RoleMiddleware won't find the role for an authenticated API-key user.
 // Users without an explicit role default to "user".
 func BuildRoleMap(keys []config.APIKeyConf) map[string]string {
 	m := make(map[string]string, len(keys))
 	for _, k := range keys {
+		if k.Name == "" {
+			continue
+		}
 		role := k.Role
 		if role == "" {
 			role = "user"
 		}
-		m[k.Name] = role
+		m[APIKeyUserID(k.Name)] = role
 	}
 	return m
 }

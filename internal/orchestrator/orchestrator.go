@@ -675,13 +675,27 @@ func (o *Orchestrator) ListTargets() []api.TargetInfo {
 	return o.detector.ListTargets()
 }
 
+// authEnabled reports whether ownership must be enforced. When auth is enabled
+// but the request carries no user identity (e.g. a transport that doesn't put
+// the caller in ctx), the ownership checks must fail CLOSED rather than allow
+// access to any artifact — otherwise get_artifact_logs / rollback_artifact /
+// list_versions would be a cross-user IDOR.
+func (o *Orchestrator) authEnabled() bool {
+	return o.cfg != nil && o.cfg.Auth.Enabled
+}
+
 // checkOwnership verifies that the current user can read the artifact.
 // Allows: owner, admin, or users in the SharedWith list.
 // Returns ErrNotFound (not Forbidden) to avoid leaking artifact existence to non-owners.
-// When auth is disabled (ownerID is empty), all ownership checks pass.
+// When auth is disabled, all ownership checks pass; when auth is enabled but the
+// caller is unidentified, access is denied (fail closed).
 func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifact) error {
 	ownerID := vibedauth.UserIDFromContext(ctx)
 	if ownerID == "" {
+		if o.authEnabled() {
+			// Auth is on but the caller is anonymous — deny rather than leak.
+			return &api.ErrNotFound{ArtifactID: artifact.ID}
+		}
 		return nil // Auth disabled — no ownership enforcement
 	}
 	if vibedauth.IsAdmin(ctx) {
@@ -701,9 +715,13 @@ func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifac
 
 // checkWriteOwnership verifies that the current user can modify the artifact.
 // Only owner and admin can write — shared users have read-only access.
+// Fails closed when auth is enabled but the caller is unidentified.
 func (o *Orchestrator) checkWriteOwnership(ctx context.Context, artifact *api.Artifact) error {
 	ownerID := vibedauth.UserIDFromContext(ctx)
 	if ownerID == "" {
+		if o.authEnabled() {
+			return &api.ErrNotFound{ArtifactID: artifact.ID}
+		}
 		return nil // Auth disabled
 	}
 	if vibedauth.IsAdmin(ctx) {

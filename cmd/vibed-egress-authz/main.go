@@ -44,11 +44,12 @@ func main() {
 		os.Exit(runSquidHelper(os.Args[2:]))
 	}
 
-	var addr, metricsAddr, namespace, systemHostsCSV string
+	var addr, metricsAddr, namespace, systemHostsCSV, allowInternalHostsCSV string
 	flag.StringVar(&addr, "addr", ":8090", "authz HTTP listen address")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "metrics address (0 disables)")
 	flag.StringVar(&namespace, "namespace", "vibed-apps", "workloads namespace to resolve VibedApps in")
 	flag.StringVar(&systemHostsCSV, "system-hosts", "", "comma-separated hosts always allowed (e.g. the S3/MinIO source store)")
+	flag.StringVar(&allowInternalHostsCSV, "allow-internal-hosts", "", "comma-separated hosts permitted to resolve into a private/link-local/loopback/metadata range (opt-out from the default private-IP deny)")
 	zapOpts := zap.Options{Development: false}
 	zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -56,6 +57,7 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	systemHosts := splitCSV(systemHostsCSV)
+	allowInternalHosts := splitCSV(allowInternalHostsCSV)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
@@ -67,7 +69,7 @@ func main() {
 	}
 
 	resolver := &egressauthz.K8sResolver{Client: mgr.GetClient(), Namespace: namespace}
-	handler := egressauthz.NewHandler(resolver, systemHosts, logger)
+	handler := egressauthz.NewHandlerWithOptions(resolver, systemHosts, allowInternalHosts, logger)
 
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		srv := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
@@ -75,7 +77,7 @@ func main() {
 			<-ctx.Done()
 			_ = srv.Close()
 		}()
-		logger.Info("egress authz listening", "addr", addr, "namespace", namespace, "systemHosts", systemHosts)
+		logger.Info("egress authz listening", "addr", addr, "namespace", namespace, "systemHosts", systemHosts, "allowInternalHosts", allowInternalHosts)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			return err
 		}
