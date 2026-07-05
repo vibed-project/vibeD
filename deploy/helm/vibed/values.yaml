@@ -96,20 +96,21 @@ runtime:
   sandboxNetworkPolicy: Managed
 
 # -- Authentication for the in-sandbox agent control API (:9000), which the
-#    controller uses to inject source and manage the user process. The token is
-#    supplied via a Secret named "<release>-agent-token" (key "token") that both
-#    the controller and the warm-pool pods read. Generate ONE value and apply it
-#    to BOTH the release namespace and namespaces.apps (they must match):
-#      TOKEN=$(openssl rand -hex 32)
-#      for ns in <release-ns> <apps-ns>; do
-#        kubectl create secret generic <release>-agent-token \
-#          --from-literal=token="$TOKEN" -n "$ns"
-#      done
+#    controller uses to inject source and manage the user process. A shared token
+#    lives in a Secret named "<release>-agent-token" (key "token") that both the
+#    controller and the warm-pool pods read.
 agentAuth:
+  # -- Generate the token and create the "<release>-agent-token" Secret in BOTH
+  #    the release namespace (read by the controller) and namespaces.apps (read
+  #    by the warm-pool pods), with the same value, so the control API is
+  #    authenticated out of the box. The value is looked up and reused on upgrade,
+  #    so it is stable. Set to false to manage the Secret yourself (create it with
+  #    the same value in both namespaces).
+  autoGenerate: true
   # -- Fail closed: the agent refuses the control API (inject/stop/status/logs)
-  #    when no token is configured, instead of serving it unauthenticated to the
-  #    untrusted workload sharing the pod. Only enable together with the Secret
-  #    above, or deploys will fail. Health/info probes stay unauthenticated.
+  #    when NO token is configured, instead of serving it unauthenticated to the
+  #    untrusted workload sharing the pod. With autoGenerate on a token is always
+  #    present, so this is defense-in-depth. Health/info probes stay open.
   require: false
 
 # -- Bring-your-own base-image validation. When enabled (default), the
