@@ -2,8 +2,8 @@ apiVersion: v2
 name: vibed
 description: Workload orchestrator for GenAI-generated artifacts
 type: application
-version: 0.4.1
-appVersion: "0.4.1"
+version: 0.4.4
+appVersion: "0.4.4"
 keywords:
   - mcp
   - genai
