@@ -40,12 +40,16 @@ spec:
         - { protocol: TCP, port: 9000 }
         - { protocol: TCP, port: 8080 }
   egress:
-    # DNS — scoped to the cluster DNS pods only. Defeats the DNS-tunnel
-    # exfiltration path (a sandbox querying 8.8.8.8 or an attacker-controlled
-    # resolver) that would otherwise bypass the egress allow-list. Override
+    # DNS — scoped to the cluster DNS pods only. This blocks a sandbox from
+    # querying 8.8.8.8 or an attacker-controlled resolver directly. Override
     # networkPolicy.dnsSelector if your cluster's DNS isn't labelled
     # kubernetes.io/metadata.name=kube-system + k8s-app=kube-dns (most CoreDNS
     # installs match this; some managed providers differ).
+    # Residual (see #59): CoreDNS still recursively resolves arbitrary external
+    # names, so low-bandwidth exfiltration via DNS tunnelling through the
+    # cluster resolver remains possible. Scoping :53 does NOT fully defeat
+    # DNS-tunnel exfil; a resolver policy limiting recursion for sandbox pods
+    # would be needed to close it.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -74,6 +78,8 @@ spec:
     {{- else }}
     # Egress control OFF: public internet allowed, cluster-internal denied (the
     # §7.4 baseline). Enable egressControl for per-app hostname allow-listing.
+    # Both families are covered (#60): on a dual-stack cluster an IPv4-only
+    # except block leaves IPv6 link-local/metadata (fe80::/10) and ULA reachable.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -82,6 +88,12 @@ spec:
               - 172.16.0.0/12
               - 192.168.0.0/16
               - 169.254.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fd00::/8    # IPv6 unique-local (ULA)
+              - fe80::/10   # IPv6 link-local (incl. metadata over IPv6)
+              - ::1/128     # IPv6 loopback
     {{- end }}
     {{- with .Values.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}

@@ -14,6 +14,13 @@ func TestHostFromURI(t *testing.T) {
 		"https://a.example.com:8443/p": "a.example.com",
 		"plainhost":                    "plainhost",
 		"":                             "",
+		// IPv6 / IPv4 literals (#57): brackets must be stripped, not truncated
+		// at the first/last colon.
+		"[2001:db8::1]:443":           "2001:db8::1", // bracketed IPv6 CONNECT target
+		"[2001:db8::1]":               "2001:db8::1", // bracketed IPv6, no port
+		"2001:db8::1":                 "2001:db8::1", // bare IPv6, no port (was truncated before)
+		"http://[2001:db8::1]:8443/p": "2001:db8::1", // IPv6 in an absolute URL
+		"192.0.2.5:443":               "192.0.2.5",   // IPv4 literal CONNECT
 	}
 	for in, want := range cases {
 		if got := hostFromURI(in); got != want {
@@ -64,6 +71,9 @@ func TestParseHelperLine(t *testing.T) {
 }
 
 func TestRunSquidHelper(t *testing.T) {
+	// Keep the authz decision independent of real DNS.
+	defer stubResolvesToBlocked(func(context.Context, string) (bool, error) { return false, nil })()
+
 	// Authz allows 10.0.0.1 -> api.openai.com only.
 	res := fakeResolver{"10.0.0.1": {"api.openai.com"}}
 	srv := httptest.NewServer(NewHandler(res, nil, nil))

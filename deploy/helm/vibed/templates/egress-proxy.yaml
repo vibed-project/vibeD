@@ -44,7 +44,31 @@ data:
     http_access deny !Safe_ports
     http_access deny CONNECT !SSL_ports
 
+    # Metadata / DNS-rebind hard stop. `dst` matches the IP Squid actually
+    # resolved and will connect to, regardless of the approved hostname — so an
+    # allow-listed domain whose authoritative resolver answers
+    # 169.254.169.254 (the cloud metadata endpoint) or an internal address is
+    # still denied at the connecting component. This is the fix the name-based
+    # authz check alone cannot provide. Link-local covers IMDS; loopback and
+    # IPv6 link-local are never legitimate egress destinations.
+    acl to_metadata dst 169.254.0.0/16 fe80::/10 fec0::/10
+    acl to_loopback dst 127.0.0.0/8 ::1/128
+    http_access deny to_metadata
+    http_access deny to_loopback
+    {{- if ne (.Values.config.storage.tarball.backend | default "served") "served" }}
+    # Production (source pulled from S3, not the in-cluster "served" store):
+    # nothing inside the cluster is a legitimate egress destination, so deny
+    # RFC1918 / IPv6 ULA too. Omitted in served mode, where the runner-agent
+    # legitimately pulls source from an in-cluster private IP.
+    acl to_private dst 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7
+    http_access deny to_private
+    {{- end }}
+
     # The gate: allow only what the authz service permits, then default-deny.
+    # Residual: without ssl_bump, a CONNECT tunnel's inner SNI/Host is opaque,
+    # so domain-fronting to a *different allow-listed-looking* external host is
+    # not prevented here — but the dst denies above still block any
+    # metadata/internal IP the tunnel would reach.
     http_access allow vibed_egress_ok
     http_access deny all
 
