@@ -51,9 +51,14 @@ auth:
 
 - Keys can be literal values or resolved from environment variables using the `env:` prefix
 - Keys also support `file:/path/to/token` to read tokens from files
-- Each key has a human-readable `name` used as the user identity (UserID) for ownership
+- Each key has a human-readable `name`; the owning user identity (UserID) is `apikey-<name>`, and a user record is auto-provisioned under that ID on first authentication
 - Optional `scopes` restrict what the key can do (empty = unrestricted)
 - Constant-time comparison prevents timing attacks
+- **Suspension is enforced:** setting a key's user record `status: suspended` immediately revokes access on the next request (401)
+
+:::caution Upgrading to v0.4.4
+The canonical user ID for a static API key is now `apikey-<name>` everywhere — request identity, the provisioned user record, the role map, and **artifact ownership**. Before v0.4.4 the raw `name` was used for ownership, so artifacts deployed by a static-key user on an older version are owned under the bare `name` and won't match after upgrade. If you rely on static-key owner-scoping with pre-existing artifacts, re-key their ownership or redeploy. OIDC and no-auth users are unaffected.
+:::
 
 ### OIDC Mode
 
