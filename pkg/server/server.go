@@ -97,6 +97,15 @@ func Main() {
 // bootstrap without importing internal/config: assign the result with := and it
 // never has to name the config type.
 func LoadConfig(path string) (*config.Config, error) {
+	// Teach the config validator about store backends and auth modes registered
+	// out of tree (e.g. the enterprise "postgres" store and "saml" mode). Their
+	// provider init()s have already run by the time any binary reaches this
+	// call, so the registries are populated; without this the validator would
+	// reject a licensed build's store.backend=postgres / auth.mode=saml before
+	// the registry is ever consulted. Built-ins remain valid when nothing is
+	// registered.
+	config.SetStoreBackendLister(store.Backends)
+	config.SetAuthModeLister(vibedauth.Providers)
 	return config.Load(path)
 }
 

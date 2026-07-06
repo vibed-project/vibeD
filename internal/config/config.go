@@ -573,9 +573,12 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	validStoreBackends := map[string]bool{"memory": true, "configmap": true, "sqlite": true}
-	if !validStoreBackends[cfg.Store.Backend] {
-		return fmt.Errorf("store.backend must be one of: memory, configmap, sqlite (got %q)", cfg.Store.Backend)
+	// Built-in backends are always valid; an out-of-tree backend registered in
+	// the store registry (e.g. the enterprise "postgres" store) is accepted via
+	// the injected lister. See extension.go.
+	builtinStoreBackends := []string{"memory", "configmap", "sqlite"}
+	if !contains(builtinStoreBackends, cfg.Store.Backend) && !listerHas(storeBackendLister, cfg.Store.Backend) {
+		return fmt.Errorf("store.backend must be one of: %s (got %q)", availableNames(builtinStoreBackends, storeBackendLister), cfg.Store.Backend)
 	}
 
 	if cfg.Store.Backend == "sqlite" && cfg.Store.SQLite.Path == "" {
@@ -588,9 +591,12 @@ func validate(cfg *Config) error {
 
 	// Validate auth config
 	if cfg.Auth.Enabled {
-		validModes := map[string]bool{"apikey": true, "oauth": true, "oidc": true, "": true}
-		if !validModes[cfg.Auth.Mode] {
-			return fmt.Errorf("auth.mode must be one of: apikey, oauth, oidc (got %q)", cfg.Auth.Mode)
+		// Built-in modes (including "" = the apikey default) are always valid; an
+		// out-of-tree mode registered in the auth registry (e.g. the enterprise
+		// "saml" mode) is accepted via the injected lister. See extension.go.
+		builtinAuthModes := []string{"apikey", "oauth", "oidc", ""}
+		if !contains(builtinAuthModes, cfg.Auth.Mode) && !listerHas(authModeLister, cfg.Auth.Mode) {
+			return fmt.Errorf("auth.mode must be one of: %s (got %q)", availableNames([]string{"apikey", "oauth", "oidc"}, authModeLister), cfg.Auth.Mode)
 		}
 		if (cfg.Auth.Mode == "apikey" || cfg.Auth.Mode == "oauth" || cfg.Auth.Mode == "") && len(cfg.Auth.APIKeys) == 0 {
 			return fmt.Errorf("at least one API key (or proxy secret) is required when auth.mode is %q", cfg.Auth.Mode)
