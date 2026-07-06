@@ -145,6 +145,10 @@ func FetchPodLogs(ctx context.Context, clientset kubernetes.Interface, namespace
 
 	var logLines []string
 	scanner := bufio.NewScanner(stream)
+	// Tolerate long log lines: the default 64KB scanner buffer triggers
+	// bufio.ErrTooLong and silently truncates. Mirror the streaming path
+	// (internal/deploy/logs.go).
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		logLines = append(logLines, scanner.Text())
 	}

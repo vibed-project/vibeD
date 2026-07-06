@@ -726,15 +726,23 @@ func handleArtifactShareLink(orch *orchestrator.Orchestrator, artifactID string,
 
 	var expiresIn time.Duration
 	if body.ExpiresIn != "" {
-		// Support "7d" as shorthand for 7 days
+		// Support "7d" as shorthand for 7 days. A non-empty but unparseable
+		// value must be a 400: silently leaving expiresIn=0 mints a PERMANENT
+		// link when the caller asked for a time-limited one (fail-open on a
+		// security control).
 		s := body.ExpiresIn
+		var err error
 		if strings.HasSuffix(s, "d") {
-			days := strings.TrimSuffix(s, "d")
-			if d, err := time.ParseDuration(days + "h"); err == nil {
+			var d time.Duration
+			if d, err = time.ParseDuration(strings.TrimSuffix(s, "d") + "h"); err == nil {
 				expiresIn = d * 24
 			}
 		} else {
-			expiresIn, _ = time.ParseDuration(s)
+			expiresIn, err = time.ParseDuration(s)
+		}
+		if err != nil {
+			writeError(w, fmt.Errorf("invalid expires_in %q (use e.g. \"24h\" or \"7d\")", body.ExpiresIn), http.StatusBadRequest)
+			return
 		}
 	}
 

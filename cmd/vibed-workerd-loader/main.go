@@ -36,8 +36,15 @@ func main() {
 	flag.StringVar(&compatDate, "compat-date", "2024-01-01", "workerd compatibilityDate applied to every worker.")
 	flag.IntVar(&portBase, "port-base", 9100, "First port assigned to app sockets.")
 	flag.StringVar(&reloadCmd, "reload-cmd", "", "Shell command run after each config change to reload workerd (e.g. send SIGHUP). Empty = no-op (workerd auto-watches its config).")
-	flag.StringVar(&token, "token", os.Getenv("VIBED_AGENT_TOKEN"), "Bearer token required on the control API. Defaults to $VIBED_AGENT_TOKEN.")
+	flag.StringVar(&token, "token", "", "Bearer token required on the control API. Defaults to $VIBED_AGENT_TOKEN.")
 	flag.Parse()
+	// Fall back to the env var AFTER parsing: a non-empty flag default is
+	// rendered verbatim by the flag package on -h and on any parse error, which
+	// would dump the live control-API token to stderr where the log pipeline
+	// scrapes it.
+	if token == "" {
+		token = os.Getenv("VIBED_AGENT_TOKEN")
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 

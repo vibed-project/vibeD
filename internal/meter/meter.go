@@ -12,7 +12,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // Event is one usage record.
@@ -39,11 +39,23 @@ type nop struct{}
 
 func (nop) Record(context.Context, Event) {}
 
-var eventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+// eventsTotal is registered on BOTH the default Prometheus registry (the API
+// process's /metrics serves it → deploy/delete events) and controller-runtime's
+// registry (the controller's /metrics serves only that → app.ready/app.stopped
+// lifecycle events). Registering on the default registry alone — what promauto
+// did — left the controller-emitted events incrementing a counter no endpoint
+// exposed. Each process serves exactly one of the two endpoints, so a given
+// event is counted once.
+var eventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "vibed",
 	Name:      "usage_events_total",
 	Help:      "Usage events by kind and tenant.",
 }, []string{"kind", "tenant"})
+
+func init() {
+	prometheus.MustRegister(eventsTotal)
+	ctrlmetrics.Registry.MustRegister(eventsTotal)
+}
 
 // Prometheus returns a Sink that counts events by kind and tenant (tenant id,
 // not name, to bound cardinality; the single-tenant default reports "default").
