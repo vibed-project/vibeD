@@ -675,14 +675,27 @@ func (o *Orchestrator) ListTargets() []api.TargetInfo {
 	return o.detector.ListTargets()
 }
 
+// authEnabled reports whether authentication is configured on. The ownership
+// bypass keys on this explicit flag — NOT on an empty context user — so a
+// request that carries no identity while auth is enabled (e.g. MCP over stdio,
+// which doesn't propagate a bearer token into the context) fails closed instead
+// of being treated as trusted.
+func (o *Orchestrator) authEnabled() bool {
+	return o.cfg != nil && o.cfg.Auth.Enabled
+}
+
 // checkOwnership verifies that the current user can read the artifact.
 // Allows: owner, admin, or users in the SharedWith list.
 // Returns ErrNotFound (not Forbidden) to avoid leaking artifact existence to non-owners.
-// When auth is disabled (ownerID is empty), all ownership checks pass.
+// With auth disabled all checks pass (dev/no-auth); with auth enabled a caller
+// with no identity is denied.
 func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifact) error {
+	if !o.authEnabled() {
+		return nil // Auth disabled — no ownership enforcement
+	}
 	ownerID := vibedauth.UserIDFromContext(ctx)
 	if ownerID == "" {
-		return nil // Auth disabled — no ownership enforcement
+		return &api.ErrNotFound{ArtifactID: artifact.ID} // auth on, no identity → fail closed
 	}
 	if vibedauth.IsAdmin(ctx) {
 		return nil // Admin can access everything
@@ -702,9 +715,12 @@ func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifac
 // checkWriteOwnership verifies that the current user can modify the artifact.
 // Only owner and admin can write — shared users have read-only access.
 func (o *Orchestrator) checkWriteOwnership(ctx context.Context, artifact *api.Artifact) error {
+	if !o.authEnabled() {
+		return nil // Auth disabled
+	}
 	ownerID := vibedauth.UserIDFromContext(ctx)
 	if ownerID == "" {
-		return nil // Auth disabled
+		return &api.ErrNotFound{ArtifactID: artifact.ID} // auth on, no identity → fail closed
 	}
 	if vibedauth.IsAdmin(ctx) {
 		return nil // Admin can modify everything
