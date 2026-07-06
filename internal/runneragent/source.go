@@ -96,6 +96,13 @@ func extractEntry(dir string, hdr *tar.Header, r io.Reader) error {
 	}
 	dest := filepath.Join(dir, clean)
 
+	// Defense-in-depth: mirror the post-join filepath.Rel containment the agent's
+	// sibling writeFiles applies, so a crafted entry can never resolve outside
+	// dir even if the prefix check above is bypassed by a future path form.
+	if rel, err := filepath.Rel(dir, dest); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("illegal tar entry path %q escapes extraction dir", hdr.Name)
+	}
+
 	switch hdr.Typeflag {
 	case tar.TypeDir:
 		if err := os.MkdirAll(dest, 0o755); err != nil {

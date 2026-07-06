@@ -30,8 +30,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/vibed-project/vibeD/internal/meter"
@@ -148,6 +150,14 @@ type Reconciler struct {
 	Meter meter.Sink
 }
 
+// maxConcurrentReconciles is the controller's worker count. Reconcile blocks a
+// worker for the whole synchronous /inject HTTP call (up to 60s), so the
+// controller-runtime default of 1 lets one slow injection stall every app.
+// Injection is I/O-bound, so a small pool restores concurrency without
+// overwhelming the API server or warm pools; tune up if deploy latency degrades
+// under churn.
+const maxConcurrentReconciles = 4
+
 // SetupWithManager registers the reconciler with the manager. The
 // SandboxClaim watch ensures status changes on the claim
 // (agent-sandbox binding a pod, the pod becoming Ready) wake the
@@ -161,11 +171,19 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	claimGVKType.SetGroupVersionKind(SandboxClaimGVK)
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&vibedv1.VibedApp{}, builder.WithPredicates()).
+		// GenerationChangedPredicate drops the reconciles triggered by our own
+		// Status().Update writes (status is a subresource, so it does not bump
+		// metadata.generation): the SandboxClaim watch and RequeueAfter already
+		// cover status-driven progression, so those extra passes are pure churn.
+		For(&vibedv1.VibedApp{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(
 			claimGVKType,
 			handler.EnqueueRequestsFromMapFunc(claimToVibedApp),
 		).
+		// Bound the blast radius of the synchronous /inject call in Reconcile
+		// (up to 60s): with the controller-runtime default of one worker, a
+		// single slow injection stalls every other app's reconcile.
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Named("vibedapp").
 		Complete(r)
 }

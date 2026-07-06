@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 
@@ -103,8 +104,10 @@ func (r *UserStorageRouter) resolve(ctx context.Context) Storage {
 
 	stg, err := r.createUserStorage(userID, cfg)
 	if err != nil {
-		// On error, fall back to default (don't crash)
-		fmt.Printf("WARNING: failed to create per-user storage for %q: %v (falling back to default)\n", userID, err)
+		// On error, fall back to default (don't crash). Route through slog (not
+		// stdout, which bypasses level filtering) and omit the raw error: a
+		// custom/refactored resolver's error could carry secret material.
+		slog.Warn("failed to create per-user storage; falling back to default", "userID", userID)
 		return r.fallback
 	}
 

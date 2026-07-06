@@ -69,8 +69,13 @@ type listDepartmentsOutput struct {
 func registerListDepartmentsTool(server *mcp.Server, userStore store.UserStore) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_departments",
-		Description: "List all departments in vibeD.",
+		Description: "List all departments in vibeD. Requires admin role.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input listDepartmentsInput) (*mcp.CallToolResult, *listDepartmentsOutput, error) {
+		// MCP has no transport-level RBAC, so this per-handler check is the only
+		// gate — mirror the sibling admin tools (list_users, create_department).
+		if !vibedauth.IsAdmin(ctx) {
+			return nil, nil, fmt.Errorf("admin access required")
+		}
 		depts, err := userStore.ListDepartments(ctx)
 		if err != nil {
 			return nil, nil, err
