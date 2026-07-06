@@ -84,3 +84,32 @@ func TestHandlerAuthz_RebindDeny(t *testing.T) {
 		t.Errorf("clean allow-listed host: got %d, want 200", code)
 	}
 }
+
+// TestHandlerAuthz_AllowsPrivateHostsDeniesMetadata exercises the REAL narrow
+// resolve check (no stub) via literal IPs. A private/RFC1918 destination — like
+// the in-cluster served source store's ClusterIP — must be ALLOWED (denying it
+// 403'd the source pull and hung deploys in the cluster e2e), while a
+// link-local metadata literal is still denied.
+func TestHandlerAuthz_AllowsPrivateHostsDeniesMetadata(t *testing.T) {
+	res := fakeResolver{"10.0.0.1": {"10.0.0.5", "169.254.169.254"}}
+	srv := httptest.NewServer(NewHandler(res, []string{"10.0.0.9"}, nil))
+	defer srv.Close()
+
+	get := func(host string) int {
+		resp, err := http.Get(srv.URL + "/authz?src=10.0.0.1&host=" + host)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := get("10.0.0.5"); code != http.StatusOK {
+		t.Errorf("allow-listed private host: got %d, want 200", code)
+	}
+	if code := get("10.0.0.9"); code != http.StatusOK {
+		t.Errorf("private system host (e.g. served store ClusterIP): got %d, want 200", code)
+	}
+	if code := get("169.254.169.254"); code != http.StatusForbidden {
+		t.Errorf("allow-listed metadata literal: got %d, want 403", code)
+	}
+}

@@ -9,12 +9,16 @@ import (
 	"github.com/vibed-project/vibeD/internal/netguard"
 )
 
-// resolvesToBlocked reports whether an allow-listed host actually resolves to a
-// metadata/internal address (DNS-rebinding defense-in-depth). It is a package
-// var so tests can stub it without real DNS; production uses the default
-// resolver.
+// resolvesToBlocked reports whether an allow-listed host resolves to the cloud
+// metadata endpoint or another link-local/loopback address (DNS-rebinding
+// defense-in-depth). It intentionally checks only link-local/loopback, NOT
+// private/RFC1918: the egress authz legitimately allows in-cluster system hosts
+// (e.g. the served source store), whose ClusterIPs are RFC1918 — denying those
+// would 403 the source pull and hang deploys. Blanket private-range denial for
+// the production posture lives in the Squid dst ACLs instead. It is a package
+// var so tests can stub it without real DNS.
 var resolvesToBlocked = func(ctx context.Context, host string) (bool, error) {
-	return netguard.HostResolvesToBlocked(ctx, nil, host)
+	return netguard.HostResolvesToLinkLocalOrLoopback(ctx, nil, host)
 }
 
 // Handler answers per-connection egress authorization for the egress proxy.

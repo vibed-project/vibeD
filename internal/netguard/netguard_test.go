@@ -65,3 +65,30 @@ func TestHostResolvesToBlocked_Literals(t *testing.T) {
 		}
 	}
 }
+
+// TestIsLinkLocalOrLoopback: the narrow classifier used by the egress authz
+// must still catch the metadata endpoint and loopback, but must NOT flag
+// private/RFC1918 or ULA — those are legitimate in-cluster service addresses.
+func TestIsLinkLocalOrLoopback(t *testing.T) {
+	cases := []struct {
+		ip      string
+		blocked bool
+	}{
+		{"169.254.169.254", true}, // metadata (link-local)
+		{"fe80::1", true},         // IPv6 link-local
+		{"127.0.0.1", true},       // loopback
+		{"::1", true},             // IPv6 loopback
+		{"::ffff:169.254.169.254", true},
+		// Must NOT be flagged — legitimate in-cluster / private targets.
+		{"10.0.0.5", false},   // RFC1918 (e.g. a ClusterIP)
+		{"172.16.3.4", false}, // RFC1918
+		{"192.168.1.1", false},
+		{"fd00::1", false}, // IPv6 ULA
+		{"8.8.8.8", false}, // public
+	}
+	for _, c := range cases {
+		if got := IsLinkLocalOrLoopback(netip.MustParseAddr(c.ip)); got != c.blocked {
+			t.Errorf("IsLinkLocalOrLoopback(%s) = %v, want %v", c.ip, got, c.blocked)
+		}
+	}
+}
