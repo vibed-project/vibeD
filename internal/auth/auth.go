@@ -135,6 +135,20 @@ func SkipAuthPaths(authMiddleware func(http.Handler) http.Handler) func(http.Han
 	}
 }
 
+// apiKeyUserID is the canonical user ID for a static API key. The verifier
+// (context identity), the auto-provisioned store record, and the role map all
+// derive the ID from this one function so they cannot desync — the desync
+// (verifier used key.Name while the record was stored under "apikey-"+key.Name)
+// is exactly what made the suspended-user check miss the record and fail open.
+// The prefix namespaces static keys away from OIDC subjects. An empty name
+// yields an empty ID, preserving the "no identity" behavior for a nameless key.
+func apiKeyUserID(name string) string {
+	if name == "" {
+		return ""
+	}
+	return "apikey-" + name
+}
+
 // apiKeyVerifier returns a TokenVerifier that validates tokens against configured API keys.
 // If userStore is non-nil, it auto-provisions users on first authentication.
 func apiKeyVerifier(keys []config.APIKeyConf, userStore store.UserStore, logger *slog.Logger) mcpauth.TokenVerifier {
@@ -155,7 +169,7 @@ func apiKeyVerifier(keys []config.APIKeyConf, userStore store.UserStore, logger 
 				return &mcpauth.TokenInfo{
 					Scopes:     key.Scopes,
 					Expiration: time.Now().Add(24 * time.Hour),
-					UserID:     key.Name,
+					UserID:     apiKeyUserID(key.Name),
 				}, nil
 			}
 		}
@@ -184,7 +198,7 @@ func apiKeyVerifier(keys []config.APIKeyConf, userStore store.UserStore, logger 
 
 // autoProvisionAPIKeyUser creates a user record on first API key authentication.
 func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key config.APIKeyConf, logger *slog.Logger) {
-	userID := "apikey-" + key.Name
+	userID := apiKeyUserID(key.Name)
 	if _, err := userStore.GetUser(ctx, userID); err == nil {
 		return // user already exists
 	}
@@ -322,8 +336,10 @@ func remoteIPTrusted(remoteAddr string, trusted []*net.IPNet) bool {
 	return false
 }
 
-// BuildRoleMap creates a mapping from user ID (APIKey Name) to role.
-// Users without an explicit role default to "user".
+// BuildRoleMap creates a mapping from the canonical API-key user ID
+// (apiKeyUserID) to role, matching the identity the verifier puts in the
+// context so RoleMiddleware's lookup hits. Users without an explicit role
+// default to "user".
 func BuildRoleMap(keys []config.APIKeyConf) map[string]string {
 	m := make(map[string]string, len(keys))
 	for _, k := range keys {
@@ -331,7 +347,7 @@ func BuildRoleMap(keys []config.APIKeyConf) map[string]string {
 		if role == "" {
 			role = "user"
 		}
-		m[k.Name] = role
+		m[apiKeyUserID(k.Name)] = role
 	}
 	return m
 }
