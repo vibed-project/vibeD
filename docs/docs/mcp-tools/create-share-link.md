@@ -14,7 +14,7 @@ Requires [authentication](/docs/configuration/authentication) and the SQLite sto
 |-----------|------|----------|-------------|
 | `artifact_id` | string | Yes | ID of the artifact to create a share link for |
 | `password` | string | No | Optional password to protect the link |
-| `expires_in` | string | No | Expiration duration (e.g. `24h`, `7d`). Empty means no expiration. |
+| `expires_in` | string | No | Expiration duration (e.g. `24h`, `7d`). Empty means no expiration; a non-empty value that can't be parsed as a duration is rejected with `400` (it is not silently treated as "no expiration"). |
 
 ## Example
 

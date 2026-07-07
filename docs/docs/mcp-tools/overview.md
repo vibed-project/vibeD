@@ -43,7 +43,7 @@ When a **user store** is configured, vibeD also registers user- and department-a
 |------|-------------|--------|
 | [`list_users`](./user-management#list_users) | List users, optionally filtered by `department_id` | Admin role |
 | [`get_user`](./user-management#get_user) | Fetch one user by `user_id` | Admin, or the caller viewing themselves |
-| [`list_departments`](./user-management#list_departments) | List all departments | Any authenticated caller |
+| [`list_departments`](./user-management#list_departments) | List all departments | Admin role |
 | [`create_department`](./user-management#create_department) | Create a department by `name` | Admin role |
 
 See [User & department management](./user-management) for input schemas, responses, and the role checks each tool enforces.
