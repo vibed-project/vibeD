@@ -12,10 +12,9 @@ one department creator — vibeD does not create or delete users through MCP.
 These tools are only registered when the configured [`store` backend](../configuration/config-reference.md) implements user persistence. The bundled `sqlite` backend does; the `configmap` (and in-memory) backends do **not**. With a non-user store the four tools are simply absent from the MCP tool list. An out-of-tree store that implements the same interface enables them too.
 :::
 
-Access is role-scoped. `list_users`, `create_department` require the caller to
-hold the `admin` role. `get_user` lets a regular user read their own record and
-an admin read anyone's. `list_departments` is available to any authenticated
-caller.
+Access is role-scoped. `list_users`, `list_departments`, and `create_department`
+require the caller to hold the `admin` role. `get_user` lets a regular user read
+their own record and an admin read anyone's.
 
 ## Tools
 
@@ -23,7 +22,7 @@ caller.
 |------|------|-------------|
 | [`list_users`](#list_users) | admin | List all users, optionally filtered by department |
 | [`get_user`](#get_user) | self / admin | Get one user's details |
-| [`list_departments`](#list_departments) | any | List all departments |
+| [`list_departments`](#list_departments) | admin | List all departments |
 | [`create_department`](#create_department) | admin | Create a department |
 
 ---
@@ -115,7 +114,7 @@ exist".
 
 ## list_departments
 
-List all departments. Available to any authenticated caller.
+List all departments. Requires the `admin` role.
 
 ### Input Schema
 
@@ -141,7 +140,8 @@ Takes no parameters.
 }
 ```
 
-An empty registry returns `{"departments": []}`.
+An empty registry returns `{"departments": []}`. A non-admin caller receives an
+`admin access required` error.
 
 ---
 
