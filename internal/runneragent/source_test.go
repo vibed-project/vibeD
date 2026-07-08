@@ -8,12 +8,23 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vibed-project/vibeD/internal/tarsafe"
 )
+
+// loopbackFetcher relaxes the SSRF dial guard so a test can reach a loopback
+// httptest server; production NewSourceFetcher refuses loopback/link-local.
+func loopbackFetcher() *SourceFetcher {
+	f := NewSourceFetcher()
+	f.dialGuard = func(netip.Addr) bool { return false }
+	return f
+}
 
 // tarballFromMap builds a deterministic gzipped tarball whose entries match
 // files (relative path → content). Useful for end-to-end SourceURL tests.
@@ -57,7 +68,7 @@ func TestSourceFetcherExtractsTarball(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	if err := NewSourceFetcher().Fetch(context.Background(), srv.URL, dir); err != nil {
+	if err := loopbackFetcher().Fetch(context.Background(), srv.URL, dir); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 
@@ -83,7 +94,7 @@ func TestSourceFetcherRejectsPathEscape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := NewSourceFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
+	err := loopbackFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "illegal tar entry") {
 		t.Fatalf("expected illegal-tar-entry error, got %v", err)
 	}
@@ -95,9 +106,119 @@ func TestSourceFetcherRejectsNon2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := NewSourceFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
+	err := loopbackFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("expected 403 surfaced, got %v", err)
+	}
+}
+
+func TestSourceFetcherBlocksMetadataAndLoopbackDial(t *testing.T) {
+	// The production guard refuses the cloud metadata endpoint and loopback at
+	// dial time — Control fires before any connection is made.
+	for _, target := range []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://127.0.0.1:1/x.tgz",
+	} {
+		err := NewSourceFetcher().Fetch(context.Background(), target, t.TempDir())
+		if err == nil || !strings.Contains(err.Error(), "not allowed") {
+			t.Fatalf("Fetch(%s): want a blocked-dial error, got %v", target, err)
+		}
+	}
+}
+
+func TestSourceFetcherGuardAllowsPrivateBlocksMetadata(t *testing.T) {
+	// In-cluster RFC1918 (the served tarball store) must stay reachable; the
+	// metadata/link-local and loopback endpoints must not.
+	f := NewSourceFetcher()
+	for _, ok := range []string{"10.0.0.5", "192.168.1.1", "172.16.0.9"} {
+		if f.blocked(netip.MustParseAddr(ok)) {
+			t.Errorf("guard blocked in-cluster private address %s", ok)
+		}
+	}
+	for _, bad := range []string{"169.254.169.254", "127.0.0.1", "::1", "fe80::1", "fd00:ec2::254"} {
+		if !f.blocked(netip.MustParseAddr(bad)) {
+			t.Errorf("guard failed to block %s", bad)
+		}
+	}
+}
+
+// TestExtractEntryEnforcesCumulativeWriteBudget checks the load-bearing
+// decompression-bomb guard: bytes actually written are capped across entries.
+// This is what defeats PAX/GNU sparse entries, which materialize hole zeros
+// without reading the compressed stream, so a read-side cap alone misses them.
+func TestExtractEntryEnforcesCumulativeWriteBudget(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, name := range []string{"a.bin", "b.bin"} {
+		body := bytes.Repeat([]byte("x"), 100)
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(&buf)
+	dir := t.TempDir()
+	remaining := int64(150) // fits one 100-byte entry, not both
+	var err error
+	for {
+		hdr, e := tr.Next()
+		if e == io.EOF {
+			break
+		}
+		if e != nil {
+			t.Fatalf("next: %v", e)
+		}
+		if err = extractEntry(dir, hdr, tr, &remaining); err != nil {
+			break
+		}
+	}
+	if err == nil || !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("expected a cumulative write-budget error, got %v", err)
+	}
+}
+
+func TestSourceFetcherRejectsNonHTTPScheme(t *testing.T) {
+	for _, u := range []string{"file:///etc/passwd", "ftp://example.com/x.tgz", "gopher://x/1"} {
+		err := NewSourceFetcher().Fetch(context.Background(), u, t.TempDir())
+		if err == nil || !strings.Contains(err.Error(), "scheme") {
+			t.Fatalf("Fetch(%s): want a scheme error, got %v", u, err)
+		}
+	}
+}
+
+// bombHeaderTarball builds a gzipped stream with a single tar header that
+// declares a huge size but has no matching body — enough for tar.Reader.Next to
+// surface the oversized declared size so the per-entry cap rejects it without
+// inflating hundreds of MB.
+func bombHeaderTarball(t *testing.T, declaredSize int64) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	_ = tw.WriteHeader(&tar.Header{Name: "bomb.bin", Mode: 0o644, Size: declaredSize, Typeflag: tar.TypeReg})
+	// Deliberately skip the body + Close: only the 512-byte header is needed.
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	_, _ = zw.Write(raw.Bytes())
+	_ = zw.Close()
+	return gz.Bytes()
+}
+
+func TestSourceFetcherRejectsDecompressionBomb(t *testing.T) {
+	bomb := bombHeaderTarball(t, tarsafe.MaxUncompressedBytes+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bomb)
+	}))
+	defer srv.Close()
+
+	err := loopbackFetcher().Fetch(context.Background(), srv.URL, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected the oversized entry to be rejected, got %v", err)
 	}
 }
 
@@ -118,6 +239,7 @@ func TestInjectWithSourceURL(t *testing.T) {
 		AppPort:   8080,
 		StopGrace: 200 * time.Millisecond,
 	})
+	a.Fetcher.dialGuard = func(netip.Addr) bool { return false } // reach the loopback tarServer
 	t.Cleanup(func() { a.stopProcess() })
 
 	srv := httptest.NewServer(a.handler())

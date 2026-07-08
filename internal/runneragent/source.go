@@ -6,11 +6,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/vibed-project/vibeD/internal/netguard"
+	"github.com/vibed-project/vibeD/internal/tarsafe"
 )
 
 // MaxTarballBytes caps the on-the-wire tarball size at 50 MB, matching
@@ -24,11 +30,70 @@ const MaxTarballBytes = 50 * 1024 * 1024
 // http.Client with a short connect timeout — callers can swap it in tests.
 type SourceFetcher struct {
 	Client *http.Client
+	// dialGuard classifies an IP the fetcher must refuse to connect to. nil uses
+	// the production guard (netguard.IsLinkLocalOrLoopback). Overridable by
+	// in-package tests that must reach a loopback httptest server.
+	dialGuard func(netip.Addr) bool
 }
 
-// NewSourceFetcher returns a fetcher with sensible production timeouts.
+func (f *SourceFetcher) blocked(ip netip.Addr) bool {
+	if f.dialGuard != nil {
+		return f.dialGuard(ip)
+	}
+	return netguard.IsLinkLocalOrLoopback(ip)
+}
+
+func allowedScheme(s string) bool { return s == "http" || s == "https" }
+
+// NewSourceFetcher returns a fetcher with production timeouts and an SSRF guard.
+// It connects only over http/https and refuses to dial loopback, link-local, or
+// the cloud metadata endpoint (169.254.169.254). The address is checked at
+// connect time (net.Dialer.Control, after DNS resolution) so a rebind to a
+// blocked IP cannot slip past a name-based allow-list. Private/RFC1918 is
+// deliberately allowed: the source tarball is served from an in-cluster host
+// (internal/tarball/served.go), so blanket private-range denial would break
+// every deploy — this mirrors the boundary the egress authz enforces.
 func NewSourceFetcher() *SourceFetcher {
-	return &SourceFetcher{Client: &http.Client{Timeout: 60 * time.Second}}
+	f := &SourceFetcher{}
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return fmt.Errorf("source dial: bad address %q: %w", address, err)
+			}
+			ip, err := netip.ParseAddr(host)
+			if err != nil {
+				return fmt.Errorf("source dial: unresolved address %q", host)
+			}
+			if f.blocked(ip) {
+				return fmt.Errorf("source dial to %s is not allowed", ip)
+			}
+			return nil
+		},
+	}
+	f.Client = &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &http.Transport{
+			// This path faces untrusted input: ignore env proxies so the dial
+			// guard inspects the real target IP, not a proxy's.
+			Proxy:                 nil,
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("source fetch: stopped after 10 redirects")
+			}
+			if !allowedScheme(req.URL.Scheme) {
+				return fmt.Errorf("source fetch: redirect to disallowed scheme %q", req.URL.Scheme)
+			}
+			return nil
+		},
+	}
+	return f
 }
 
 // Fetch downloads sourceURL and extracts the resulting gzipped tarball into
@@ -42,6 +107,9 @@ func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
 		return fmt.Errorf("build source request: %w", err)
+	}
+	if !allowedScheme(req.URL.Scheme) {
+		return fmt.Errorf("source url scheme %q is not allowed (http or https only)", req.URL.Scheme)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -62,7 +130,17 @@ func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error 
 	}
 	defer gz.Close()
 
-	tr := tar.NewReader(gz)
+	budget := int64(tarsafe.MaxUncompressedBytes)
+
+	// Two independent caps defeat a decompression bomb. (1) tarsafe.LimitedReader
+	// bounds bytes read from the gzip stream (headers + data tar.Next skips), so
+	// a tiny gzip can't burn unbounded CPU/memory. (2) `remaining` (below) bounds
+	// bytes actually WRITTEN across all entries — the load-bearing one, because a
+	// PAX/GNU sparse entry materializes hole zeros without reading the gzip
+	// stream, so a read-side cap alone would let it write unbounded zeros.
+	tr := tar.NewReader(tarsafe.NewLimitedReader(gz, budget))
+	remaining := budget
+	entries := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -71,7 +149,14 @@ func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error 
 		if err != nil {
 			return fmt.Errorf("read tarball: %w", err)
 		}
-		if err := extractEntry(dir, hdr, tr); err != nil {
+		entries++
+		if entries > tarsafe.MaxEntries {
+			return fmt.Errorf("tarball has too many entries (> %d)", tarsafe.MaxEntries)
+		}
+		if hdr.Size > budget {
+			return fmt.Errorf("tar entry %q is too large (%d bytes)", hdr.Name, hdr.Size)
+		}
+		if err := extractEntry(dir, hdr, tr, &remaining); err != nil {
 			return err
 		}
 	}
@@ -89,7 +174,7 @@ func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error 
 // extractEntry writes a single tar entry under dir. Symlinks and absolute /
 // parent-escaping paths are rejected; the agent runs untrusted code but the
 // extraction itself must not be the attack surface.
-func extractEntry(dir string, hdr *tar.Header, r io.Reader) error {
+func extractEntry(dir string, hdr *tar.Header, r io.Reader, remaining *int64) error {
 	clean := filepath.Clean(hdr.Name)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("illegal tar entry path %q", hdr.Name)
@@ -116,9 +201,19 @@ func extractEntry(dir string, hdr *tar.Header, r io.Reader) error {
 		if err != nil {
 			return fmt.Errorf("open %s: %w", dest, err)
 		}
-		if _, err := io.Copy(f, r); err != nil {
+		// Copy at most (remaining+1) bytes so we can detect an overrun: CopyN
+		// materializes sparse-hole zeros just like a real read, so this counts the
+		// bytes hitting disk. A single write past the shared budget aborts.
+		rem := *remaining
+		n, cerr := io.CopyN(f, r, rem+1)
+		*remaining = rem - n
+		if cerr != nil && cerr != io.EOF {
 			_ = f.Close()
-			return fmt.Errorf("write %s: %w", dest, err)
+			return fmt.Errorf("write %s: %w", dest, cerr)
+		}
+		if n > rem {
+			_ = f.Close()
+			return fmt.Errorf("write %s: %w", dest, tarsafe.ErrTooLarge)
 		}
 		if err := f.Close(); err != nil {
 			return fmt.Errorf("close %s: %w", dest, err)

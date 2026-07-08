@@ -24,6 +24,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/vibed-project/vibeD/internal/tarsafe"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -162,7 +163,12 @@ func scanTarball(ctx context.Context, r io.Reader) (*scan, error) {
 		hasExt:    map[string]bool{},
 	}
 
-	tr := tar.NewReader(gz)
+	// Bound cumulative uncompressed bytes. The classifier only reads headers
+	// (plus a capped package.json), but tar.Next still inflates the data it
+	// skips, so a decompression bomb would burn CPU/memory here; the budget
+	// aborts it. Entry count is capped too.
+	tr := tar.NewReader(tarsafe.NewLimitedReader(gz, tarsafe.MaxUncompressedBytes))
+	entries := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -173,6 +179,10 @@ func scanTarball(ctx context.Context, r io.Reader) (*scan, error) {
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read tarball: %w", err)
+		}
+		entries++
+		if entries > tarsafe.MaxEntries {
+			return nil, fmt.Errorf("tarball has too many entries (> %d)", tarsafe.MaxEntries)
 		}
 		// Normalize: strip any "./" prefix and skip pure-directory entries
 		// for the markers map (we still record extensions for asset files).
