@@ -59,11 +59,13 @@ make enable-python-pool
 
 # Node: same shape, vibed-runner-node:dev + warmPools.node-24.
 make enable-node-pool
+
+# Go and the base image work the same way:
+make enable-go-pool
+make enable-base-pool
 ```
 
-After ~30s the warm pod is `Ready`, the validation ConfigMap shows `valid:true`, and `POST /v1/deploy` with a Python/Node source goes `Phase=Ready` instead of `Failed`.
-
-`go-123` and `base-al2023` work the same way but don't have ready-made Make targets yet — copy the `enable-python-pool` recipe and substitute the slot + image.
+After ~30s the warm pod is `Ready`, the validation ConfigMap shows `valid:true`, and `POST /v1/deploy` with a matching source goes `Phase=Ready` instead of `Failed`.
 
 ## Verify
 
