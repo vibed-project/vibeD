@@ -177,9 +177,17 @@ export async function fetchArtifact(id: string): Promise<Artifact> {
 }
 
 export async function fetchLogs(id: string): Promise<LogsResponse> {
-  // /v1/apps/{id}/logs is not implemented yet (SSE stub). Degrade gracefully
-  // so the log viewer shows a notice instead of throwing.
-  return { artifact_id: id, logs: ['Live logs are not yet available for v0.3.1 apps.'] };
+  // GET /v1/apps/{id}/logs streams the recent tail as Server-Sent Events
+  // (`data: <line>` per event) and, without `?follow=true`, terminates once the
+  // snapshot is sent — so a plain fetch resolves. The viewer polls this.
+  const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}/logs`);
+  if (res.status === 404) return { artifact_id: id, logs: [] };
+  if (!res.ok) throw new Error(`Failed to fetch logs: ${res.statusText}`);
+  const logs = (await res.text())
+    .split('\n')
+    .filter((l) => l.startsWith('data: '))
+    .map((l) => l.slice('data: '.length));
+  return { artifact_id: id, logs };
 }
 
 export async function deleteArtifact(id: string): Promise<void> {

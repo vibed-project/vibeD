@@ -436,7 +436,11 @@ func (s *Server) StreamAppLogs(w http.ResponseWriter, r *http.Request, appID App
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	err := s.Deploy.StreamLogs(r.Context(), owner, appID, true, 200, func(line string) error {
+	// Default to a terminating snapshot of the recent tail so a plain GET
+	// completes (the dashboard polls it); `?follow=true` keeps the stream open
+	// for a live tail.
+	follow := r.URL.Query().Get("follow") == "true"
+	err := s.Deploy.StreamLogs(r.Context(), owner, appID, follow, 200, func(line string) error {
 		if _, werr := fmt.Fprintf(w, "data: %s\n\n", line); werr != nil {
 			return werr
 		}
