@@ -39,14 +39,23 @@ func IsBlocked(addr netip.Addr) bool {
 		addr.IsUnspecified()
 }
 
+// awsIMDSv6 is AWS's instance-metadata endpoint over IPv6. It lives in IPv6 ULA
+// (fc00::/7), which IsLinkLocalOrLoopback otherwise allows for in-cluster
+// traffic, so it must be denied explicitly — otherwise the IPv4 metadata IP is
+// blocked (it is link-local) while its IPv6 sibling leaks. A single well-known
+// host, not a range, so denying it does not touch legitimate cluster traffic.
+var awsIMDSv6 = netip.MustParseAddr("fd00:ec2::254")
+
 // IsLinkLocalOrLoopback reports whether addr is loopback, link-local (including
 // the 169.254.169.254 metadata endpoint and IPv6 fe80::/10), the unspecified
-// address, or multicast — ranges that are NEVER a legitimate egress
-// destination. Unlike IsBlocked it deliberately does NOT include private/RFC1918
-// or IPv6 ULA, which are valid in-cluster service addresses (e.g. an in-cluster
-// source store the egress authz must keep allowing). Use this where blanket
-// private-range denial would break legitimate internal traffic; use IsBlocked
-// for an untrusted-facing dial where nothing internal is a valid target.
+// address, multicast, or a known cloud metadata endpoint reachable via an
+// otherwise-allowed range (AWS IMDS over IPv6) — ranges that are NEVER a
+// legitimate egress destination. Unlike IsBlocked it deliberately does NOT
+// include private/RFC1918 or IPv6 ULA generally, which are valid in-cluster
+// service addresses (e.g. an in-cluster source store the egress authz must keep
+// allowing). Use this where blanket private-range denial would break legitimate
+// internal traffic; use IsBlocked for an untrusted-facing dial where nothing
+// internal is a valid target.
 func IsLinkLocalOrLoopback(addr netip.Addr) bool {
 	if !addr.IsValid() {
 		return true
@@ -57,7 +66,8 @@ func IsLinkLocalOrLoopback(addr netip.Addr) bool {
 		addr.IsLinkLocalMulticast() ||
 		addr.IsInterfaceLocalMulticast() ||
 		addr.IsMulticast() ||
-		addr.IsUnspecified()
+		addr.IsUnspecified() ||
+		addr.WithZone("") == awsIMDSv6
 }
 
 // hostResolvesTo reports whether host resolves to at least one address that

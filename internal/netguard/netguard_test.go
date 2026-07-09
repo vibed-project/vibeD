@@ -79,11 +79,12 @@ func TestIsLinkLocalOrLoopback(t *testing.T) {
 		{"127.0.0.1", true},       // loopback
 		{"::1", true},             // IPv6 loopback
 		{"::ffff:169.254.169.254", true},
+		{"fd00:ec2::254", true}, // AWS IMDS over IPv6 (ULA, but a metadata host)
 		// Must NOT be flagged — legitimate in-cluster / private targets.
 		{"10.0.0.5", false},   // RFC1918 (e.g. a ClusterIP)
 		{"172.16.3.4", false}, // RFC1918
 		{"192.168.1.1", false},
-		{"fd00::1", false}, // IPv6 ULA
+		{"fd00::1", false}, // IPv6 ULA (in-cluster) stays allowed
 		{"8.8.8.8", false}, // public
 	}
 	for _, c := range cases {
