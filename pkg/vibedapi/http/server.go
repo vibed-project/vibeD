@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/deploy"
@@ -448,6 +449,81 @@ func (s *Server) StreamAppLogs(w http.ResponseWriter, r *http.Request, appID App
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", strings.ReplaceAll(err.Error(), "\n", " "))
 		flusher.Flush()
 	}
+}
+
+func (s *Server) GetAppVersions(w http.ResponseWriter, r *http.Request, appID AppID) {
+	if s.Deploy == nil {
+		notImplemented(w, "get_app_versions", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+	recs, err := s.Deploy.Versions(r.Context(), owner, appID)
+	if err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, Error{Code: "versions_failed", Message: err.Error()})
+		return
+	}
+	items := make([]Version, 0, len(recs))
+	for _, rc := range recs {
+		ts, _ := time.Parse(time.RFC3339, rc.Timestamp)
+		v := Version{
+			Version:    rc.Version,
+			Timestamp:  ts,
+			Template:   strPtr(rc.Template),
+			Lane:       strPtr(rc.Lane),
+			SourceHash: strPtr(rc.SourceHash),
+		}
+		if rc.RolledBackFrom != 0 {
+			rf := rc.RolledBackFrom
+			v.RolledBackFrom = &rf
+		}
+		items = append(items, v)
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Items []Version `json:"items"`
+	}{Items: items})
+}
+
+func (s *Server) RollbackApp(w http.ResponseWriter, r *http.Request, appID AppID) {
+	if s.Deploy == nil {
+		notImplemented(w, "rollback_app", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+	var body RollbackAppJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, Error{Code: "bad_body", Message: `body must be {"version": <int>}`})
+		return
+	}
+	res, err := s.Deploy.Rollback(r.Context(), owner, appID, body.Version)
+	if err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		// e.g. "version N is not available for rollback".
+		writeJSON(w, http.StatusBadRequest, Error{Code: "rollback_failed", Message: err.Error()})
+		return
+	}
+	resp := DeployResponse{AppId: res.AppID}
+	if res.Ready {
+		resp.Url = strPtr(res.URL)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.StatusUrl = strPtr("/v1/apps/" + res.AppID)
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {

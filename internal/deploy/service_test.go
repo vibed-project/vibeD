@@ -181,6 +181,55 @@ func TestDeployTimesOutToPending(t *testing.T) {
 	}
 }
 
+func TestVersionsAndRollback(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.DeployTimeout = 50 * time.Millisecond // return pending fast; versions record pre-wait
+
+	dep := func(content string) {
+		if _, err := svc.Deploy(context.Background(), Request{
+			Name: "verapp", Owner: "alice@example.com",
+			Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": content})),
+		}); err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+	}
+	dep("<h1>v1</h1>")
+	dep("<h1>v2</h1>")
+
+	versions, err := svc.Versions(context.Background(), "alice@example.com", "verapp")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+	if len(versions) != 2 || versions[0].Version != 2 || versions[1].Version != 1 {
+		t.Fatalf("versions wrong (want [v2 v1]): %+v", versions)
+	}
+	if versions[0].TarballKey == versions[1].TarballKey {
+		t.Fatal("each version must retain a distinct source tarball")
+	}
+
+	// Roll back to v1 → a new version 3 that reuses v1's retained source.
+	if _, err := svc.Rollback(context.Background(), "alice@example.com", "verapp", 1); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	versions, _ = svc.Versions(context.Background(), "alice@example.com", "verapp")
+	if len(versions) != 3 || versions[0].Version != 3 || versions[0].RolledBackFrom != 1 {
+		t.Fatalf("rollback version wrong: %+v", versions)
+	}
+	app := &vibedv1.VibedApp{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "verapp", Namespace: "vibed-apps"}, app); err != nil {
+		t.Fatal(err)
+	}
+	if app.Spec.Source.TarballRef != versions[2].TarballRef { // versions[2] == v1
+		t.Fatalf("rollback did not repoint source to v1")
+	}
+
+	if _, err := svc.Rollback(context.Background(), "alice@example.com", "verapp", 99); err == nil {
+		t.Fatal("expected an error rolling back to an unknown version")
+	}
+}
+
 func TestDeployRejectsBadName(t *testing.T) {
 	svc := newService(fake.NewClientBuilder().WithScheme(newScheme(t)).Build(), newFakeStore())
 	_, err := svc.Deploy(context.Background(), Request{

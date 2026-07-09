@@ -205,20 +205,40 @@ export async function fetchOrganization(): Promise<OrganizationInfo> {
   return res.json();
 }
 
+// Deploy-history entry from GET /v1/apps/{id}/versions.
+interface ApiVersion {
+  version: number;
+  timestamp: string;
+  template?: string;
+  lane?: string;
+  source_hash?: string;
+  rolled_back_from?: number;
+}
+
 export async function fetchVersions(id: string): Promise<ArtifactVersion[]> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}/versions`);
+  const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}/versions`);
+  if (res.status === 404) return [];
   if (!res.ok) throw new Error(`Failed to fetch versions: ${res.statusText}`);
   const data = await res.json();
-  return data?.versions ?? [];
+  const items: ApiVersion[] = data?.items ?? [];
+  return items.map((v) => ({
+    version_id: `v${v.version}`,
+    artifact_id: id,
+    version: v.version,
+    image_ref: v.template ?? '',
+    status: v.rolled_back_from ? `rolled back from v${v.rolled_back_from}` : '',
+    created_at: v.timestamp,
+    created_by: '',
+  }));
 }
 
 export async function rollbackArtifact(id: string, version: number): Promise<void> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}/rollback`, {
+  const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}/rollback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version }),
   });
-  if (!res.ok) throw new Error(`Failed to rollback artifact: ${res.statusText}`);
+  if (!res.ok) throw new Error(`Failed to roll back app: ${res.statusText}`);
 }
 
 export async function shareArtifact(id: string, userIds: string[]): Promise<void> {
