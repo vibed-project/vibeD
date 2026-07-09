@@ -61,7 +61,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Development',
-      items: ['development/testing'],
+      items: ['development/testing', 'development/manual-testing'],
     },
   ],
 };
