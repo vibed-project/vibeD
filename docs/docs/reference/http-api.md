@@ -159,11 +159,16 @@ Responses: `204` (deleted, empty body), `401`, `404`.
 
 ### `GET /v1/apps/{id}/logs`
 
-Stream logs from the app's runner as a **Server-Sent Events** (SSE) stream. Ownership is checked up front, so a `404` is returned cleanly before the connection is upgraded.
+Read logs from the app's runner as a **Server-Sent Events** (SSE) stream. Ownership is checked up front, so a `404` is returned cleanly before the connection is upgraded. By default the endpoint returns a **snapshot** of recent lines and then closes; pass **`?follow=true`** to keep the connection open and stream new lines as they arrive.
 
 ```bash
+# snapshot (returns, then closes)
 curl -N -H "Authorization: Bearer $VIBED_TOKEN" \
   http://localhost:8080/v1/apps/my-tool/logs
+
+# live tail
+curl -N -H "Authorization: Bearer $VIBED_TOKEN" \
+  "http://localhost:8080/v1/apps/my-tool/logs?follow=true"
 ```
 
 The response is `text/event-stream`; each log line arrives as one event:
@@ -175,6 +180,39 @@ data: 2026-07-03T10:12:02Z listening
 ```
 
 If the stream fails mid-flight, a terminal `event: error` frame is emitted. A client disconnect (cancelled request) is not an error. Concurrent streams per user are capped by [`limits.maxConcurrentLogStreamsPerUser`](../configuration/config-reference.md); exceeding it returns `429` with a `Retry-After` header. Responses: `200` (stream), `401`, `404`, `429`.
+
+### `GET /v1/apps/{id}/versions`
+
+List an app's deploy history, newest first (the first item is the current deployment). Each successful deploy snapshots the source under a monotonic version number, so any listed version can be restored via [rollback](#post-v1appsidrollback). Ownership is checked; a caller that doesn't own the app gets `404`.
+
+```bash
+curl -H "Authorization: Bearer $VIBED_TOKEN" \
+  http://localhost:8080/v1/apps/my-tool/versions
+```
+
+```json
+{
+  "items": [
+    { "version": 3, "timestamp": "2026-07-08T09:41:00Z", "template": "node-24", "lane": "general", "rolled_back_from": 1 },
+    { "version": 2, "timestamp": "2026-07-07T18:02:00Z", "template": "node-24", "lane": "general" },
+    { "version": 1, "timestamp": "2026-07-07T11:20:00Z", "template": "node-24", "lane": "general" }
+  ]
+}
+```
+
+Each entry also carries a `source_hash`; `rolled_back_from` is present only on a version a rollback created (above, v3 restored v1's source). History is retained up to a fixed cap (older versions are pruned as new ones land). Responses: `200`, `401`, `404`.
+
+### `POST /v1/apps/{id}/rollback`
+
+Redeploy an app from a previous version's snapshotted source. The rollback itself becomes a new version at the head of the history (it does not rewrite it). Ownership is checked.
+
+```bash
+curl -X POST -H "Authorization: Bearer $VIBED_TOKEN" \
+  -H "Content-Type: application/json" -d '{"version": 1}' \
+  http://localhost:8080/v1/apps/my-tool/rollback
+```
+
+Returns the same `App` shape as a deploy: `200` when the app is `Ready` within the latency budget, `202` with a `status_url` to poll otherwise. Responses: `200`, `202`, `400` (unknown version), `401`, `404`.
 
 ## Governance
 
