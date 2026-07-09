@@ -8,6 +8,8 @@ KIND_RUNTIME := podman
 GHCR_IMAGE := ghcr.io/vibed-project/vibed
 RUNNER_PYTHON_IMAGE := localhost/vibed-runner-python:dev
 RUNNER_NODE_IMAGE := localhost/vibed-runner-node:dev
+RUNNER_GO_IMAGE := localhost/vibed-template-go-123:dev
+RUNNER_BASE_IMAGE := localhost/vibed-template-base-al2023:dev
 
 # Code generation
 CONTROLLER_GEN_VERSION := v0.18.0
@@ -28,6 +30,8 @@ TB_AGENT_SANDBOX := $(TESTBED)/agent-sandbox
         generate manifests controller-gen openapi-gen oapi-codegen \
         image load-image \
         runner-images runner-image-python runner-image-node load-runner-images \
+        runner-image-go runner-image-base load-runner-image-go load-runner-image-base \
+        enable-python-pool enable-node-pool enable-go-pool enable-base-pool \
         setup-cluster install-registry install-observability install-keycloak \
         install-agent-sandbox install-deps install-vibed \
         dev dev-status run-latest teardown clean
@@ -209,6 +213,32 @@ enable-node-pool: load-runner-images
 	@kubectl rollout restart -n vibed-system deploy/vibed-controller
 	@echo "node-24 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
 
+enable-go-pool: load-runner-image-go
+	helm upgrade --install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		-f deploy/helm/vibed/values-kind.yaml \
+		--reuse-values \
+		--set warmPools.go-123.enabled=true \
+		--set warmPools.go-123.lane=general \
+		--set warmPools.go-123.image=$(RUNNER_GO_IMAGE) \
+		--set warmPools.go-123.replicas=1 \
+		--wait --timeout 3m
+	@kubectl rollout restart -n vibed-system deploy/vibed-controller
+	@echo "go-123 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
+
+enable-base-pool: load-runner-image-base
+	helm upgrade --install vibed deploy/helm/vibed/ \
+		--namespace vibed-system --create-namespace \
+		-f deploy/helm/vibed/values-kind.yaml \
+		--reuse-values \
+		--set warmPools.base-al2023.enabled=true \
+		--set warmPools.base-al2023.lane=general \
+		--set warmPools.base-al2023.image=$(RUNNER_BASE_IMAGE) \
+		--set warmPools.base-al2023.replicas=1 \
+		--wait --timeout 3m
+	@kubectl rollout restart -n vibed-system deploy/vibed-controller
+	@echo "base-al2023 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
+
 ## Runner Images (warm-pool runner images for the general/fast lanes)
 ## Build context is the repo root: the Dockerfiles compile the runner agent
 ## from the Go source tree. Built once, not per request.
@@ -220,6 +250,24 @@ runner-image-python:
 
 runner-image-node:
 	podman build -f templates/node-24/Dockerfile -t $(RUNNER_NODE_IMAGE) .
+
+runner-image-go:
+	podman build -f templates/go-123/Dockerfile -t $(RUNNER_GO_IMAGE) .
+
+runner-image-base:
+	podman build -f templates/base-al2023/Dockerfile -t $(RUNNER_BASE_IMAGE) .
+
+# go-123 and base-al2023 load individually (not part of the python+node bundle)
+# so enabling one slot doesn't rebuild the others.
+load-runner-image-go: runner-image-go
+	podman save $(RUNNER_GO_IMAGE) -o /tmp/vibed-runner-go.tar
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-runner-go.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/vibed-runner-go.tar
+
+load-runner-image-base: runner-image-base
+	podman save $(RUNNER_BASE_IMAGE) -o /tmp/vibed-runner-base.tar
+	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-runner-base.tar --name $(KIND_CLUSTER)
+	@rm -f /tmp/vibed-runner-base.tar
 
 load-runner-images: runner-images
 	podman save $(RUNNER_PYTHON_IMAGE) -o /tmp/vibed-runner-python.tar

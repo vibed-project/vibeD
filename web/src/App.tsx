@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   ArtifactSummary,
   WhoAmI,
@@ -73,6 +73,27 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(false)
   const [profile, setProfile] = useState<WhoAmI | null>(null)
   const [showProfile, setShowProfile] = useState(false)
+  const profileRef = useRef<HTMLDivElement>(null)
+
+  // Close the profile menu on outside click or Escape (in addition to the
+  // onMouseLeave below), so it doesn't linger open.
+  useEffect(() => {
+    if (!showProfile) return
+    const onPointerDown = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setShowProfile(false)
+      }
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowProfile(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [showProfile])
   const [orgName, setOrgName] = useState<string>('')
   const [totalArtifacts, setTotalArtifacts] = useState(0)
   const [needsAuth, setNeedsAuth] = useState(false)
@@ -242,7 +263,7 @@ function App() {
             <span aria-hidden="true">⚙</span>
           </button>
           {currentUser && (
-            <div className="profile-wrapper">
+            <div className="profile-wrapper" ref={profileRef} onMouseLeave={() => setShowProfile(false)}>
               <button className="profile-trigger" onClick={() => setShowProfile(!showProfile)}>
                 <span className="profile-avatar">
                   {(profile?.name || currentUser).charAt(0).toUpperCase()}

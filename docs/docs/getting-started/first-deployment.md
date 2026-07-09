@@ -29,6 +29,46 @@ Then ask Claude to deploy something:
 
 Claude calls `deploy_artifact`; vibeD classifies the source, claims a warm sandbox, injects the source, and returns a URL once the app is `Ready`. See the [MCP tools overview](../mcp-tools/overview.md).
 
+## Connect Goose (MCP)
+
+[Goose](https://block.github.io/goose/) speaks MCP natively, so it connects to vibeD's `/mcp` endpoint directly as a **Streamable HTTP** extension — no `mcp-remote` bridge needed.
+
+Interactively:
+
+```bash
+goose configure
+# → Add Extension → Remote Extension (Streamable HTTP)
+#   Name: vibed
+#   URL:  http://localhost:8080/mcp
+```
+
+Or add it to `~/.config/goose/config.yaml` directly:
+
+```yaml
+extensions:
+  vibed:
+    enabled: true
+    type: streamable_http
+    name: vibed
+    uri: http://localhost:8080/mcp
+    timeout: 300
+```
+
+If you've enabled auth on the vibeD API, pass the token as a header (dev installs need none):
+
+```yaml
+    headers:
+      Authorization: "Bearer <your-token>"
+```
+
+Then start a session and ask Goose to deploy — it calls the same `deploy_artifact` tool:
+
+```bash
+goose session
+```
+
+> "Deploy a static site that says hello to vibeD."
+
 ## Deploy via the HTTP API
 
 `POST /v1/deploy` takes a multipart upload: a gzipped source tarball plus a JSON `metadata` blob.
