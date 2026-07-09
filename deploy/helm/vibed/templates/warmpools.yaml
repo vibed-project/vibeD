@@ -8,6 +8,7 @@ These mirror templates/<name>/template.yaml but are values-driven so image
 refs / pool sizes / the RuntimeClass are environment-configurable.
 */ -}}
 {{- $root := . }}
+{{- if $root.Values.warmPoolsEnabled }}
 {{- range $name, $cfg := .Values.warmPools }}
 {{- if $cfg.enabled }}
 ---
@@ -122,5 +123,6 @@ spec:
     name: {{ $name }}
   updateStrategy:
     type: OnReplenish
+{{- end }}
 {{- end }}
 {{- end }}
