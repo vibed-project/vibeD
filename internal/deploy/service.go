@@ -25,6 +25,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/meter"
+	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/tarball"
 	"github.com/vibed-project/vibeD/internal/tenant"
@@ -73,6 +74,9 @@ type Service struct {
 	// Meter, when set, records a usage event on each deploy/delete. nil disables
 	// metering.
 	Meter meter.Sink
+	// Metrics, when set, records Prometheus deploy/artifact counters. nil
+	// disables instrumentation (e.g. in tests).
+	Metrics *metrics.Metrics
 }
 
 // Quota gates new deploys within a tenant and resolves the owner's department
@@ -184,6 +188,26 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("get VibedApp: %w", getErr)
 	}
 
+	// Deploy outcome metric: template + isNew are known now, so a single defer
+	// records success/failure for every return below (a waitReady timeout is
+	// still a successful deploy — the CR was created — hence the explicit flag
+	// rather than keying off the returned error). ArtifactsActive tracks live
+	// apps, so it only rises on a genuinely new app (a redeploy reuses the CR).
+	deployed := false
+	defer func() {
+		if s.Metrics == nil {
+			return
+		}
+		if !deployed {
+			s.Metrics.DeploysTotal.WithLabelValues("failed", template).Inc()
+			return
+		}
+		s.Metrics.DeploysTotal.WithLabelValues("success", template).Inc()
+		if isNew {
+			s.Metrics.ArtifactsActive.WithLabelValues(template).Inc()
+		}
+	}()
+
 	// Policy gate: evaluated on every deploy (new AND redeploy — a redeploy can
 	// introduce a new violation) after classification, before anything is
 	// stored. A denial aborts the deploy.
@@ -277,6 +301,7 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("deploy succeeded but audit failed: %w", err)
 	}
 	s.meter(ctx, meter.Event{Kind: "deploy", Tenant: t.ID, Owner: req.Owner, App: req.Name, Namespace: t.Namespace})
+	deployed = true
 	return s.waitReady(ctx, t.Namespace, req.Name)
 }
 

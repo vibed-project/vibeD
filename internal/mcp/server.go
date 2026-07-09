@@ -1,9 +1,12 @@
 package mcp
 
 import (
+	"context"
+
 	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
+	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/store"
 
@@ -19,7 +22,34 @@ func NewServer(orch *orchestrator.Orchestrator, deploySvc *deploy.Service, limit
 		Version: "0.1.0",
 	}, nil)
 
+	// Count every tool call (vibed_mcp_tool_calls_total). metrics.New() is a
+	// singleton, so this shares the registry with the rest of the server.
+	server.AddReceivingMiddleware(toolCallMetrics(metrics.New()))
+
 	RegisterTools(server, orch, deploySvc, limits, userStore, auditRec)
 
 	return server
+}
+
+// toolCallMetrics counts every tools/call invocation, labeled by tool name and
+// success/error. Registered as receiving middleware so it covers all tools
+// without touching each handler.
+func toolCallMetrics(m *metrics.Metrics) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			res, err := next(ctx, method, req)
+			if method == "tools/call" {
+				tool := "unknown"
+				if p, ok := req.GetParams().(*mcp.CallToolParams); ok && p.Name != "" {
+					tool = p.Name
+				}
+				status := "success"
+				if err != nil {
+					status = "error"
+				}
+				m.ToolCallsTotal.WithLabelValues(tool, status).Inc()
+			}
+			return res, err
+		}
+	}
 }

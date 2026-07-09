@@ -109,6 +109,10 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 	if err := s.record(ctx, "delete", id, "ok", ""); err != nil {
 		return fmt.Errorf("delete succeeded but audit failed: %w", err)
 	}
+	if s.Metrics != nil {
+		// Mirror the Deploy-path Inc so the live-apps gauge stays balanced.
+		s.Metrics.ArtifactsActive.WithLabelValues(app.Spec.Runtime.Template).Dec()
+	}
 	// Usage event, reusing the tenant resolved above.
 	s.meter(ctx, meter.Event{Kind: "delete", Tenant: t.ID, Owner: owner, App: id, Namespace: t.Namespace})
 	return nil

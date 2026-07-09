@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -22,6 +23,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/audit"
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/meter"
+	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tarball"
@@ -155,6 +157,40 @@ func TestDeployReachesReady(t *testing.T) {
 	}
 	if store.puts() != 1 {
 		t.Errorf("expected 1 tarball put, got %d", store.puts())
+	}
+}
+
+func TestDeployAndDeleteRecordMetrics(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	svc.Metrics = metrics.New()
+	const tmpl = "static-nginx" // index.html classifies to the static fast lane
+
+	deploysBefore := testutil.ToFloat64(svc.Metrics.DeploysTotal.WithLabelValues("success", tmpl))
+	activeBefore := testutil.ToFloat64(svc.Metrics.ArtifactsActive.WithLabelValues(tmpl))
+
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "metricsapp",
+		Owner:   "alice@example.com",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "<h1>hi</h1>"})),
+	}); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+
+	if d := testutil.ToFloat64(svc.Metrics.DeploysTotal.WithLabelValues("success", tmpl)) - deploysBefore; d != 1 {
+		t.Fatalf("deploys_total{success,%s} delta = %v, want 1", tmpl, d)
+	}
+	if d := testutil.ToFloat64(svc.Metrics.ArtifactsActive.WithLabelValues(tmpl)) - activeBefore; d != 1 {
+		t.Fatalf("artifacts_active{%s} delta after deploy = %v, want 1", tmpl, d)
+	}
+
+	// Delete balances the live-apps gauge back to where it started.
+	if err := svc.Delete(context.Background(), "alice@example.com", "metricsapp"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if d := testutil.ToFloat64(svc.Metrics.ArtifactsActive.WithLabelValues(tmpl)) - activeBefore; d != 0 {
+		t.Fatalf("artifacts_active{%s} delta after delete = %v, want 0", tmpl, d)
 	}
 }
 
