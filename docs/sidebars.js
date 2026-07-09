@@ -5,7 +5,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Getting Started',
-      items: ['getting-started/installation', 'getting-started/local-dev', 'getting-started/first-deployment'],
+      items: ['getting-started/local-dev', 'getting-started/first-deployment', 'getting-started/installation'],
     },
     {
       type: 'category',

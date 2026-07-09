@@ -252,6 +252,13 @@ workerd:
     tag: ""              # empty -> chart appVersion
     pullPolicy: IfNotPresent
 
+# -- Master switch for rendering the SandboxTemplate + SandboxWarmPool objects,
+#    which require the agent-sandbox *extensions* CRDs
+#    (extensions.agents.x-k8s.io). Set false to install the control plane before
+#    agent-sandbox is present, then flip true on `helm upgrade`. The per-pool
+#    `enabled` toggles below still apply when this is true.
+warmPoolsEnabled: true
+
 # -- Warm pools: one SandboxTemplate + SandboxWarmPool per language template
 #    (refactor.md §6.1), rendered into namespaces.apps. Set replicas to size
 #    each pool; image must embed vibed-agent. The image is a full ref
