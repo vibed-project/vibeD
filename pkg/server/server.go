@@ -308,6 +308,8 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	}
 	if deploySvc != nil {
 		deploySvc.Audit = auditRec
+		deploySvc.ShareLinks = shareLinkStore // nil unless the sqlite backend is in use
+		deploySvc.BaseURL = cfg.Server.BaseURL
 		if cfg.Quotas.Enabled {
 			ns := deploySvc.Namespace
 			if ns == "" {
@@ -462,7 +464,7 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	// app, so there's no longer a per-process proxy living here.)
 
 	// Frontend + API
-	frontendHandler := frontend.NewHandler(orch, cfg, bus, m, userStore, k8sClients)
+	frontendHandler := frontend.NewHandler(orch, deploySvc, cfg, bus, m, userStore, k8sClients)
 	mux.Handle("/", frontendHandler)
 
 	// Build handler chain: role → auth (selective) → metrics → mux

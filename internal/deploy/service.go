@@ -27,6 +27,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/meter"
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/policy"
+	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tarball"
 	"github.com/vibed-project/vibeD/internal/tenant"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
@@ -77,6 +78,12 @@ type Service struct {
 	// Metrics, when set, records Prometheus deploy/artifact counters. nil
 	// disables instrumentation (e.g. in tests).
 	Metrics *metrics.Metrics
+
+	// ShareLinks persists public share links. nil disables share links (only the
+	// sqlite store backend implements it). BaseURL is the public origin used to
+	// build a link's shareable URL (e.g. https://apps.example.com).
+	ShareLinks store.ShareLinkStore
+	BaseURL    string
 }
 
 // Quota gates new deploys within a tenant and resolves the owner's department
