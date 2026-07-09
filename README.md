@@ -183,7 +183,7 @@ storage:
     backend: "served"          # served (DEV only) | s3 (PRODUCTION)
 
 store:
-  backend: "sqlite"            # sqlite | configmap
+  backend: "sqlite"            # sqlite | configmap | memory
 ```
 
 Most fields have an environment override (e.g. `VIBED_SERVER_TRANSPORT`). Cluster topology — namespaces, the Kata RuntimeClass, NetworkPolicy, controller/router/Caddy, and the warm pools — is set through Helm values. See the [Configuration Reference](docs/docs/configuration/config-reference.md) for the full list.
