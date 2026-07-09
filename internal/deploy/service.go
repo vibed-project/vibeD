@@ -240,12 +240,33 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		department = dept
 	}
 
+	// Version this deploy: continue the app's history on a redeploy, else start
+	// at v1. Each version's source is retained under its own key so a rollback
+	// can re-deploy it.
+	var history []VersionRecord
+	if !isNew {
+		history = loadVersions(existing)
+	}
+	version := nextVersion(history)
+	tarballKey := versionKey(req.Name, version)
+
 	// Store the tarball so the agent can pull it.
-	refURL, err := s.Store.Put(ctx, req.Name, bytes.NewReader(buf))
+	refURL, err := s.Store.Put(ctx, tarballKey, bytes.NewReader(buf))
 	if err != nil {
 		_ = s.record(ctx, "deploy", req.Name, "error", err.Error())
 		return nil, fmt.Errorf("store source: %w", err)
 	}
+
+	keptVersions, evicted := appendCapped(history, VersionRecord{
+		Version:    version,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Template:   template,
+		Lane:       string(lane),
+		SourceHash: hex.EncodeToString(sum[:]),
+		TarballKey: tarballKey,
+		TarballRef: refURL,
+	}, maxVersions)
+	versionsJSON := marshalVersions(keptVersions)
 
 	labels := map[string]string{vibedv1.LabelOwner: vibedv1.SanitizeLabel(req.Owner)}
 	if department != "" {
@@ -270,11 +291,16 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 
 	if isNew {
 		app := &vibedv1.VibedApp{
-			ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: t.Namespace, Labels: labels},
-			Spec:       spec,
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        req.Name,
+				Namespace:   t.Namespace,
+				Labels:      labels,
+				Annotations: map[string]string{versionsAnnotation: versionsJSON},
+			},
+			Spec: spec,
 		}
 		if cerr := s.Client.Create(ctx, app); cerr != nil {
-			_ = s.Store.Delete(ctx, req.Name) // don't leave an orphan blob
+			_ = s.Store.Delete(ctx, tarballKey) // don't leave an orphan blob
 			_ = s.record(ctx, "deploy", req.Name, "error", cerr.Error())
 			return nil, fmt.Errorf("create VibedApp: %w", cerr)
 		}
@@ -286,10 +312,21 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		for k, v := range labels {
 			existing.Labels[k] = v
 		}
+		anns := existing.GetAnnotations()
+		if anns == nil {
+			anns = map[string]string{}
+		}
+		anns[versionsAnnotation] = versionsJSON
+		existing.SetAnnotations(anns)
 		if uerr := s.Client.Update(ctx, existing); uerr != nil {
 			_ = s.record(ctx, "deploy", req.Name, "error", uerr.Error())
 			return nil, fmt.Errorf("update VibedApp: %w", uerr)
 		}
+	}
+
+	// Prune source tarballs for versions that aged out of the retained history.
+	for _, k := range evicted {
+		_ = s.Store.Delete(ctx, k)
 	}
 
 	// Success-path audit: when the recorder is fail-closed and the audit

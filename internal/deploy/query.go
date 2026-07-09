@@ -104,7 +104,14 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 		_ = s.record(ctx, "delete", id, "error", derr.Error())
 		return fmt.Errorf("delete VibedApp: %w", derr)
 	}
-	// Best-effort tarball cleanup; the CR is already gone either way.
+	// Best-effort source cleanup; the CR is already gone either way. Remove
+	// every retained version's tarball, plus the legacy per-name key for apps
+	// created before versioned storage.
+	for _, r := range loadVersions(app) {
+		if r.TarballKey != "" {
+			_ = s.Store.Delete(ctx, r.TarballKey)
+		}
+	}
 	_ = s.Store.Delete(ctx, id)
 	if err := s.record(ctx, "delete", id, "ok", ""); err != nil {
 		return fmt.Errorf("delete succeeded but audit failed: %w", err)

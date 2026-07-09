@@ -137,6 +137,16 @@ type Template struct {
 // TemplateLane defines model for Template.Lane.
 type TemplateLane string
 
+// Version defines model for Version.
+type Version struct {
+	Lane           *string   `json:"lane,omitempty"`
+	RolledBackFrom *int      `json:"rolled_back_from,omitempty"`
+	SourceHash     *string   `json:"source_hash,omitempty"`
+	Template       *string   `json:"template,omitempty"`
+	Timestamp      time.Time `json:"timestamp"`
+	Version        int       `json:"version"`
+}
+
 // AppID defines model for AppID.
 type AppID = string
 
@@ -158,6 +168,11 @@ type RedeployAppMultipartBody struct {
 	Source   openapi_types.File `json:"source"`
 }
 
+// RollbackAppJSONBody defines parameters for RollbackApp.
+type RollbackAppJSONBody struct {
+	Version int `json:"version"`
+}
+
 // DeployAppMultipartBody defines parameters for DeployApp.
 type DeployAppMultipartBody struct {
 	Metadata DeployMetadata `json:"metadata"`
@@ -168,6 +183,9 @@ type DeployAppMultipartBody struct {
 
 // RedeployAppMultipartRequestBody defines body for RedeployApp for multipart/form-data ContentType.
 type RedeployAppMultipartRequestBody RedeployAppMultipartBody
+
+// RollbackAppJSONRequestBody defines body for RollbackApp for application/json ContentType.
+type RollbackAppJSONRequestBody RollbackAppJSONBody
 
 // DeployAppMultipartRequestBody defines body for DeployApp for multipart/form-data ContentType.
 type DeployAppMultipartRequestBody DeployAppMultipartBody

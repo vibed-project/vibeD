@@ -221,6 +221,63 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /v1/apps/{app_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    get:
+      tags: [apps]
+      operationId: getAppVersions
+      summary: List the app's deploy history (newest first).
+      responses:
+        '200':
+          description: Deploy history.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Version' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/apps/{app_id}/rollback:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      tags: [apps]
+      operationId: rollbackApp
+      summary: Re-deploy a previous version's retained source.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: integer }
+      responses:
+        '200':
+          description: Rolled back; app is Ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeployResponse' }
+        '202':
+          description: Accepted; poll status_url.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeployResponse' }
+        '400':
+          description: The requested version is not available.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /v1/templates:
     get:
       tags: [templates]
@@ -353,6 +410,17 @@ components:
         app_id:     { type: string }
         url:        { type: string, format: uri }
         status_url: { type: string, format: uri }
+
+    Version:
+      type: object
+      required: [version, timestamp]
+      properties:
+        version:          { type: integer }
+        timestamp:        { type: string, format: date-time }
+        template:         { type: string }
+        lane:             { type: string }
+        source_hash:      { type: string }
+        rolled_back_from: { type: integer }
 
     Phase:
       type: string
