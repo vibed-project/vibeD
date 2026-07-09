@@ -597,6 +597,7 @@ func buildDeployService(cfg *config.Config, k8sClients *k8s.Clients, logger *slo
 		Store:      store,
 		Classifier: classifier.Classifier{},
 		Namespace:  appsNS,
+		Metrics:    metrics.New(),
 	}, nil
 }
 
