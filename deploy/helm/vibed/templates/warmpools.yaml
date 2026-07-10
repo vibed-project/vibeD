@@ -35,6 +35,19 @@ spec:
       labels:
         vibed.dev/template: {{ $name }}
     spec:
+      {{- with $root.Values.runtime.nodeSelector }}
+      # Pin these sandbox pods (untrusted, AI-generated code) to a dedicated
+      # node pool. Applied on the pod itself so it holds for BOTH lanes,
+      # regardless of whether the RuntimeClass is Helm-owned.
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.runtime.tolerations }}
+      # Tolerate that pool's taint so sandboxes schedule there while everything
+      # else (control plane, system add-ons without this toleration) stays off.
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with $root.Values.runtime.defaultClass }}
       # Kata isolation for the general lane. Omitted (normal runtime) when
       # runtime.defaultClass is empty — e.g. on a Kind dev cluster without Kata.
