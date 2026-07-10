@@ -83,7 +83,12 @@ runtime:
   defaultClass: kata-qemu      # kata-qemu (dev, no nested virt) | kata-fc (KVM)
   installRuntimeClass: false
   handler: ""                  # defaults to defaultClass
-  nodeSelector: {}             # e.g. { vibed.dev/sandbox-node: "true" }
+  # Schedule warm-pool / sandbox pods (untrusted AI-generated code) onto a
+  # dedicated node pool, away from the control plane. nodeSelector pins them
+  # there; tolerations let them onto a pool you've tainted to keep other
+  # workloads off. Both are applied to the sandbox pod spec (any lane).
+  nodeSelector: {}             # e.g. { k8s.scaleway.com/pool-name: sandbox }
+  tolerations: []              # e.g. [{ key: vibed.dev/sandbox, operator: Exists, effect: NoSchedule }]
   # agent-sandbox NetworkPolicy mode for warm-pool sandboxes:
   #   Managed   — agent-sandbox owns the policy: ingress only from an
   #               `app: sandbox-router` pod (which it doesn't ship) and NO

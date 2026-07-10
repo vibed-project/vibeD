@@ -15,9 +15,17 @@ metadata:
   labels:
     {{- include "vibed.labels" . | nindent 4 }}
 handler: {{ .Values.runtime.handler | default .Values.runtime.defaultClass }}
-{{- with .Values.runtime.nodeSelector }}
+{{- if or .Values.runtime.nodeSelector .Values.runtime.tolerations }}
+# Kubernetes merges these into every pod using this RuntimeClass, so Kata
+# sandboxes land on (and tolerate the taint of) the dedicated sandbox pool.
 scheduling:
+  {{- with .Values.runtime.nodeSelector }}
   nodeSelector:
     {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.runtime.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end }}
 {{- end }}
