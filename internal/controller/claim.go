@@ -22,12 +22,13 @@ import (
 var ErrTemplateNotFound = errors.New("no SandboxTemplate for template")
 
 // SandboxClaimGVK identifies the agent-sandbox SandboxClaim CR vibeD
-// targets. Pinned to v1alpha1 per the kubernetes-sigs/agent-sandbox v0.4.5
-// extensions bundle; see the agent-sandbox-crds memory entry for the full
-// schema.
+// targets. Pinned to v1beta1 per the kubernetes-sigs/agent-sandbox v0.5.0+
+// extensions bundle (v0.5.0 graduated the CRDs from v1alpha1, replacing the
+// old sandboxTemplateRef+warmpool spec fields with warmPoolRef); see the
+// agent-sandbox-crds memory entry for the full schema.
 var SandboxClaimGVK = schema.GroupVersionKind{
 	Group:   "extensions.agents.x-k8s.io",
-	Version: "v1alpha1",
+	Version: "v1beta1",
 	Kind:    "SandboxClaim",
 }
 
@@ -39,10 +40,9 @@ var SandboxClaimGVK = schema.GroupVersionKind{
 // to the same Namespace. That gives us a 1:1 mapping the watch hookup uses
 // to map claim events back to the owning VibedApp.
 //
-// Warm-pool naming: refactor.md's template.yaml files create a
-// SandboxWarmPool whose name matches the template name (node-24,
-// python-313, etc.). So `sandboxTemplateRef.name = template` and
-// `warmpool = template` both flow from the classifier's pick.
+// Warm-pool naming: the template.yaml files create a SandboxWarmPool whose
+// name matches the template name (node-24, python-313, etc.). So the v1beta1
+// SandboxClaim's `warmPoolRef.name = template` flows from the classifier's pick.
 type SandboxClaimer struct {
 	Client client.Client
 	// PoolNamespace is where the SandboxWarmPool / SandboxTemplate live.
@@ -133,10 +133,9 @@ func (c *SandboxClaimer) buildClaim(app *vibedv1.VibedApp, template string) *uns
 		},
 	})
 	spec := map[string]any{
-		"sandboxTemplateRef": map[string]any{
+		"warmPoolRef": map[string]any{
 			"name": template,
 		},
-		"warmpool": template,
 	}
 	// Push the user's env through to the claim — agent-sandbox forwards
 	// these into the user-container env at bind time.

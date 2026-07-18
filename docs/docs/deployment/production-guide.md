@@ -9,7 +9,7 @@ This guide covers the hardened, production setup. For a laptop, use the [dev ove
 ## Prerequisites
 
 - Kubernetes 1.29+ with a CNI that enforces `NetworkPolicy` (Cilium, Calico, …).
-- [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) v0.4.5+ installed.
+- [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) v0.5.0+ installed.
 - A **dedicated sandbox node pool** labeled `vibed.dev/sandbox-node: "true"`, running `containerd` + `containerd-shim-kata-v2`, with KVM available (bare metal, `*.metal` on AWS, or nested-virt images on GCP).
 - A **Kata RuntimeClass** — `kata-fc` (Firecracker, needs KVM) or `kata-qemu`.
 - **S3 or MinIO** for source tarballs.

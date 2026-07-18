@@ -37,7 +37,7 @@ func NewSandboxDeployer(dynamicClient dynamic.Interface, k8sClient kubernetes.In
 // sandboxGVR is the GroupVersionResource for the Sandbox CRD
 var sandboxGVR = schema.GroupVersionResource{
 	Group:    "agents.x-k8s.io",
-	Version:  "v1alpha1",
+	Version:  "v1beta1",
 	Resource: "sandboxes",
 }
 
@@ -105,7 +105,7 @@ func (s *SandboxDeployer) buildSandboxObj(ctx context.Context, artifact *api.Art
 	// Build the full CRD
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "agents.x-k8s.io/v1alpha1",
+			"apiVersion": "agents.x-k8s.io/v1beta1",
 			"kind":       "Sandbox",
 			"metadata": map[string]interface{}{
 				"name":      artifact.Name,

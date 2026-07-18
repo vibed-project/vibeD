@@ -1,8 +1,8 @@
 # python-313 — general-lane warm pool for Python app deploys (classifier
-# rule 6). Pinned to extensions.agents.x-k8s.io/v1alpha1
-# (kubernetes-sigs/agent-sandbox v0.4.5+). See refactor.md §6.1.
+# rule 6). Pinned to extensions.agents.x-k8s.io/v1beta1
+# (kubernetes-sigs/agent-sandbox v0.5.0+). See refactor.md §6.1.
 ---
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: python-313
@@ -48,7 +48,7 @@ spec:
         - { name: tmp,       emptyDir: { sizeLimit:  64Mi } }
 ---
 # 50 idle replicas per refactor.md §6.1.
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
   name: python-313
@@ -57,7 +57,7 @@ metadata:
     vibed.dev/template: python-313
     vibed.dev/lane: general
 spec:
-  replicas: 50
+  replicas: 5
   sandboxTemplateRef:
     name: python-313
   updateStrategy:

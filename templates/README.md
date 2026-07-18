@@ -9,8 +9,8 @@ Each subdirectory is one runtime template referenced by the classifier
 - `entrypoint.sh` — copied into the image; invoked by `vibed-agent` after
   user source is extracted into `/workspace`.
 - `template.yaml` — the `SandboxTemplate` + `SandboxWarmPool` Kubernetes
-  manifests. Both target `extensions.agents.x-k8s.io/v1alpha1`
-  (kubernetes-sigs/agent-sandbox v0.4.5+). The warm pool's name matches
+  manifests. Both target `extensions.agents.x-k8s.io/v1beta1`
+  (kubernetes-sigs/agent-sandbox v0.5.0+). The warm pool's name matches
   the template's name so the controller can derive one from the other.
 
 The v1 set (refactor.md §6.1):

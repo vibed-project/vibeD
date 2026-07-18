@@ -72,13 +72,9 @@ func TestEnsureClaimCreatesWhenMissing(t *testing.T) {
 	if labels := got.GetLabels(); labels["vibed.dev/template"] != "node-24" {
 		t.Errorf("template label missing/wrong: %v", labels)
 	}
-	tplName, _, _ := unstructured.NestedString(got.Object, "spec", "sandboxTemplateRef", "name")
-	if tplName != "node-24" {
-		t.Errorf("spec.sandboxTemplateRef.name = %q want node-24", tplName)
-	}
-	wp, _, _ := unstructured.NestedString(got.Object, "spec", "warmpool")
+	wp, _, _ := unstructured.NestedString(got.Object, "spec", "warmPoolRef", "name")
 	if wp != "node-24" {
-		t.Errorf("spec.warmpool = %q want node-24", wp)
+		t.Errorf("spec.warmPoolRef.name = %q want node-24", wp)
 	}
 }
 
@@ -124,8 +120,7 @@ func TestEnsureClaimReportsBoundOnceStatusPopulated(t *testing.T) {
 		{APIVersion: vibedv1.GroupVersion.String(), Kind: "VibedApp", Name: app.Name, UID: app.UID},
 	})
 	_ = unstructured.SetNestedMap(preBound.Object, map[string]any{
-		"sandboxTemplateRef": map[string]any{"name": "node-24"},
-		"warmpool":           "node-24",
+		"warmPoolRef": map[string]any{"name": "node-24"},
 	}, "spec")
 	_ = unstructured.SetNestedMap(preBound.Object, map[string]any{
 		"sandbox": map[string]any{

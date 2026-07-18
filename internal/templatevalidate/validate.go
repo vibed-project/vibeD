@@ -31,7 +31,7 @@ const ConfigMapName = "vibed-template-validation"
 // SandboxTemplateGVK identifies the agent-sandbox SandboxTemplate.
 var SandboxTemplateGVK = schema.GroupVersionKind{
 	Group:   "extensions.agents.x-k8s.io",
-	Version: "v1alpha1",
+	Version: "v1beta1",
 	Kind:    "SandboxTemplate",
 }
 

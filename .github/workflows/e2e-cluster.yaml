@@ -44,7 +44,7 @@ permissions:
 
 env:
   KIND_CLUSTER: vibed-e2e
-  AGENT_SANDBOX_VERSION: v0.4.5
+  AGENT_SANDBOX_VERSION: v0.5.2
 
 jobs:
   e2e:
@@ -70,7 +70,7 @@ jobs:
       - name: Install agent-sandbox
         run: |
           base="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}"
-          kubectl apply --server-side -f "${base}/manifest.yaml"
+          kubectl apply --server-side -f "${base}/sandbox.yaml"
           kubectl apply --server-side -f "${base}/extensions.yaml"
           kubectl wait --for=condition=Established --timeout=90s \
             crd/sandboxes.agents.x-k8s.io \

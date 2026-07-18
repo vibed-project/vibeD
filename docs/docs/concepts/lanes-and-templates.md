@@ -36,14 +36,14 @@ The shipped template set:
 
 | Template | Base | Lane | Default warm pool |
 |---|---|---|---|
-| `node-24` | `node:24` | general | 50 |
-| `python-313` | `python:3.13` | general | 50 |
-| `go-123` | `golang:1.23` | general | 20 |
-| `base-al2023` | `amazonlinux:2023` | general | 30 |
-| `static-nginx` | `nginx:alpine` | fast | 30 |
+| `node-24` | `node:24` | general | 5 |
+| `python-313` | `python:3.13` | general | 5 |
+| `go-123` | `golang:1.23` | general | 5 |
+| `base-al2023` | `amazonlinux:2023` | general | 5 |
+| `static-nginx` | `nginx:alpine` | fast | 5 |
 
 :::note
-`refactor.md` lists additional templates (`node-22`, `bun-1`, `deno-2`) as design targets. The five above are what currently ship; the others are not yet built. Warm-pool sizes are starting values in `values.yaml`.
+`refactor.md` lists additional templates (`node-22`, `bun-1`, `deno-2`) as design targets. The five above are what currently ship; the others are not yet built. Every pool defaults to **5** warm replicas in `values.yaml`; size each one to your expected concurrent-deploy burst per runtime (see [Warm pools](sandbox-isolation.md#warm-pools-how-vibed-hides-microvm-boot-latency) in the isolation deep-dive).
 :::
 
 ## Source injection, not image builds
