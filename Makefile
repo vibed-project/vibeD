@@ -195,7 +195,7 @@ enable-python-pool: load-runner-images
 		--set warmPools.python-313.enabled=true \
 		--set warmPools.python-313.lane=general \
 		--set warmPools.python-313.image=$(RUNNER_PYTHON_IMAGE) \
-		--set warmPools.python-313.replicas=1 \
+		--set warmPools.python-313.replicas=5 \
 		--wait --timeout 3m
 	@kubectl rollout restart -n vibed-system deploy/vibed-controller
 	@echo "python-313 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
@@ -208,7 +208,7 @@ enable-node-pool: load-runner-images
 		--set warmPools.node-24.enabled=true \
 		--set warmPools.node-24.lane=general \
 		--set warmPools.node-24.image=$(RUNNER_NODE_IMAGE) \
-		--set warmPools.node-24.replicas=1 \
+		--set warmPools.node-24.replicas=5 \
 		--wait --timeout 3m
 	@kubectl rollout restart -n vibed-system deploy/vibed-controller
 	@echo "node-24 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
@@ -221,7 +221,7 @@ enable-go-pool: load-runner-image-go
 		--set warmPools.go-123.enabled=true \
 		--set warmPools.go-123.lane=general \
 		--set warmPools.go-123.image=$(RUNNER_GO_IMAGE) \
-		--set warmPools.go-123.replicas=1 \
+		--set warmPools.go-123.replicas=5 \
 		--wait --timeout 3m
 	@kubectl rollout restart -n vibed-system deploy/vibed-controller
 	@echo "go-123 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."
@@ -234,7 +234,7 @@ enable-base-pool: load-runner-image-base
 		--set warmPools.base-al2023.enabled=true \
 		--set warmPools.base-al2023.lane=general \
 		--set warmPools.base-al2023.image=$(RUNNER_BASE_IMAGE) \
-		--set warmPools.base-al2023.replicas=1 \
+		--set warmPools.base-al2023.replicas=5 \
 		--wait --timeout 3m
 	@kubectl rollout restart -n vibed-system deploy/vibed-controller
 	@echo "base-al2023 pool enabled. The validator re-checks on controller restart; first deploy may need ~10s."

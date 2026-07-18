@@ -1,11 +1,11 @@
 # go-123 — general-lane warm pool for Go app deploys (classifier rule 7).
-# Pinned to extensions.agents.x-k8s.io/v1alpha1 (kubernetes-sigs/agent-sandbox
-# v0.4.5+). See refactor.md §6.1.
+# Pinned to extensions.agents.x-k8s.io/v1beta1 (kubernetes-sigs/agent-sandbox
+# v0.5.0+). See refactor.md §6.1.
 #
 # `go run .` plus toolchain caches drive the memory/cpu requests up vs the
 # interpreted templates; tuned to comfortably hold a small Gin server.
 ---
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: go-123
@@ -54,7 +54,7 @@ spec:
 ---
 # 20 idle replicas per refactor.md §6.1 (lower than node/python because Go
 # is less common in the GenAI-vibe-code population).
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
   name: go-123
@@ -63,7 +63,7 @@ metadata:
     vibed.dev/template: go-123
     vibed.dev/lane: general
 spec:
-  replicas: 20
+  replicas: 5
   sandboxTemplateRef:
     name: go-123
   updateStrategy:

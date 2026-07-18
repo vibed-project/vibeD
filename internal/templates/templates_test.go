@@ -1,5 +1,5 @@
 // Package templates_test validates every templates/<name>/template.yaml in
-// the repo against the schema of kubernetes-sigs/agent-sandbox v0.4.5+. The
+// the repo against the schema of kubernetes-sigs/agent-sandbox v0.5.0+. The
 // production guarantee is "what we ship as a template applies cleanly to a
 // real cluster" — but standing up a cluster in unit tests is overkill, so
 // we instead parse each YAML, decode the documents, and assert the
@@ -99,8 +99,8 @@ func TestTemplateManifestsAreWellFormed(t *testing.T) {
 				if m.APIVersion == "" && m.Kind == "" {
 					continue
 				}
-				if m.APIVersion != "extensions.agents.x-k8s.io/v1alpha1" {
-					t.Errorf("apiVersion=%q want extensions.agents.x-k8s.io/v1alpha1", m.APIVersion)
+				if m.APIVersion != "extensions.agents.x-k8s.io/v1beta1" {
+					t.Errorf("apiVersion=%q want extensions.agents.x-k8s.io/v1beta1", m.APIVersion)
 				}
 				if m.Metadata.Name == "" {
 					t.Errorf("metadata.name is required")

@@ -13,35 +13,90 @@ For a laptop / evaluation setup, use **[Local development](local-dev.md)** — a
 ## Prerequisites
 
 1. **Kubernetes 1.29+** (EKS/GKE/AKS or on-prem), with cluster-admin to install CRDs.
-2. **[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) — core *and* extensions** (v0.4.5+). vibeD renders `SandboxTemplate` and `SandboxWarmPool` objects, so the **extensions** CRDs must exist before you install vibeD. [Step 1](#step-1--install-agent-sandbox) installs them.
+2. **[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) — core *and* extensions** (v0.5.0+). vibeD renders `SandboxTemplate` and `SandboxWarmPool` objects, so the **extensions** CRDs must exist before you install vibeD. [Step 1](#step-1--install-agent-sandbox) installs them.
 3. **A sandbox node pool** labeled `vibed.dev/sandbox-node: "true"`.
-4. *(General lane only)* **A Kata `RuntimeClass`** — see [The general lane and Kata](#the-general-lane-and-kata). Static sites and other fast-lane deploys do **not** need Kata.
+4. *(General lane only)* **A Kata `RuntimeClass`** — [Step 2](#step-2--install-kata-containers-general-lane) installs it. Static sites and other fast-lane deploys do **not** need Kata.
 5. *(Production only)* **Object storage** (S3 or MinIO) for source tarballs, and a **DNS-01 capable DNS provider** for wildcard TLS — see [Going to production](#going-to-production).
 
 ## Step 1 — Install agent-sandbox
 
-vibeD depends on agent-sandbox's controller and CRDs — the **core** (`Sandbox`) **and** the **extensions** (`SandboxTemplate`, `SandboxClaim`, `SandboxWarmPool`). Apply the upstream release manifests (v0.4.5+ required; substitute the version you want):
+vibeD depends on agent-sandbox's controller and CRDs — the **core** (`Sandbox`) **and** the **extensions** (`SandboxTemplate`, `SandboxClaim`, `SandboxWarmPool`). Apply the upstream release manifests (**v0.5.0+ required** — that's the release that graduated the CRDs to `v1beta1`, which vibeD targets):
 
 ```bash
-VER=v0.4.5
-# core: controller + Sandbox CRD
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$VER/manifest.yaml
+VER=v0.5.2
+# core: controller + Sandbox CRD  (this file was named manifest.yaml before v0.5.0)
+kubectl apply --server-side -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$VER/sandbox.yaml
 # extensions: SandboxTemplate / SandboxClaim / SandboxWarmPool CRDs + controller
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$VER/extensions.yaml
+kubectl apply --server-side -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$VER/extensions.yaml
 ```
 
-Confirm the extension CRDs are registered before continuing:
+`--server-side` avoids the client-side apply annotation-size limit these CRDs now exceed. There's also a single all-in-one `sandbox-with-extensions.yaml` if you'd rather apply one file.
+
+Confirm the extension CRDs are registered and serving `v1beta1` before continuing:
 
 ```bash
 kubectl get crd sandboxtemplates.extensions.agents.x-k8s.io \
-                sandboxwarmpools.extensions.agents.x-k8s.io
+                sandboxwarmpools.extensions.agents.x-k8s.io \
+                sandboxclaims.extensions.agents.x-k8s.io
+# STORED VERSIONS should list v1beta1:
+kubectl get crd sandboxwarmpools.extensions.agents.x-k8s.io \
+  -o jsonpath='{.status.storedVersions}{"\n"}'
 ```
+
+:::note Upgrading from agent-sandbox v0.4.x?
+v0.5.0 promoted every CRD from `v1alpha1` to `v1beta1` (a conversion webhook still serves `v1alpha1`, so old objects keep working but log `… v1alpha1 SandboxWarmPool is deprecated; use … v1beta1 …`). vibeD v0.5.0+ writes `v1beta1` natively, which clears that warning. If you're on an older agent-sandbox, upgrade it to v0.5.0+ **before** upgrading vibeD; Helm never upgrades CRDs, so re-apply the manifests above and they'll patch in place.
+:::
 
 :::note
 The kind testbed wraps these same manifests in a Helm chart (`testbed/agent-sandbox/`) that `make dev` uses. On a real cluster the raw `kubectl apply` above is simplest.
 :::
 
-## Step 2 — Install vibeD
+## Step 2 — Install Kata Containers (general lane)
+
+:::tip Fast-lane only? Skip this step.
+Static sites and workerd deploys run in ordinary pods. Kata is only needed for the **general lane** (Node/Python/Go/custom images), which runs user code in a microVM. You can install it later and `helm upgrade` vibeD to switch the general lane on.
+:::
+
+**What Kata gives you.** [Kata Containers](https://katacontainers.io/) runs each sandbox's containers inside a lightweight virtual machine with its own guest kernel, launched by a hardware-virtualization hypervisor (QEMU, Cloud Hypervisor, or Firecracker). A container escape lands the attacker in a throwaway guest kernel, not on the node's shared host kernel — the isolation boundary the general lane relies on. The [sandbox isolation deep-dive](../concepts/sandbox-isolation.md) walks through how this maps to vibeD's lanes and how to configure it.
+
+**Node requirement — hardware virtualization.** Every sandbox node needs `/dev/kvm`:
+
+- **Bare metal** or AWS `*.metal` — KVM is present natively.
+- **Cloud VMs** — enable **nested virtualization** (GKE nested-virt nodes, Azure `Dv5`/`Ev5`, etc.). Plain AWS EC2 VMs don't expose nested KVM; use a `*.metal` instance for the sandbox pool.
+
+Install with **kata-deploy** (upstream's installer). It drops the runtime binaries + containerd shims onto the labeled sandbox nodes and registers the `RuntimeClass` objects:
+
+```bash
+KATA_VER=3.32.0
+helm install kata-deploy \
+  oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
+  --version "$KATA_VER" -n kube-system \
+  --set nodeSelector."vibed\.dev/sandbox-node"=true
+# k3s / rke2 / k0s / microk8s: also pass --set k8sDistribution=<distro> so the
+# containerd config path resolves correctly.
+```
+
+The chart bundles node-feature-discovery and only installs on nodes advertising Intel VT-x / AMD-V, so a node without virtualization is skipped rather than silently broken. Restricting it to `vibed.dev/sandbox-node: "true"` keeps Kata off your control-plane and general workload nodes.
+
+Wait for the DaemonSet, then confirm the RuntimeClasses exist:
+
+```bash
+kubectl -n kube-system rollout status ds/kata-deploy
+kubectl get runtimeclass          # expect kata-qemu, kata-fc, kata-clh, …
+```
+
+**Point vibeD at a RuntimeClass.** The general lane runs pods under whatever `runtime.defaultClass` names; the fast lane ignores it. You set this in [Step 3](#step-3--install-vibed) (or with a later `helm upgrade`):
+
+```bash
+# QEMU/KVM — the default, works anywhere /dev/kvm is present:
+--set runtime.defaultClass=kata-qemu
+# …or Firecracker microVMs (smaller/faster; needs the devmapper snapshotter on the node):
+# --set runtime.defaultClass=kata-fc
+```
+
+Leaving `runtime.defaultClass: ""` runs general-lane pods **without** Kata (shared-kernel runc) — the dev/kind default, never production.
+
+## Step 3 — Install vibeD
 
 vibeD ships as a Helm chart. The **minimal install** uses the in-cluster `served` source store and a ConfigMap metadata store — **no S3, no external database** — which is enough to evaluate on an unhardened cluster:
 
@@ -83,14 +138,9 @@ Then deploy something — see [First deployment](first-deployment.md).
 
 ## The general lane and Kata
 
-vibeD has two lanes. The **fast lane** (static sites, workerd) runs in ordinary pods and needs no special runtime — a first static deploy works with nothing extra. The **general lane** (Node/Python/Go/custom images) runs user code in **Kata microVMs** for VM-level isolation, which needs:
+vibeD has two lanes. The **fast lane** (static sites, workerd) runs in ordinary pods and needs no special runtime — a first static deploy works with nothing extra. The **general lane** (Node/Python/Go/custom images) runs user code in **Kata microVMs** for VM-level isolation. [Step 2](#step-2--install-kata-containers-general-lane) installs Kata and registers the `RuntimeClass`; the general lane then runs under whatever `runtime.defaultClass` names (`kata-qemu` or `kata-fc`). Both hypervisors need `/dev/kvm` on the node — there's no software-emulation shortcut for production.
 
-- A **Kata `RuntimeClass`** — `kata-qemu` (works without nested virt) or `kata-fc` (Firecracker, needs KVM). Select it with `runtime.defaultClass`.
-- Sandbox nodes running `containerd` + `containerd-shim-kata-v2`. `kata-fc` needs KVM (bare metal, AWS `*.metal`, or nested-virt images on GCP); `kata-qemu` does not.
-
-The easiest way to install Kata and register the RuntimeClasses is the [kata-deploy](https://github.com/kata-containers/kata-containers/tree/main/tools/packaging/kata-deploy) DaemonSet.
-
-Until a Kata RuntimeClass exists, run only the fast lane: set `warmPoolsEnabled=false` (or enable just `static-nginx`). Leaving `runtime.defaultClass: ""` runs general-lane pods **without** Kata isolation — the dev default, not for production.
+Until a Kata RuntimeClass exists, run only the fast lane: set `warmPoolsEnabled=false` (or enable just `static-nginx`). Leaving `runtime.defaultClass: ""` runs general-lane pods **without** Kata isolation — the dev default, not for production. For how the isolation boundary actually works and how to tune the microVM (kernel, memory, Firecracker vs QEMU), see the [sandbox isolation deep-dive](../concepts/sandbox-isolation.md).
 
 ## Going to production
 

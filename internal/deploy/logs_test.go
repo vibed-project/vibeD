@@ -30,7 +30,7 @@ func boundPod(name, podIP string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: "vibed-apps",
-			Labels: map[string]string{claimUIDLabel: "uid-" + name},
+			Labels: map[string]string{sandboxPodLabel: "hash-" + name},
 		},
 		Status: corev1.PodStatus{PodIP: podIP},
 	}

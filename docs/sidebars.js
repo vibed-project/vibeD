@@ -10,7 +10,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Concepts',
-      items: ['concepts/architecture', 'concepts/control-plane', 'concepts/deploy-pipeline', 'concepts/lanes-and-templates', 'concepts/app-lifecycle'],
+      items: ['concepts/architecture', 'concepts/control-plane', 'concepts/deploy-pipeline', 'concepts/lanes-and-templates', 'concepts/sandbox-isolation', 'concepts/app-lifecycle'],
     },
     {
       type: 'category',

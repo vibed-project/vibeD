@@ -1,6 +1,6 @@
 # base-al2023 — kitchen-sink general-lane warm pool for classifier rules
 # 8 (Dockerfile-as-hint) and 9 (unknown fallback). Pinned to
-# extensions.agents.x-k8s.io/v1alpha1 (kubernetes-sigs/agent-sandbox v0.4.5+).
+# extensions.agents.x-k8s.io/v1beta1 (kubernetes-sigs/agent-sandbox v0.5.0+).
 # See refactor.md §6.1.
 #
 # This template's resource envelope is the biggest by design — it bundles
@@ -8,7 +8,7 @@
 # couldn't predict. If you're tempted to scale the pool down, make sure
 # rule 9's miss rate doesn't bite the deploy SLO first.
 ---
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: base-al2023
@@ -54,7 +54,7 @@ spec:
         - { name: tmp,       emptyDir: { sizeLimit: 128Mi } }
 ---
 # 30 idle replicas per refactor.md §6.1.
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
   name: base-al2023
@@ -63,7 +63,7 @@ metadata:
     vibed.dev/template: base-al2023
     vibed.dev/lane: general
 spec:
-  replicas: 30
+  replicas: 5
   sandboxTemplateRef:
     name: base-al2023
   updateStrategy:

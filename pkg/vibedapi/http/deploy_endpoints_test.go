@@ -317,7 +317,7 @@ func TestStreamLogsSSE(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "mine-pod", Namespace: "vibed-apps",
-			Labels: map[string]string{"agents.x-k8s.io/claim-uid": "u1"},
+			Labels: map[string]string{"agents.x-k8s.io/sandbox-name-hash": "u1"},
 		},
 		Status: corev1.PodStatus{PodIP: "10.0.0.9"},
 	}
@@ -479,7 +479,7 @@ func TestLogStreamCapReturns429OverHTTP(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "mine-pod", Namespace: "vibed-apps",
-			Labels: map[string]string{"agents.x-k8s.io/claim-uid": "u1"},
+			Labels: map[string]string{"agents.x-k8s.io/sandbox-name-hash": "u1"},
 		},
 		Status: corev1.PodStatus{PodIP: "10.0.0.9"},
 	}

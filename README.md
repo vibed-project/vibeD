@@ -31,7 +31,7 @@ vibeD bridges AI coding tools (Claude, Gemini, ChatGPT) with your own Kubernetes
 - Container runtime (Podman or Docker)
 - kubectl configured to access your cluster
 
-For production you also need [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) (v0.4.5+), a Kata RuntimeClass (`kata-qemu` or `kata-fc`), a sandbox node pool, and object storage — see the [installation guide](docs/docs/getting-started/installation.md).
+For production you also need [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) (v0.5.0+), a Kata RuntimeClass (`kata-qemu` or `kata-fc`), a sandbox node pool, and object storage — see the [installation guide](docs/docs/getting-started/installation.md).
 
 ### Build
 

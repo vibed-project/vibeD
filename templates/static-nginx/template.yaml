@@ -1,12 +1,12 @@
 # static-nginx — fast-lane warm pool serving rule-1 (pure static HTML)
-# deploys from the classifier. Pinned to extensions.agents.x-k8s.io/v1alpha1
-# (kubernetes-sigs/agent-sandbox v0.4.5+). See refactor.md §6.1.
+# deploys from the classifier. Pinned to extensions.agents.x-k8s.io/v1beta1
+# (kubernetes-sigs/agent-sandbox v0.5.0+). See refactor.md §6.1.
 #
 # The image tag is intentionally a placeholder. The Helm chart in
 # deploy/helm/vibed templates the {{ .Values.templates.staticNginx.image }}
 # reference; CI publishes a real digest-pinned tag and Helm substitutes.
 ---
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: static-nginx
@@ -55,7 +55,7 @@ spec:
 ---
 # Warm pool — 30 idle replicas, refactor.md §6.1 default. Helm overrides via
 # .Values.templates.staticNginx.warmPool.
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
   name: static-nginx
@@ -64,7 +64,7 @@ metadata:
     vibed.dev/template: static-nginx
     vibed.dev/lane: fast
 spec:
-  replicas: 30
+  replicas: 5
   sandboxTemplateRef:
     name: static-nginx
   updateStrategy:

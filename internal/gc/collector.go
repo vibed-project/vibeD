@@ -132,7 +132,7 @@ func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeAr
 	}
 	sandboxGVR := schema.GroupVersionResource{
 		Group:    "agents.x-k8s.io",
-		Version:  "v1alpha1",
+		Version:  "v1beta1",
 		Resource: "sandboxes",
 	}
 

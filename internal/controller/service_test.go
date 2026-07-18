@@ -30,22 +30,23 @@ func serviceScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// boundClaim builds an unstructured SandboxClaim with the given UID, as
-// agent-sandbox leaves it after binding a pod.
-func boundClaim(app *vibedv1.VibedApp, uid string) *unstructured.Unstructured {
+// boundClaim builds an unstructured SandboxClaim whose status.sandbox.name is
+// the adopted Sandbox name agent-sandbox reports after binding a pod.
+func boundClaim(app *vibedv1.VibedApp, sandboxName string) *unstructured.Unstructured {
 	c := newClaim()
 	c.SetName(app.Name)
 	c.SetNamespace(app.Namespace)
-	c.SetUID(types.UID(uid))
+	_ = unstructured.SetNestedField(c.Object, sandboxName, "status", "sandbox", "name")
 	return c
 }
 
 // TestEnsureServiceCreatesWithClaimSelector is the happy path: a bound claim
-// yields a per-app Service whose selector targets the claim UID, with the
-// stable cluster-DNS target returned to the caller.
+// yields a per-app Service whose selector mirrors the pod selector agent-sandbox
+// publishes on the claim, with the stable cluster-DNS target returned to the
+// caller.
 func TestEnsureServiceCreatesWithClaimSelector(t *testing.T) {
 	app := validApp("svc-app")
-	claim := boundClaim(app, "claim-uid-abc")
+	claim := boundClaim(app, "static-nginx-n87dn")
 	c := fake.NewClientBuilder().WithScheme(serviceScheme(t)).WithObjects(app, claim).Build()
 	m := &K8sServiceManager{Client: c, AppPort: 8080}
 
@@ -64,8 +65,9 @@ func TestEnsureServiceCreatesWithClaimSelector(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Name: wantName, Namespace: "default"}, &svc); err != nil {
 		t.Fatalf("get service: %v", err)
 	}
-	if svc.Spec.Selector[ClaimUIDLabel] != "claim-uid-abc" {
-		t.Errorf("selector = %v want %s=claim-uid-abc", svc.Spec.Selector, ClaimUIDLabel)
+	wantHash := sandboxNameHash("static-nginx-n87dn")
+	if svc.Spec.Selector["agents.x-k8s.io/sandbox-name-hash"] != wantHash {
+		t.Errorf("selector = %v want agents.x-k8s.io/sandbox-name-hash=%s", svc.Spec.Selector, wantHash)
 	}
 	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 8080 {
 		t.Errorf("ports = %v want a single :8080", svc.Spec.Ports)
@@ -79,7 +81,7 @@ func TestEnsureServiceCreatesWithClaimSelector(t *testing.T) {
 // and a stable target.
 func TestEnsureServiceIsIdempotent(t *testing.T) {
 	app := validApp("svc-idem")
-	claim := boundClaim(app, "uid-1")
+	claim := boundClaim(app, "svc-idem-sandbox")
 	c := fake.NewClientBuilder().WithScheme(serviceScheme(t)).WithObjects(app, claim).Build()
 	m := &K8sServiceManager{Client: c, AppPort: 8080}
 
@@ -110,13 +112,13 @@ func TestEnsureServiceIsIdempotent(t *testing.T) {
 // claim UID so it keeps selecting the live pod.
 func TestEnsureServiceReconcilesSelectorOnRebind(t *testing.T) {
 	app := validApp("svc-rebind")
-	claim := boundClaim(app, "uid-new")
-	// A Service left over from a prior bind, still pointing at the old UID.
+	claim := boundClaim(app, "new-sandbox")
+	// A Service left over from a prior bind, still pointing at the old sandbox.
 	stale := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: ServiceName(app), Namespace: app.Namespace},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: map[string]string{ClaimUIDLabel: "uid-old"},
+			Selector: map[string]string{"agents.x-k8s.io/sandbox-name-hash": sandboxNameHash("old-sandbox")},
 			Ports:    []corev1.ServicePort{{Name: "http", Port: 8080}},
 		},
 	}
@@ -131,8 +133,9 @@ func TestEnsureServiceReconcilesSelectorOnRebind(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Name: ServiceName(app), Namespace: "default"}, &svc); err != nil {
 		t.Fatalf("get service: %v", err)
 	}
-	if svc.Spec.Selector[ClaimUIDLabel] != "uid-new" {
-		t.Errorf("selector = %v want repointed to uid-new", svc.Spec.Selector)
+	wantHash := sandboxNameHash("new-sandbox")
+	if svc.Spec.Selector["agents.x-k8s.io/sandbox-name-hash"] != wantHash {
+		t.Errorf("selector = %v want repointed to sandbox-name-hash=%s", svc.Spec.Selector, wantHash)
 	}
 }
 
