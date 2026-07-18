@@ -8,8 +8,27 @@ import (
 	"github.com/vibed-project/vibeD/pkg/api"
 )
 
-// defaultAuditLimit caps an unbounded ListAudit query.
-const defaultAuditLimit = 200
+// defaultAuditLimit caps an unbounded ListAudit query; maxAuditLimit bounds an
+// explicit one so a caller-supplied limit can't drive an unbounded result-slice
+// allocation (CWE-770 uncontrolled allocation size).
+const (
+	defaultAuditLimit = 200
+	maxAuditLimit     = 1000
+)
+
+// auditLimit normalizes a caller-requested limit: unset/negative falls back to
+// the default, and anything above the ceiling is clamped so the pre-allocated
+// result slice stays bounded regardless of the requested value.
+func auditLimit(n int) int {
+	switch {
+	case n <= 0:
+		return defaultAuditLimit
+	case n > maxAuditLimit:
+		return maxAuditLimit
+	default:
+		return n
+	}
+}
 
 // ---- MemoryStore ----
 
@@ -24,10 +43,7 @@ func (s *MemoryStore) ListAudit(_ context.Context, q AuditQuery) ([]api.AuditEve
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	limit := q.Limit
-	if limit <= 0 {
-		limit = defaultAuditLimit
-	}
+	limit := auditLimit(q.Limit)
 	out := make([]api.AuditEvent, 0, limit)
 	// Newest first: walk the append-only log backwards.
 	for i := len(s.audit) - 1; i >= 0 && len(out) < limit; i-- {
@@ -58,10 +74,7 @@ func (s *SQLiteStore) AppendAudit(ctx context.Context, e *api.AuditEvent) error 
 }
 
 func (s *SQLiteStore) ListAudit(ctx context.Context, q AuditQuery) ([]api.AuditEvent, error) {
-	limit := q.Limit
-	if limit <= 0 {
-		limit = defaultAuditLimit
-	}
+	limit := auditLimit(q.Limit)
 
 	var (
 		conds []string

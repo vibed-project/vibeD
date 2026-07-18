@@ -100,9 +100,13 @@ func NewSourceFetcher() *SourceFetcher {
 // dir. Errors are returned with enough context for the caller to surface in
 // /inject's response body.
 func (f *SourceFetcher) Fetch(ctx context.Context, sourceURL, dir string) error {
+	// Never fall back to an unguarded client for a user-supplied URL: the SSRF
+	// dial guard (blocks loopback/link-local/private/metadata) lives on the
+	// NewSourceFetcher client. A nil Client is a construction bug, not a request
+	// to bypass the guard, so fail closed rather than fetch unguarded.
 	client := f.Client
 	if client == nil {
-		client = http.DefaultClient
+		return fmt.Errorf("source fetcher not initialized with an SSRF-guarded HTTP client")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
