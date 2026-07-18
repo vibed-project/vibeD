@@ -131,6 +131,12 @@ func (l *Loader) Put(id, script string) (int, error) {
 // Remove deletes the app's script and socket, re-renders, and reloads. A
 // missing app is not an error.
 func (l *Loader) Remove(id string) error {
+	// id reaches os.RemoveAll below via filepath.Join, so reject any value that
+	// could escape baseDir/scripts (path separators or "..") before touching
+	// the filesystem — the id arrives straight from the request path.
+	if !validID(id) {
+		return fmt.Errorf("workerd: invalid app id %q", id)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

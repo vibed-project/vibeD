@@ -12,6 +12,12 @@ on:
     # Review gh actions docs if you want to further define triggers, paths, etc
     # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#on
 
+# Least-privilege default for every job's GITHUB_TOKEN: the build job only needs
+# to read the repo to check out and bundle the site. The deploy job overrides
+# this with the elevated pages/id-token scopes it needs (see its own block).
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build Docusaurus

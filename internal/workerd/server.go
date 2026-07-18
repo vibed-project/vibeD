@@ -129,12 +129,18 @@ func (h *Handler) fetchScript(ctx context.Context, sourceURL, entrypoint string)
 		candidates = append([]string{entrypoint}, entryCandidates...)
 	}
 	for _, c := range candidates {
-		// Guard against path escapes from a hostile entrypoint value.
+		// Guard against path escapes from a hostile entrypoint value: reject
+		// absolute paths, then confirm the resolved path stays inside dir
+		// (a relative path that Cleans to "../…" escapes the workspace).
 		clean := filepath.Clean(c)
-		if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+		if filepath.IsAbs(clean) {
 			continue
 		}
-		if b, err := os.ReadFile(filepath.Join(dir, clean)); err == nil {
+		full := filepath.Join(dir, clean)
+		if rel, err := filepath.Rel(dir, full); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if b, err := os.ReadFile(full); err == nil {
 			return string(b), nil
 		}
 	}

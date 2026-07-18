@@ -108,3 +108,23 @@ func TestAuditEnrichedFieldsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestAuditLimitClampsToBounds locks the allocation guard (CWE-770): an unset or
+// negative limit falls back to the default, and an oversized one is clamped so
+// ListAudit can never be driven to pre-allocate an unbounded result slice.
+func TestAuditLimitClampsToBounds(t *testing.T) {
+	for _, c := range []struct {
+		in, want int
+	}{
+		{0, defaultAuditLimit},
+		{-5, defaultAuditLimit},
+		{50, 50},
+		{maxAuditLimit, maxAuditLimit},
+		{maxAuditLimit + 1, maxAuditLimit},
+		{1 << 30, maxAuditLimit},
+	} {
+		if got := auditLimit(c.in); got != c.want {
+			t.Errorf("auditLimit(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
