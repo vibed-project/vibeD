@@ -12,10 +12,11 @@ import (
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
-// claimUIDLabel is the label agent-sandbox stamps on a bound Sandbox pod (its
-// SandboxClaim's UID). Only bound pods carry it, so selecting on its presence
-// narrows the pod list to live app pods.
-const claimUIDLabel = "agents.x-k8s.io/claim-uid"
+// sandboxPodLabel is the label agent-sandbox stamps on every Sandbox pod (an
+// FNV hash of the Sandbox name; v0.5+ replaced the older per-claim label).
+// Selecting on its presence narrows the pod list to sandbox pods; the specific
+// bound pod is then matched by IP.
+const sandboxPodLabel = "agents.x-k8s.io/sandbox-name-hash"
 
 // ErrNoPod means the app exists but has no running pod yet (still claiming, or
 // suspended), so there's nothing to stream.
@@ -60,12 +61,12 @@ func (s *Service) StreamLogs(ctx context.Context, owner, id string, follow bool,
 }
 
 // boundPodName resolves the app's currently bound Sandbox pod by matching its
-// status.podIP against the claim-labeled pods in the namespace.
+// status.podIP against the sandbox-labeled pods in the namespace.
 func (s *Service) boundPodName(ctx context.Context, app *vibedv1.VibedApp) (string, error) {
 	if app.Status.PodIP == "" {
 		return "", ErrNoPod
 	}
-	pods, err := s.Clientset.CoreV1().Pods(app.Namespace).List(ctx, metav1.ListOptions{LabelSelector: claimUIDLabel})
+	pods, err := s.Clientset.CoreV1().Pods(app.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sandboxPodLabel})
 	if err != nil {
 		return "", fmt.Errorf("list bound pods: %w", err)
 	}
