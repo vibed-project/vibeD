@@ -18,9 +18,37 @@ import (
 
 const maxRateLimitClients = 50000
 
+// rateLimitEvictSample bounds the work of a single eviction: we look at this
+// many entries and drop the least-recently-seen among them. Redis uses a
+// similar sampled-LRU with a sample of ~5-10; 16 tightens the approximation
+// while keeping eviction O(1) with respect to map size.
+const rateLimitEvictSample = 16
+
 type client struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
+}
+
+// evictOldestSampled deletes the least-recently-seen of up to
+// rateLimitEvictSample entries (all of them when the map is smaller than the
+// sample). Cost is bounded by the sample size, not len(cmap). Caller holds the
+// write lock. A no-op on an empty map.
+func evictOldestSampled(cmap map[string]*client) {
+	var oldestKey string
+	var oldestTime time.Time
+	seen := 0
+	for k, c := range cmap {
+		if oldestKey == "" || c.lastSeen.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = c.lastSeen
+		}
+		if seen++; seen >= rateLimitEvictSample {
+			break
+		}
+	}
+	if oldestKey != "" {
+		delete(cmap, oldestKey)
+	}
 }
 
 // RateLimiter returns HTTP middleware that rate-limits requests per client.
@@ -99,17 +127,14 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 			return c.limiter
 		}
 
-		// Evict oldest entry if at capacity
+		// Evict one entry if at capacity. We sample a bounded number of entries
+		// and drop the oldest of the sample (approximate LRU) rather than scanning
+		// the whole map: a full O(n) scan under the write lock let an attacker
+		// rotating keys thrash eviction and degrade throughput for every client
+		// (issue #62). Go randomizes map iteration, so a small sample is a
+		// good-enough oldest-estimate for a cache this size.
 		if len(cmap) >= maxRateLimitClients {
-			var oldestKey string
-			var oldestTime time.Time
-			for k, c := range cmap {
-				if oldestKey == "" || c.lastSeen.Before(oldestTime) {
-					oldestKey = k
-					oldestTime = c.lastSeen
-				}
-			}
-			delete(cmap, oldestKey)
+			evictOldestSampled(cmap)
 		}
 
 		limiter := rate.NewLimiter(r, b)
