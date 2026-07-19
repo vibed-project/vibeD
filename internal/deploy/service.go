@@ -23,6 +23,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vibed-project/vibeD/internal/audit"
+	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/authz"
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/meter"
 	"github.com/vibed-project/vibeD/internal/metrics"
@@ -72,6 +74,10 @@ type Service struct {
 	// Policy, when set, evaluates each deploy after classification and may deny
 	// it. nil = no policy (deploys are unrestricted).
 	Policy policy.Gate
+	// Authz, when set, authorizes each per-action access (get/deploy/delete/
+	// suspend) and replaces the built-in owner check. nil = built-in behavior
+	// (owner-or-admin, shared read).
+	Authz authz.Authorizer
 	// Meter, when set, records a usage event on each deploy/delete. nil disables
 	// metering.
 	Meter meter.Sink
@@ -232,6 +238,22 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		}); perr != nil {
 			_ = s.record(ctx, "deploy", req.Name, "denied", perr.Error())
 			return nil, perr
+		}
+	}
+
+	// Authorization: may this caller deploy into the target namespace/team?
+	// Consulted on new deploys and redeploys alike.
+	if s.Authz != nil {
+		if aerr := s.Authz.Authorize(ctx, authz.Request{
+			Subject: req.Owner,
+			Role:    vibedauth.RoleFromContext(ctx),
+			Action:  authz.ActionAppDeploy,
+			Resource: authz.Resource{
+				Kind: "app", ID: req.Name, Owner: req.Owner, Namespace: t.Namespace,
+			},
+		}); aerr != nil {
+			_ = s.record(ctx, "deploy", req.Name, "denied", aerr.Error())
+			return nil, aerr
 		}
 	}
 
