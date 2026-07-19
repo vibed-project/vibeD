@@ -465,17 +465,19 @@ func TestMeterRecordsDeployAndDelete(t *testing.T) {
 }
 
 type fakeQuota struct {
-	dept    string
-	deny    bool
-	lastNew bool
+	dept     string
+	deny     bool
+	lastNew  bool
+	released int // times the returned release func was invoked
 }
 
-func (q *fakeQuota) Authorize(_ context.Context, _ tenant.Tenant, _ string, isNew bool) (string, error) {
+func (q *fakeQuota) Authorize(_ context.Context, _ tenant.Tenant, _ string, isNew bool) (string, func(), error) {
 	q.lastNew = isNew
+	release := func() { q.released++ }
 	if q.deny {
-		return q.dept, &fakeQuotaErr{}
+		return q.dept, release, &fakeQuotaErr{}
 	}
-	return q.dept, nil
+	return q.dept, release, nil
 }
 
 type fakeQuotaErr struct{}

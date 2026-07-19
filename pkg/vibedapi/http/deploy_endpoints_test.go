@@ -355,8 +355,8 @@ func TestStreamLogsSSE(t *testing.T) {
 // pulling the internal package in.
 type quotaDenied struct{}
 
-func (quotaDenied) Authorize(context.Context, tenant.Tenant, string, bool) (string, error) {
-	return "", quotaErr{}
+func (quotaDenied) Authorize(context.Context, tenant.Tenant, string, bool) (string, func(), error) {
+	return "", func() {}, quotaErr{}
 }
 
 type quotaErr struct{}

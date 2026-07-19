@@ -87,9 +87,12 @@ type Service struct {
 }
 
 // Quota gates new deploys within a tenant and resolves the owner's department
-// (for labeling).
+// (for labeling). Authorize returns a non-nil release the caller must invoke
+// once the new app is durably created (List-visible) or the deploy has failed;
+// it drops the reservation Authorize took against the ceiling, which is what
+// keeps concurrent deploys from overshooting it.
 type Quota interface {
-	Authorize(ctx context.Context, t tenant.Tenant, owner string, isNew bool) (department string, err error)
+	Authorize(ctx context.Context, t tenant.Tenant, owner string, isNew bool) (department string, release func(), err error)
 }
 
 // Auditor records a mutating action; implementations read the actor from ctx.
@@ -241,14 +244,21 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	// Quota gates new deploys (within the tenant) and tells us the owner's
-	// department for labeling.
+	// department for labeling. The reservation Authorize takes must be released
+	// once the new app is durably created (List-visible via the direct client)
+	// or the deploy fails — releaseQuota, called both after the CR write and via
+	// defer, does that; it's idempotent, so the defer is a safety net for the
+	// error paths in between.
 	var department string
+	releaseQuota := func() {}
+	defer func() { releaseQuota() }()
 	if s.Quota != nil {
-		dept, qerr := s.Quota.Authorize(ctx, t, req.Owner, isNew)
+		dept, release, qerr := s.Quota.Authorize(ctx, t, req.Owner, isNew)
 		if qerr != nil {
 			_ = s.record(ctx, "deploy", req.Name, "denied", qerr.Error())
 			return nil, qerr
 		}
+		releaseQuota = release
 		department = dept
 	}
 
@@ -335,6 +345,12 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 			return nil, fmt.Errorf("update VibedApp: %w", uerr)
 		}
 	}
+
+	// The CR is durably written and now List-visible via the direct client, so
+	// the quota reservation is redundant with the live count — drop it promptly
+	// (rather than only on the deferred path after waitReady) so it isn't
+	// double-counted against a concurrent deploy at the exact ceiling boundary.
+	releaseQuota()
 
 	// Prune source tarballs for versions that aged out of the retained history.
 	for _, k := range evicted {
