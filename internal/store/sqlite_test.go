@@ -223,6 +223,61 @@ func TestSQLiteStore_SharedWith(t *testing.T) {
 	got, err := s.Get(ctx, "a1")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"bob", "charlie"}, got.SharedWith)
+
+	// Update that revokes charlie's access re-syncs the join table: charlie can
+	// no longer see it, bob still can.
+	a.SharedWith = []string{"bob"}
+	require.NoError(t, s.Update(ctx, a))
+	charlieList, err := s.List(ctx, ListOptions{OwnerID: "charlie"})
+	require.NoError(t, err)
+	assert.Empty(t, charlieList.Artifacts, "revoked share must drop from the index")
+	bobList, err = s.List(ctx, ListOptions{OwnerID: "bob"})
+	require.NoError(t, err)
+	assert.Len(t, bobList.Artifacts, 1)
+
+	// The shared-list filter must use the join-table index, not a scan.
+	var plan string
+	rows, err := s.db.Query(`EXPLAIN QUERY PLAN SELECT id FROM artifacts WHERE (owner_id = ? OR id IN (SELECT artifact_id FROM artifact_shares WHERE owner = ?))`, "x", "x")
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		require.NoError(t, rows.Scan(&id, &parent, &notused, &detail))
+		plan += detail + "\n"
+	}
+	assert.Contains(t, plan, "idx_artifact_shares_owner", "shared-list subquery should use the owner index; plan:\n"+plan)
+}
+
+// TestSQLiteStore_SharesBackfillOnOpen locks in the #80 migration: an upgraded
+// DB that has shared_with JSON but an empty artifact_shares index gets the index
+// backfilled on open, so the shared-list filter keeps working.
+func TestSQLiteStore_SharesBackfillOnOpen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "backfill.db")
+	ctx := context.Background()
+
+	s1, err := NewSQLiteStore(dbPath)
+	require.NoError(t, err)
+	a := testArtifact("a1", "shared-app")
+	a.OwnerID = "alice"
+	a.SharedWith = []string{"bob"}
+	require.NoError(t, s1.Create(ctx, a))
+
+	// Simulate a pre-migration DB: the JSON share exists but the index doesn't.
+	_, err = s1.db.Exec(`DELETE FROM artifact_shares`)
+	require.NoError(t, err)
+	gone, err := s1.List(ctx, ListOptions{OwnerID: "bob"})
+	require.NoError(t, err)
+	require.Empty(t, gone.Artifacts, "with the index cleared, bob shouldn't resolve the share")
+	require.NoError(t, s1.Close())
+
+	// Reopen: the backfill repopulates artifact_shares from shared_with JSON.
+	s2, err := NewSQLiteStore(dbPath)
+	require.NoError(t, err)
+	defer s2.Close()
+	back, err := s2.List(ctx, ListOptions{OwnerID: "bob"})
+	require.NoError(t, err)
+	assert.Len(t, back.Artifacts, 1, "backfill should restore bob's shared view")
 }
 
 func TestSQLiteStore_Versions(t *testing.T) {
