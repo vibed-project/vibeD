@@ -63,13 +63,17 @@ func (f *oidcFakeStore) GetUserByName(context.Context, string) (*api.User, error
 func (f *oidcFakeStore) GetUserByAPIKeyHash(context.Context, string) (*api.User, error) {
 	return nil, fmt.Errorf("n/a")
 }
-func (f *oidcFakeStore) ListUsers(context.Context, string) ([]api.User, error) { return nil, nil }
+func (f *oidcFakeStore) ListUsers(context.Context, string, int, int) ([]api.User, error) {
+	return nil, nil
+}
 func (f *oidcFakeStore) GetDepartment(context.Context, string) (*api.Department, error) {
 	return nil, fmt.Errorf("n/a")
 }
-func (f *oidcFakeStore) ListDepartments(context.Context) ([]api.Department, error) { return nil, nil }
-func (f *oidcFakeStore) UpdateDepartment(context.Context, *api.Department) error   { return nil }
-func (f *oidcFakeStore) DeleteDepartment(context.Context, string) error            { return nil }
+func (f *oidcFakeStore) ListDepartments(context.Context, int, int) ([]api.Department, error) {
+	return nil, nil
+}
+func (f *oidcFakeStore) UpdateDepartment(context.Context, *api.Department) error { return nil }
+func (f *oidcFakeStore) DeleteDepartment(context.Context, string) error          { return nil }
 
 func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
