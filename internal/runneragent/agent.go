@@ -100,6 +100,11 @@ type Agent struct {
 	command  []string
 	appPort  int
 	lastErr  string
+	// stages holds the base names of in-flight staging dirs living inside the
+	// workdir. resetWorkdirLocked must not clear them (that would delete a
+	// pending inject's fetched source); anything stage-shaped NOT in this set
+	// is stale residue from a crashed agent and is removed like any entry.
+	stages map[string]struct{}
 
 	infoOnce sync.Once    // the runtime probe runs at most once
 	infoResp InfoResponse // cached /info result
@@ -112,6 +117,7 @@ func New(cfg Config) *Agent {
 		cfg:     cfg,
 		logs:    newRingBuffer(cfg.LogLines),
 		state:   StateIdle,
+		stages:  map[string]struct{}{},
 		Fetcher: NewSourceFetcher(),
 	}
 }
@@ -272,13 +278,19 @@ func (a *Agent) handleStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.status())
 }
 
+// stagePattern is the os.MkdirTemp pattern for in-workdir staging dirs. The
+// dot prefix keeps a briefly-visible staging dir out of the user process's
+// way; the random suffix makes concurrent stages collision-free.
+const stagePattern = ".vibed-stage-*"
+
 // inject writes the source (inline files or tarball pulled from SourceURL)
 // and (re)starts the user process. Any process from a previous inject is
 // stopped first.
 //
 // We don't hold a.mu across the tarball fetch — that's a network round-trip
 // and would block /status and /healthz for the duration. Source is staged
-// into a temp directory first, then swapped into the workdir under the lock.
+// into a hidden temp directory inside the workdir first, then swapped into
+// place under the lock.
 func (a *Agent) inject(ctx context.Context, req InjectRequest) (StatusResponse, error) {
 	// Resolve the run command. When SourceURL is used we don't know the file
 	// list at this point, so for the autodetect path the caller must pass
@@ -298,15 +310,35 @@ func (a *Agent) inject(ctx context.Context, req InjectRequest) (StatusResponse, 
 		appPort = a.cfg.AppPort
 	}
 
-	// Tarball pull happens outside the lock. The data lands in a fresh temp
-	// dir so a partial fetch never corrupts the workdir.
+	// Tarball pull happens outside the lock. The data lands in a fresh staging
+	// dir INSIDE the workdir — same filesystem as the final destination — so
+	// the swap below is an O(1) rename instead of a full re-copy (/tmp and the
+	// workspace are usually separate mounts in a sandbox pod, which would force
+	// moveDirContents onto its EXDEV copy path for the whole tree). A partial
+	// fetch still never corrupts the workdir: the staged tree is only adopted
+	// after a successful fetch and is removed on every other path.
 	var stagedDir string
 	if req.SourceURL != "" {
-		dir, err := os.MkdirTemp("", "vibed-inject-*")
+		if err := os.MkdirAll(a.cfg.Workdir, 0o755); err != nil {
+			return StatusResponse{}, fmt.Errorf("staging dir: %w", err)
+		}
+		dir, err := os.MkdirTemp(a.cfg.Workdir, stagePattern)
 		if err != nil {
 			return StatusResponse{}, fmt.Errorf("staging dir: %w", err)
 		}
-		defer os.RemoveAll(dir)
+		// Register the staging dir so resetWorkdirLocked — ours below, or a
+		// concurrent inject's — doesn't clear it out from under the fetch.
+		// Unregister and remove it on the way out, success or failure.
+		name := filepath.Base(dir)
+		a.mu.Lock()
+		a.stages[name] = struct{}{}
+		a.mu.Unlock()
+		defer func() {
+			a.mu.Lock()
+			delete(a.stages, name)
+			a.mu.Unlock()
+			_ = os.RemoveAll(dir)
+		}()
 		fetcher := a.Fetcher
 		if fetcher == nil {
 			fetcher = NewSourceFetcher()
@@ -344,12 +376,13 @@ func (a *Agent) inject(ctx context.Context, req InjectRequest) (StatusResponse, 
 }
 
 // moveDirContents moves every entry under src into dst. dst is expected to
-// be empty (resetWorkdirLocked guarantees this for the inject path).
-//
-// The staging dir (/tmp) and the workdir (/workspace) are usually separate
-// mounts in a sandbox pod, so a plain os.Rename fails with EXDEV
-// ("invalid cross-device link"). We try rename first (fast, same-device
-// path) and fall back to a recursive copy when it doesn't.
+// hold nothing but in-flight staging dirs (resetWorkdirLocked guarantees this
+// for the inject path). src itself sits inside dst, so its entries land on
+// the same filesystem and os.Rename is the common, O(1) path; src's own
+// entries are moved, never src itself, so the staging dir is not moved into
+// itself. The recursive-copy fallback stays as defense for exotic setups
+// where an entry still crosses a mount and rename fails with EXDEV
+// ("invalid cross-device link").
 func moveDirContents(src, dst string) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
@@ -516,13 +549,19 @@ func (a *Agent) stopProcessLocked() {
 }
 
 // resetWorkdirLocked empties the workdir without removing the directory itself
-// (it may be a mounted volume). Caller holds a.mu.
+// (it may be a mounted volume). In-flight staging dirs (a.stages) are kept:
+// clearing one would delete a pending inject's fetched source. Stage-shaped
+// dirs NOT in the set are crash leftovers and are removed like any entry.
+// Caller holds a.mu.
 func (a *Agent) resetWorkdirLocked() error {
 	entries, err := os.ReadDir(a.cfg.Workdir)
 	if err != nil {
 		return fmt.Errorf("reading workdir: %w", err)
 	}
 	for _, e := range entries {
+		if _, inFlight := a.stages[e.Name()]; inFlight {
+			continue
+		}
 		if err := os.RemoveAll(filepath.Join(a.cfg.Workdir, e.Name())); err != nil {
 			return fmt.Errorf("clearing workdir entry %s: %w", e.Name(), err)
 		}
