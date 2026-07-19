@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -26,11 +27,32 @@ type Client struct {
 // "http://vibed-runner-python-ab12.vibed-runners.svc.cluster.local:9000").
 // token must match the agent's VIBED_AGENT_TOKEN; pass "" if the agent runs
 // without auth.
+//
+// Total request duration is governed by the caller's context deadline — every
+// production call site passes one. The client deliberately sets no
+// whole-request Timeout: it would silently truncate any caller deadline above
+// it (e.g. the injector's 60s cold-start budget). The transport only bounds
+// the individual phases of a hung connection.
 func NewClient(controlURL, token string) *Client {
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
 	return &Client{
 		baseURL: strings.TrimRight(controlURL, "/"),
 		token:   token,
-		hc:      &http.Client{Timeout: 30 * time.Second},
+		hc: &http.Client{
+			Transport: &http.Transport{
+				Proxy:               http.ProxyFromEnvironment,
+				DialContext:         dialer.DialContext,
+				TLSHandshakeTimeout: 10 * time.Second,
+				// /inject answers only after a synchronous tarball download +
+				// process start, which can legitimately approach the injector's
+				// 60s budget. Keep this comfortably above it so it trips only
+				// on a truly wedged agent, never on a slow cold start.
+				ResponseHeaderTimeout: 2 * time.Minute,
+			},
+		},
 	}
 }
 
