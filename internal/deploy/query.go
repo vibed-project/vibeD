@@ -81,16 +81,18 @@ func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve tenant: %w", err)
 	}
-	// Pre-filter server-side by the owner label so the API server returns only
-	// this owner's apps instead of every app in the namespace. The label is a
-	// sanitized, lossy mirror of spec.owner (distinct owners can collide onto one
-	// label value — see #66), so it can only over-return, never drop a match; the
-	// exact spec.owner check below is still authoritative.
+	listOpts := []client.ListOption{client.InNamespace(t.Namespace)}
+	// Without an Authorizer, List is owner-only, so pre-filter server-side by the
+	// owner label (#74) instead of fetching the whole namespace. The label is a
+	// lossy mirror of spec.owner (collisions possible — #66), so it can only
+	// over-return; the exact spec.owner check below stays authoritative. With an
+	// Authorizer we must fetch every app in the namespace so it can grant
+	// team-scoped visibility (apps the caller doesn't own), so skip the pre-filter.
+	if s.Authz == nil {
+		listOpts = append(listOpts, client.MatchingLabels{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)})
+	}
 	var list vibedv1.VibedAppList
-	if err := s.Client.List(ctx, &list,
-		client.InNamespace(t.Namespace),
-		client.MatchingLabels{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)},
-	); err != nil {
+	if err := s.Client.List(ctx, &list, listOpts...); err != nil {
 		return nil, fmt.Errorf("list VibedApps: %w", err)
 	}
 	out := make([]vibedv1.VibedApp, 0, len(list.Items))
