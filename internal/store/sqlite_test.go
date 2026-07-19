@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -430,4 +431,56 @@ func TestSQLiteStore_Persistence(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "persist-app", got.Name)
 	assert.Equal(t, api.StatusRunning, got.Status)
+}
+
+// TestSQLiteStore_PoolPragmas guards against a regression where the
+// per-connection pragmas were applied with a plain Exec: only whichever
+// connection the pool handed out got busy_timeout/foreign_keys, and every
+// other pooled connection ran without them. The pragmas now live in the DSN,
+// so every connection must report them — verify by holding the pool's full
+// complement of connections open at once and checking each one.
+func TestSQLiteStore_PoolPragmas(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	// The pool bound must have taken effect.
+	require.Equal(t, sqlitePoolSize, s.db.Stats().MaxOpenConnections)
+
+	// Holding sqlitePoolSize conns simultaneously forces the pool to open
+	// that many distinct connections.
+	conns := make([]*sql.Conn, sqlitePoolSize)
+	for i := range conns {
+		c, err := s.db.Conn(ctx)
+		require.NoError(t, err)
+		defer c.Close()
+		conns[i] = c
+	}
+	require.Equal(t, sqlitePoolSize, s.db.Stats().OpenConnections)
+
+	for i, c := range conns {
+		var (
+			journalMode string
+			synchronous int
+			busyTimeout int
+			foreignKeys int
+			cacheSize   int
+			tempStore   int
+			mmapSize    int64
+		)
+		require.NoError(t, c.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode))
+		require.NoError(t, c.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&synchronous))
+		require.NoError(t, c.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout))
+		require.NoError(t, c.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys))
+		require.NoError(t, c.QueryRowContext(ctx, `PRAGMA cache_size`).Scan(&cacheSize))
+		require.NoError(t, c.QueryRowContext(ctx, `PRAGMA temp_store`).Scan(&tempStore))
+		require.NoError(t, c.QueryRowContext(ctx, `PRAGMA mmap_size`).Scan(&mmapSize))
+
+		assert.Equalf(t, "wal", journalMode, "conn %d journal_mode", i)
+		assert.Equalf(t, 1, synchronous, "conn %d synchronous (1 = NORMAL)", i)
+		assert.Equalf(t, 5000, busyTimeout, "conn %d busy_timeout", i)
+		assert.Equalf(t, 1, foreignKeys, "conn %d foreign_keys", i)
+		assert.Equalf(t, -64000, cacheSize, "conn %d cache_size", i)
+		assert.Equalf(t, 2, tempStore, "conn %d temp_store (2 = MEMORY)", i)
+		assert.Equalf(t, int64(268435456), mmapSize, "conn %d mmap_size", i)
+	}
 }
