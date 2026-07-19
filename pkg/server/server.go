@@ -35,6 +35,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/frontend"
 	"github.com/vibed-project/vibeD/internal/gc"
 	"github.com/vibed-project/vibeD/internal/health"
+	"github.com/vibed-project/vibeD/internal/httproutes"
 	"github.com/vibed-project/vibeD/internal/k8s"
 	mcppkg "github.com/vibed-project/vibeD/internal/mcp"
 	"github.com/vibed-project/vibeD/internal/meter"
@@ -454,6 +455,19 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	// surface, so it's mounted directly; SkipAuthPaths still authenticates
 	// /v1/* and the handler enforces the admin role.
 	mux.HandleFunc("GET /v1/audit", auditHandler(auditRec, logger))
+
+	// Additional routes contributed by out-of-tree modules (e.g. an enterprise
+	// role-management API). Mounted on the mux, so they run behind the auth+role
+	// middleware; each handler enforces its own RBAC. The core registers none.
+	if extraRoutes, rerr := httproutes.Build(httproutes.Deps{}); rerr != nil {
+		logger.Error("failed to build module HTTP routes", "error", rerr)
+		os.Exit(1)
+	} else {
+		for _, rt := range extraRoutes {
+			mux.Handle(rt.Pattern, rt.Handler)
+			logger.Info("mounted module route", "pattern", rt.Pattern)
+		}
+	}
 
 	// MCP HTTP endpoint
 	mcpHandler := mcp.NewStreamableHTTPHandler(

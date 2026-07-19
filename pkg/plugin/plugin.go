@@ -26,12 +26,15 @@
 package plugin
 
 import (
+	"context"
+
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 
 	"github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/authz"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/entitlements"
+	"github.com/vibed-project/vibeD/internal/httproutes"
 	"github.com/vibed-project/vibeD/internal/meter"
 	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/store"
@@ -194,6 +197,35 @@ const (
 // core installs none, so the built-in owner/admin checks stay in effect until
 // one is registered.
 func RegisterAuthorizer(f func(AuthzDeps) (Authorizer, error)) { authz.Register(f) }
+
+// --- Additional HTTP routes ------------------------------------------------
+
+// HTTPRoute is an authenticated route a module contributes to the control-plane
+// mux (behind the auth+role middleware, so the caller identity/role is in the
+// request context). HTTPRouteDeps is what a route factory receives.
+type (
+	HTTPRoute     = httproutes.Route
+	HTTPRouteDeps = httproutes.Deps
+)
+
+// RegisterHTTPRoutes adds a factory contributing authenticated HTTP routes
+// (e.g. an enterprise role-management API). Multiple modules may register; the
+// core registers none.
+func RegisterHTTPRoutes(f func(HTTPRouteDeps) ([]HTTPRoute, error)) { httproutes.Register(f) }
+
+// Request-identity readers for module HTTP handlers mounted via
+// RegisterHTTPRoutes (which run behind the auth+role middleware). UserIDFrom
+// Context returns the caller's user id ("" if unauthenticated); RoleFromContext
+// returns the caller's core role (defaults to "user").
+func UserIDFromContext(ctx context.Context) string { return auth.UserIDFromContext(ctx) }
+func RoleFromContext(ctx context.Context) string   { return auth.RoleFromContext(ctx) }
+
+// ContextWithIdentity returns ctx carrying the given user id and role. The
+// server's middleware sets these on live requests; a module uses this in its own
+// middleware or tests to construct an authenticated context.
+func ContextWithIdentity(ctx context.Context, userID, role string) context.Context {
+	return auth.WithRole(auth.WithUserID(ctx, userID), role)
+}
 
 // --- Metering (usage) ------------------------------------------------------
 
