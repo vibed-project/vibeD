@@ -229,6 +229,53 @@ func (r *Reconciler) applyDefaults() {
 	}
 }
 
+// maxRequeueDelay caps the exponential backoff for transitional-phase requeues.
+const maxRequeueDelay = 60 * time.Second
+
+// transitionalRequeueAfter returns a capped exponential backoff for re-checking
+// an app that's still working toward Ready. It starts at RequeueDelay and
+// doubles for every RequeueDelay of elapsed not-Ready time, so a brief
+// transition re-checks promptly while an app wedged in Claiming (warm pool
+// exhausted) or Starting (slow agent) backs off toward maxRequeueDelay instead
+// of hot-polling every RequeueDelay forever (#70). The SandboxClaim watch still
+// delivers the real Claiming->Ready wakeup, so a longer safety-net requeue does
+// not slow genuine progress.
+func (r *Reconciler) transitionalRequeueAfter(app *vibedv1.VibedApp) time.Duration {
+	base := r.RequeueDelay
+	if base <= 0 {
+		base = 2 * time.Second
+	}
+	d := base
+	for periods := int(notReadyFor(app, time.Now()) / base); periods > 0 && d < maxRequeueDelay; periods-- {
+		d *= 2
+	}
+	if d > maxRequeueDelay {
+		d = maxRequeueDelay
+	}
+	return d
+}
+
+// notReadyFor reports how long app's Ready condition has been non-True (0 when
+// it has no Ready condition yet or is currently Ready). setCondition only bumps
+// LastTransitionTime when the status flips, so this measures continuous
+// not-Ready time across the transitional phases, which is the right "how long
+// stuck" signal for backoff.
+func notReadyFor(app *vibedv1.VibedApp, now time.Time) time.Duration {
+	for _, c := range app.Status.Conditions {
+		if c.Type != ConditionReady {
+			continue
+		}
+		if c.Status == metav1.ConditionTrue || c.LastTransitionTime.IsZero() {
+			return 0
+		}
+		if d := now.Sub(c.LastTransitionTime.Time); d > 0 {
+			return d
+		}
+		return 0
+	}
+	return 0
+}
+
 // Reconcile drives the state machine forward by one step.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	r.applyDefaults()
@@ -251,6 +298,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// Snapshot status so we only patch if something changed.
 	before := app.Status.DeepCopy()
+
+	// Backoff for any transitional-phase requeue below, derived from how long
+	// the app has already been non-Ready (see transitionalRequeueAfter).
+	requeueAfter := r.transitionalRequeueAfter(&app)
 
 	// Validation gate. Failure here is terminal until the user updates spec.
 	if err := validateSpec(&app.Spec); err != nil {
@@ -314,7 +365,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		if !bound {
 			// SandboxClaim exists but agent-sandbox hasn't bound a pod yet.
@@ -324,7 +375,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		app.Status.SandboxRef = sandboxRef
 		app.Status.PodIP = podIP
@@ -349,12 +400,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		if !ready {
 			// Agent reachable but user process not yet listening — requeue
 			// without rewriting status (nothing changed).
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		// Agent is up — inject the user's source (refactor.md §5.3 step 2).
 		// The agent pulls the tarball from spec.source.tarballRef and starts
@@ -366,14 +417,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		if !running {
 			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonStarting, "user process starting")
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		// Publish a stable upstream for the router: a per-app Service that
 		// re-selects the bound pod across restarts, so the route doesn't go
@@ -384,7 +435,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		app.Status.RouteTarget = routeTarget
 		url, err := r.Router.Publish(ctx, &app, app.Status.SandboxRef)
@@ -393,7 +444,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
-			return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		app.Status.URL = url
 		app.Status.Phase = vibedv1.PhaseReady
@@ -444,6 +495,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 // handled=false and the caller continues normal reconciliation.
 func (r *Reconciler) reconcileSuspension(ctx context.Context, app *vibedv1.VibedApp, before *vibedv1.VibedAppStatus) (bool, reconcile.Result, error) {
 	logger := log.FromContext(ctx)
+	requeueAfter := r.transitionalRequeueAfter(app)
 
 	if app.Spec.Suspended {
 		if app.Status.Phase == vibedv1.PhaseSuspended {
@@ -462,7 +514,7 @@ func (r *Reconciler) reconcileSuspension(ctx context.Context, app *vibedv1.Vibed
 			if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
 				return true, reconcile.Result{}, perr
 			}
-			return true, reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+			return true, reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
 		app.Status.PodIP = ""
 		app.Status.SandboxRef = ""
@@ -503,6 +555,7 @@ func isWorkerdFastLane(app *vibedv1.VibedApp) bool {
 // no Claiming/Starting — workerd is always running, so a successful deploy is
 // immediately Ready.
 func (r *Reconciler) reconcileFastLane(ctx context.Context, app *vibedv1.VibedApp, before *vibedv1.VibedAppStatus) (reconcile.Result, error) {
+	requeueAfter := r.transitionalRequeueAfter(app)
 	// Steady state: nothing to do once Ready (a spec change bumps generation
 	// and the loader Deploy below is idempotent, so re-running is harmless,
 	// but we avoid the work when already serving).
@@ -517,7 +570,7 @@ func (r *Reconciler) reconcileFastLane(ctx context.Context, app *vibedv1.VibedAp
 		if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
 			return reconcile.Result{}, perr
 		}
-		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		return reconcile.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	url, err := r.Router.Publish(ctx, app, target)
@@ -526,7 +579,7 @@ func (r *Reconciler) reconcileFastLane(ctx context.Context, app *vibedv1.VibedAp
 		if perr := r.patchStatusIfChanged(ctx, app, before); perr != nil {
 			return reconcile.Result{}, perr
 		}
-		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		return reconcile.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	// RouteTarget carries the routable upstream. For the fast lane it's the
@@ -545,11 +598,12 @@ func (r *Reconciler) reconcileFastLane(ctx context.Context, app *vibedv1.VibedAp
 // requeue. requeue=true means we're mid-state-machine and a follow-up
 // reconcile is needed even if nothing external pings us.
 func (r *Reconciler) finish(ctx context.Context, app *vibedv1.VibedApp, before *vibedv1.VibedAppStatus, requeue bool) (reconcile.Result, error) {
+	requeueAfter := r.transitionalRequeueAfter(app)
 	if err := r.patchStatusIfChanged(ctx, app, before); err != nil {
 		return reconcile.Result{}, err
 	}
 	if requeue {
-		return reconcile.Result{RequeueAfter: r.RequeueDelay}, nil
+		return reconcile.Result{RequeueAfter: requeueAfter}, nil
 	}
 	return reconcile.Result{}, nil
 }
