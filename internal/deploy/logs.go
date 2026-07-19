@@ -66,7 +66,16 @@ func (s *Service) boundPodName(ctx context.Context, app *vibedv1.VibedApp) (stri
 	if app.Status.PodIP == "" {
 		return "", ErrNoPod
 	}
-	pods, err := s.Clientset.CoreV1().Pods(app.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sandboxPodLabel})
+	// Narrow to the one bound pod server-side via a field selector on status.podIP
+	// instead of listing every sandbox pod in the namespace and scanning by IP on
+	// each log-stream open (#77). The exact-IP check below stays as a backstop:
+	// clients that don't honor the field selector (e.g. the fake used in tests)
+	// just return the wider set and we match in Go, so correctness never depends
+	// on server-side field filtering.
+	pods, err := s.Clientset.CoreV1().Pods(app.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: sandboxPodLabel,
+		FieldSelector: "status.podIP=" + app.Status.PodIP,
+	})
 	if err != nil {
 		return "", fmt.Errorf("list bound pods: %w", err)
 	}
