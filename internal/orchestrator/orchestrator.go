@@ -1399,8 +1399,9 @@ func (o *Orchestrator) CreateShareLink(ctx context.Context, artifactID, password
 	return link, nil
 }
 
-// ListShareLinks returns all share links for an artifact.
-func (o *Orchestrator) ListShareLinks(ctx context.Context, artifactID string) ([]api.ShareLink, error) {
+// ListShareLinks returns an artifact's share links. limit<=0 returns all;
+// limit>0 pages with offset.
+func (o *Orchestrator) ListShareLinks(ctx context.Context, artifactID string, limit, offset int) ([]api.ShareLink, error) {
 	if o.shareLinkStore == nil {
 		return nil, fmt.Errorf("share links require SQLite store backend")
 	}
@@ -1412,7 +1413,7 @@ func (o *Orchestrator) ListShareLinks(ctx context.Context, artifactID string) ([
 	if err := o.checkOwnership(ctx, artifact, authz.ActionAppGet); err != nil {
 		return nil, err
 	}
-	links, err := o.shareLinkStore.ListShareLinks(ctx, artifactID)
+	links, err := o.shareLinkStore.ListShareLinks(ctx, artifactID, limit, offset)
 	if err != nil {
 		return nil, err
 	}

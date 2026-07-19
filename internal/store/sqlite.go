@@ -76,8 +76,25 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_id ON artifacts(owner_id);
+-- The List hot path orders by created_at DESC, often with a status filter.
+-- A plain created_at index serves the unfiltered (admin) listing; the composite
+-- serves "WHERE status = ? ORDER BY created_at DESC" without a filesort.
+CREATE INDEX IF NOT EXISTS idx_artifacts_created_at ON artifacts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_status_created ON artifacts(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact_id ON artifact_versions(artifact_id);
 CREATE INDEX IF NOT EXISTS idx_share_links_artifact_id ON share_links(artifact_id);
+
+-- artifact_shares normalizes artifacts.shared_with (a JSON array) into an
+-- indexed join table so the List "shared with me" filter is an indexed lookup
+-- instead of a "shared_with LIKE '%\"owner\"%'" full-table scan (#80). The JSON
+-- column stays the source of truth for an artifact's SharedWith; this table is a
+-- derived query index kept in sync on every write and backfilled on open.
+CREATE TABLE IF NOT EXISTS artifact_shares (
+        artifact_id TEXT NOT NULL,
+        owner       TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, owner)
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_shares_owner ON artifact_shares(owner);
 
 CREATE TABLE IF NOT EXISTS departments (
         id         TEXT PRIMARY KEY,
@@ -183,6 +200,15 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		}
 	}
 
+	// Index the api_key_hash auth-lookup path (GetUserByAPIKeyHash runs on every
+	// API-key request). Created here rather than in the base schema because the
+	// column is added by the migration above. Partial index: the lookup always
+	// filters api_key_hash != '', and most rows have no key, so this stays small.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_api_key_hash ON users(api_key_hash) WHERE api_key_hash != ''`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("creating api_key_hash index: %w", err)
+	}
+
 	// Migration: add the enriched audit columns if missing (older DBs).
 	for _, col := range []string{"tenant_id", "session_id", "source_hash", "policy_decision", "before_state", "after_state"} {
 		if !columnExists(db, "audit_events", col) {
@@ -190,6 +216,24 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 				db.Close()
 				return nil, fmt.Errorf("migrating audit_events table (%s): %w", col, err)
 			}
+		}
+	}
+
+	// Backfill the artifact_shares index from the existing shared_with JSON on an
+	// upgraded DB. Guarded on an empty table so it runs once; INSERT OR IGNORE +
+	// the composite PK keep it idempotent regardless. json_each expands each
+	// artifact's shared_with array into (artifact_id, owner) rows.
+	var shareRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM artifact_shares`).Scan(&shareRows); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("checking artifact_shares: %w", err)
+	}
+	if shareRows == 0 {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO artifact_shares (artifact_id, owner)
+			SELECT a.id, je.value FROM artifacts a, json_each(a.shared_with) je
+			WHERE a.shared_with != '' AND a.shared_with != '[]'`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("backfilling artifact_shares: %w", err)
 		}
 	}
 
@@ -320,7 +364,13 @@ func (s *SQLiteStore) Create(ctx context.Context, artifact *api.Artifact) error 
 		return fmt.Errorf("marshaling shared_with: %w", err)
 	}
 
-	_, err = s.stmtCreateArtifact.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Stmt(s.stmtCreateArtifact).ExecContext(ctx,
 	        artifact.ID, artifact.Name, artifact.OwnerID, artifact.Namespace, string(artifact.Status),
 	        string(artifact.Target), string(artifact.Mode), artifact.ImageRef, artifact.URL, artifact.Port,
 	        string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
@@ -332,6 +382,29 @@ func (s *SQLiteStore) Create(ctx context.Context, artifact *api.Artifact) error 
 			return &api.ErrAlreadyExists{Name: artifact.Name}
 		}
 		return fmt.Errorf("inserting artifact: %w", err)
+	}
+	if err := syncArtifactShares(ctx, tx, artifact.ID, artifact.SharedWith); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// syncArtifactShares makes the artifact_shares index rows for artifactID exactly
+// match shared (the artifact's SharedWith). Runs inside the artifact's write
+// transaction so the JSON column and its index stay consistent.
+func syncArtifactShares(ctx context.Context, tx *sql.Tx, artifactID string, shared []string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM artifact_shares WHERE artifact_id = ?`, artifactID); err != nil {
+		return fmt.Errorf("clearing artifact shares: %w", err)
+	}
+	for _, owner := range shared {
+		if owner == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO artifact_shares (artifact_id, owner) VALUES (?, ?)`,
+			artifactID, owner); err != nil {
+			return fmt.Errorf("inserting artifact share: %w", err)
+		}
 	}
 	return nil
 }
@@ -372,8 +445,11 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) (*ListResult, 
 	}
 
 	if !opts.AdminView && opts.OwnerID != "" {
-		conditions = append(conditions, "(owner_id = ? OR shared_with LIKE ?)")
-		args = append(args, opts.OwnerID, `%"`+opts.OwnerID+`"%`)
+		// Owned directly, or shared with the caller via the indexed join table.
+		// The IN-subquery hits idx_artifact_shares_owner instead of the old
+		// "shared_with LIKE '%\"owner\"%'" full-table scan (#80).
+		conditions = append(conditions, "(owner_id = ? OR id IN (SELECT artifact_id FROM artifact_shares WHERE owner = ?))")
+		args = append(args, opts.OwnerID, opts.OwnerID)
 	}
 
 	whereClause := ""
@@ -457,7 +533,13 @@ func (s *SQLiteStore) Update(ctx context.Context, artifact *api.Artifact) error 
 		return fmt.Errorf("marshaling shared_with: %w", err)
 	}
 
-	res, err := s.stmtUpdateArtifact.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Stmt(s.stmtUpdateArtifact).ExecContext(ctx,
 	        artifact.Name, artifact.OwnerID, artifact.Namespace, string(artifact.Status),
 	        string(artifact.Target), string(artifact.Mode), artifact.ImageRef, artifact.URL, artifact.Port,
 	        string(envVars), string(secretRefs), artifact.Language, artifact.StaticFiles, artifact.Error,
@@ -472,7 +554,10 @@ func (s *SQLiteStore) Update(ctx context.Context, artifact *api.Artifact) error 
 	if n == 0 {
 		return &api.ErrNotFound{ArtifactID: artifact.ID}
 	}
-	return nil
+	if err := syncArtifactShares(ctx, tx, artifact.ID, artifact.SharedWith); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
@@ -493,6 +578,10 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM artifact_versions WHERE artifact_id = ?", id); err != nil {
 		return fmt.Errorf("deleting versions: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM artifact_shares WHERE artifact_id = ?", id); err != nil {
+		return fmt.Errorf("deleting shares: %w", err)
 	}
 
 	return tx.Commit()
@@ -701,7 +790,19 @@ func (s *SQLiteStore) GetUserByName(ctx context.Context, name string) (*api.User
 	return &u, nil
 }
 
-func (s *SQLiteStore) ListUsers(ctx context.Context, departmentID string) ([]api.User, error) {
+// appendPage adds LIMIT/OFFSET to query when limit > 0 (limit <= 0 means "all",
+// matching artifact ListOptions). A negative offset is clamped to 0.
+func appendPage(query string, args []interface{}, limit, offset int) (string, []interface{}) {
+	if limit <= 0 {
+		return query, args
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return query + " LIMIT ? OFFSET ?", append(args, limit, offset)
+}
+
+func (s *SQLiteStore) ListUsers(ctx context.Context, departmentID string, limit, offset int) ([]api.User, error) {
 	query := `SELECT id, name, email, role, status, provider, department_id, created_at, updated_at FROM users`
 	var args []interface{}
 	if departmentID != "" {
@@ -709,6 +810,7 @@ func (s *SQLiteStore) ListUsers(ctx context.Context, departmentID string) ([]api
 		args = append(args, departmentID)
 	}
 	query += ` ORDER BY name`
+	query, args = appendPage(query, args, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -805,9 +907,11 @@ func (s *SQLiteStore) GetShareLink(ctx context.Context, token string) (*api.Shar
 	return &link, passwordHash, nil
 }
 
-func (s *SQLiteStore) ListShareLinks(ctx context.Context, artifactID string) ([]api.ShareLink, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT token, artifact_id, created_by, password, expires_at, created_at, revoked FROM share_links WHERE artifact_id=? ORDER BY created_at DESC`, artifactID)
+func (s *SQLiteStore) ListShareLinks(ctx context.Context, artifactID string, limit, offset int) ([]api.ShareLink, error) {
+	query, args := appendPage(
+		`SELECT token, artifact_id, created_by, password, expires_at, created_at, revoked FROM share_links WHERE artifact_id=? ORDER BY created_at DESC`,
+		[]interface{}{artifactID}, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing share links: %w", err)
 	}
@@ -896,9 +1000,9 @@ func (s *SQLiteStore) GetDepartmentByName(ctx context.Context, name string) (*ap
 	return &d, nil
 }
 
-func (s *SQLiteStore) ListDepartments(ctx context.Context) ([]api.Department, error) {
-	rows, err := s.db.QueryContext(ctx,
-	        `SELECT id, name, namespace, created_at, updated_at FROM departments ORDER BY name`)
+func (s *SQLiteStore) ListDepartments(ctx context.Context, limit, offset int) ([]api.Department, error) {
+	query, args := appendPage(`SELECT id, name, namespace, created_at, updated_at FROM departments ORDER BY name`, nil, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 	        return nil, fmt.Errorf("listing departments: %w", err)
 	}

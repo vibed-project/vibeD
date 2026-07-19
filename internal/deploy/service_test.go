@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -301,12 +303,27 @@ func TestDeployHonorsOverride(t *testing.T) {
 	}
 }
 
+// ownedApp builds a VibedApp with the vibed.dev/owner label the deploy path
+// stamps, so tests exercising the label-filtered List behave like production.
+func ownedApp(name, namespace, owner string) *vibedv1.VibedApp {
+	return &vibedv1.VibedApp{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)},
+		},
+		Spec: vibedv1.VibedAppSpec{Owner: owner},
+	}
+}
+
 func TestGetListDeleteOwnership(t *testing.T) {
 	s := newScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).
 		WithObjects(
-			&vibedv1.VibedApp{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "vibed-apps"}, Spec: vibedv1.VibedAppSpec{Owner: "alice"}},
-			&vibedv1.VibedApp{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "vibed-apps"}, Spec: vibedv1.VibedAppSpec{Owner: "bob"}},
+			// Apps carry the vibed.dev/owner label the deploy path stamps, so
+			// List's server-side owner pre-filter (#74) selects them.
+			ownedApp("a", "vibed-apps", "alice"),
+			ownedApp("b", "vibed-apps", "bob"),
 		).Build()
 	svc := newService(c, newFakeStore())
 
@@ -448,17 +465,19 @@ func TestMeterRecordsDeployAndDelete(t *testing.T) {
 }
 
 type fakeQuota struct {
-	dept    string
-	deny    bool
-	lastNew bool
+	dept     string
+	deny     bool
+	lastNew  bool
+	released int // times the returned release func was invoked
 }
 
-func (q *fakeQuota) Authorize(_ context.Context, _ tenant.Tenant, _ string, isNew bool) (string, error) {
+func (q *fakeQuota) Authorize(_ context.Context, _ tenant.Tenant, _ string, isNew bool) (string, func(), error) {
 	q.lastNew = isNew
+	release := func() { q.released++ }
 	if q.deny {
-		return q.dept, &fakeQuotaErr{}
+		return q.dept, release, &fakeQuotaErr{}
 	}
-	return q.dept, nil
+	return q.dept, release, nil
 }
 
 type fakeQuotaErr struct{}
@@ -570,10 +589,16 @@ func TestDeployEnrichesAuditWithTenantAndSourceHash(t *testing.T) {
 	svc.Tenants = tenant.Single(tenant.Tenant{ID: "acme", Namespace: "tenant-acme"})
 	markReady(c, "app1", "tenant-acme", 20*time.Millisecond)
 
+	// Capture the exact source bytes so we can assert the deploy path hashes the
+	// whole tarball correctly — the hash is now computed in the read pass via a
+	// TeeReader (#73), so a truncated or double-counted read would show here.
+	tarball := gzTarball(t, map[string]string{"index.html": "x"})
+	wantHash := fmt.Sprintf("%x", sha256.Sum256(tarball))
+
 	if _, err := svc.Deploy(context.Background(), Request{
 		Name:    "app1",
 		Owner:   "alice",
-		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+		Tarball: bytes.NewReader(tarball),
 	}); err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
@@ -596,8 +621,8 @@ func TestDeployEnrichesAuditWithTenantAndSourceHash(t *testing.T) {
 	if dep.Action != "deploy" || dep.TenantID != "acme" {
 		t.Errorf("deploy event = %+v, want tenant acme", dep)
 	}
-	if dep.SourceHash == "" {
-		t.Error("deploy event should carry a non-empty SourceHash")
+	if dep.SourceHash != wantHash {
+		t.Errorf("deploy event SourceHash = %q, want sha256 of the tarball %q", dep.SourceHash, wantHash)
 	}
 	// Delete has no source, so no hash.
 	if del.SourceHash != "" {

@@ -3,6 +3,7 @@ package quota
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -64,13 +65,110 @@ func TestPerOwnerCeiling(t *testing.T) {
 	c := newClient(t, app("a", "alice", ""), app("b", "alice", ""))
 	e := NewEnforcer(c, nil, ns, config.QuotasConfig{Enabled: true, MaxAppsPerOwner: 2})
 
-	_, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "alice", true)
+	_, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "alice", true)
 	var qe *ExceededError
 	if !errors.As(err, &qe) || qe.Scope != "owner" {
 		t.Fatalf("alice at limit: want owner ExceededError, got %v", err)
 	}
-	if _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "bob", true); err != nil {
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "bob", true); err != nil {
 		t.Fatalf("bob (0 apps) should be allowed: %v", err)
+	}
+}
+
+// TestPerOwnerCeilingNoLabelCollision guards issue #66: two owners whose
+// identities sanitize to the SAME vibed.dev/owner label ("alice@corp" and
+// "alice_corp" both -> "alice_corp") must not share a quota bucket. alice@corp
+// is at its limit; alice_corp (0 apps of its own) must still be allowed, and
+// alice@corp must be counted against only its own apps.
+func TestPerOwnerCeilingNoLabelCollision(t *testing.T) {
+	const a, b = "alice@corp", "alice_corp"
+	if vibedv1.SanitizeLabel(a) != vibedv1.SanitizeLabel(b) {
+		t.Fatalf("test premise broken: %q and %q must sanitize to the same label", a, b)
+	}
+	// Two apps owned by alice@corp, zero owned by alice_corp.
+	c := newClient(t, app("x", a, ""), app("y", a, ""))
+	e := NewEnforcer(c, nil, ns, config.QuotasConfig{Enabled: true, MaxAppsPerOwner: 2})
+
+	// alice@corp is at 2/2 -> rejected.
+	_, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, a, true)
+	var qe *ExceededError
+	if !errors.As(err, &qe) || qe.Scope != "owner" || qe.Current != 2 {
+		t.Fatalf("%s at limit: want owner ExceededError current=2, got %v", a, err)
+	}
+
+	// alice_corp owns 0 apps despite the label collision -> must be allowed.
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, b, true); err != nil {
+		t.Fatalf("%s (0 apps, colliding label) should be allowed, got %v", b, err)
+	}
+}
+
+// TestPerOwnerCeilingNoOvershootUnderConcurrency is the #75 regression: many
+// deploys for the same owner authorize concurrently against a fresh (0-app)
+// store, so every call's List returns 0. Without the reservation ledger they
+// would all read "below ceiling" and overshoot; with it, exactly `limit` are
+// authorized because each reservation is visible to the next check.
+func TestPerOwnerCeilingNoOvershootUnderConcurrency(t *testing.T) {
+	const limit = 3
+	const goroutines = 20
+	c := newClient(t) // empty: List always returns 0 during the race
+	e := NewEnforcer(c, nil, ns, config.QuotasConfig{Enabled: true, MaxAppsPerOwner: limit})
+
+	var wg sync.WaitGroup
+	oks := make([]bool, goroutines)
+	releases := make([]func(), goroutines)
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, release, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "alice", true)
+			releases[i] = release
+			oks[i] = err == nil
+		}(i)
+	}
+	wg.Wait()
+
+	authorized := 0
+	for _, ok := range oks {
+		if ok {
+			authorized++
+		}
+	}
+	if authorized != limit {
+		t.Fatalf("concurrent deploys authorized = %d, want exactly %d (reservations must bound it to the ceiling)", authorized, limit)
+	}
+
+	// Releasing every reservation frees the slots again (nothing was created).
+	for _, rel := range releases {
+		if rel != nil {
+			rel()
+		}
+	}
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "alice", true); err != nil {
+		t.Fatalf("after releasing all reservations a new deploy must be allowed, got %v", err)
+	}
+}
+
+// TestReservationReleasedOnRejection makes sure a deploy that clears the owner
+// ceiling but trips a later (department) ceiling doesn't leak the owner-scope
+// reservation it already took.
+func TestReservationReleasedOnRejection(t *testing.T) {
+	users := &fakeUsers{deptOf: map[string]string{"carol": "platform"}}
+	// Owner ceiling 5 (room), department ceiling 1 with one app already present.
+	c := newClient(t, app("existing", "someoneelse", "platform"))
+	e := NewEnforcer(c, users, ns, config.QuotasConfig{
+		Enabled: true, MaxAppsPerOwner: 5,
+		PerDepartment: map[string]int{"platform": 1},
+	})
+
+	// carol trips the department ceiling → rejected, but her owner reservation
+	// must be released. Do it a few times; a leak would accumulate and eventually
+	// (wrongly) trip the owner ceiling of 5.
+	for i := 0; i < 8; i++ {
+		_, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "carol", true)
+		var qe *ExceededError
+		if !errors.As(err, &qe) || qe.Scope != "department" {
+			t.Fatalf("iter %d: want department ExceededError, got %v", i, err)
+		}
 	}
 }
 
@@ -78,7 +176,7 @@ func TestRedeploySkipsCeiling(t *testing.T) {
 	c := newClient(t, app("a", "alice", ""), app("b", "alice", ""))
 	e := NewEnforcer(c, nil, ns, config.QuotasConfig{Enabled: true, MaxAppsPerOwner: 2})
 
-	if _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "alice", false); err != nil {
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "alice", false); err != nil {
 		t.Fatalf("redeploy (isNew=false) must skip the ceiling: %v", err)
 	}
 }
@@ -88,7 +186,7 @@ func TestPerDepartmentCeiling(t *testing.T) {
 	users := &fakeUsers{deptOf: map[string]string{"carol": "platform"}}
 	e := NewEnforcer(c, users, ns, config.QuotasConfig{Enabled: true, MaxAppsPerDepartment: 2})
 
-	dept, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "carol", true)
+	dept, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "carol", true)
 	if dept != "platform" {
 		t.Fatalf("department resolution = %q, want platform", dept)
 	}
@@ -104,7 +202,7 @@ func TestPerDepartmentOverride(t *testing.T) {
 	cfg := config.QuotasConfig{Enabled: true, MaxAppsPerDepartment: 2, PerDepartment: map[string]int{"platform": 5}}
 	e := NewEnforcer(c, users, ns, cfg)
 
-	if _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "carol", true); err != nil {
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "carol", true); err != nil {
 		t.Fatalf("override should raise platform cap to 5: %v", err)
 	}
 }
@@ -122,13 +220,13 @@ func TestTenantCeiling(t *testing.T) {
 	e := NewEnforcer(c, nil, ns, config.QuotasConfig{Enabled: true})
 
 	// A tenant total cap of 2 with 2 apps already in the namespace -> rejected.
-	_, err := e.Authorize(context.Background(), tenant.Tenant{ID: "t1", Namespace: ns, Limits: tenant.Limits{MaxApps: 2}}, "carol", true)
+	_, _, err := e.Authorize(context.Background(), tenant.Tenant{ID: "t1", Namespace: ns, Limits: tenant.Limits{MaxApps: 2}}, "carol", true)
 	var qe *ExceededError
 	if !errors.As(err, &qe) || qe.Scope != "tenant" {
 		t.Fatalf("tenant at 2/2: want tenant ExceededError, got %v", err)
 	}
 	// A different, empty tenant namespace is allowed under the same cap.
-	if _, err := e.Authorize(context.Background(), tenant.Tenant{ID: "t2", Namespace: "other-ns", Limits: tenant.Limits{MaxApps: 2}}, "carol", true); err != nil {
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{ID: "t2", Namespace: "other-ns", Limits: tenant.Limits{MaxApps: 2}}, "carol", true); err != nil {
 		t.Fatalf("an empty tenant should be allowed: %v", err)
 	}
 }
@@ -139,10 +237,10 @@ func TestCeilingsAreTenantNamespaceScoped(t *testing.T) {
 	c := newClient(t, appNs("tenant-a", "a", "alice"), appNs("tenant-a", "b", "alice"))
 	e := NewEnforcer(c, nil, ns, config.QuotasConfig{Enabled: true, MaxAppsPerOwner: 2})
 
-	if _, err := e.Authorize(context.Background(), tenant.Tenant{ID: "a", Namespace: "tenant-a"}, "alice", true); err == nil {
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{ID: "a", Namespace: "tenant-a"}, "alice", true); err == nil {
 		t.Fatal("alice should be at her per-owner cap within tenant-a")
 	}
-	if _, err := e.Authorize(context.Background(), tenant.Tenant{ID: "b", Namespace: "tenant-b"}, "alice", true); err != nil {
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{ID: "b", Namespace: "tenant-b"}, "alice", true); err != nil {
 		t.Fatalf("alice's tenant-a apps must not count in tenant-b: %v", err)
 	}
 }
@@ -153,7 +251,7 @@ func TestNoResolverSkipsDepartmentGate(t *testing.T) {
 
 	// No user resolver -> department unknown -> only the (unset) per-owner cap
 	// applies, so the deploy is allowed.
-	if _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "bob", true); err != nil {
+	if _, _, err := e.Authorize(context.Background(), tenant.Tenant{Namespace: ns}, "bob", true); err != nil {
 		t.Fatalf("missing resolver should skip the department gate: %v", err)
 	}
 }

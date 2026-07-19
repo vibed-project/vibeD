@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -196,10 +197,15 @@ func TestDeployEndpoint401WithoutOwner(t *testing.T) {
 
 func TestGetAndListAndDelete(t *testing.T) {
 	h, c := newDeployRouter(t, "alice@example.com")
-	// Seed a ready app directly.
+	// Seed a ready app directly, carrying the vibed.dev/owner label the deploy
+	// path always stamps — Service.List now pre-filters on it server-side (#74).
 	app := &vibedv1.VibedApp{
-		ObjectMeta: metav1.ObjectMeta{Name: "seeded", Namespace: "vibed-apps"},
-		Spec:       vibedv1.VibedAppSpec{Owner: "alice@example.com", Runtime: vibedv1.Runtime{Lane: vibedv1.LaneGeneral, Template: "node-24"}},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "seeded",
+			Namespace: "vibed-apps",
+			Labels:    map[string]string{vibedv1.LabelOwner: vibedv1.SanitizeLabel("alice@example.com")},
+		},
+		Spec: vibedv1.VibedAppSpec{Owner: "alice@example.com", Runtime: vibedv1.Runtime{Lane: vibedv1.LaneGeneral, Template: "node-24"}},
 	}
 	if err := c.Create(context.Background(), app); err != nil {
 		t.Fatal(err)
@@ -349,8 +355,8 @@ func TestStreamLogsSSE(t *testing.T) {
 // pulling the internal package in.
 type quotaDenied struct{}
 
-func (quotaDenied) Authorize(context.Context, tenant.Tenant, string, bool) (string, error) {
-	return "", quotaErr{}
+func (quotaDenied) Authorize(context.Context, tenant.Tenant, string, bool) (string, func(), error) {
+	return "", func() {}, quotaErr{}
 }
 
 type quotaErr struct{}
@@ -450,12 +456,42 @@ func TestLogStreamCapBlocksOverLimit(t *testing.T) {
 	}
 }
 
-func TestLogStreamCapDisabled(t *testing.T) {
-	srv := &Server{MaxConcurrentLogStreamsPerUser: 0} // 0 = unlimited
-	for i := 0; i < 100; i++ {
+// TestLogStreamCapDefaultsWhenUnset locks in issue #81: a 0/unset per-user cap
+// must fall back to the safe server default, NOT unlimited. Acquires succeed up
+// to the default and are rejected past it.
+func TestLogStreamCapDefaultsWhenUnset(t *testing.T) {
+	srv := &Server{MaxConcurrentLogStreamsPerUser: 0} // 0 -> safe default, not unlimited
+	for i := 0; i < defaultMaxLogStreamsPerUser; i++ {
 		if !srv.acquireLogStream("alice") {
-			t.Fatalf("acquire %d failed with cap disabled", i)
+			t.Fatalf("acquire %d should succeed under the default cap", i)
 		}
+	}
+	if srv.acquireLogStream("alice") {
+		t.Fatalf("acquire past the default per-user cap (%d) must be rejected", defaultMaxLogStreamsPerUser)
+	}
+}
+
+// TestLogStreamGlobalCap locks in the global cap (issue #81): even spread across
+// distinct users (each under its per-user cap), total streams are bounded so
+// they can't collectively exhaust controller memory.
+func TestLogStreamGlobalCap(t *testing.T) {
+	// Per-user cap high enough that the global cap is what bites; global cap
+	// small so the test is cheap.
+	srv := &Server{MaxConcurrentLogStreamsPerUser: 100, MaxConcurrentLogStreamsGlobal: 3}
+
+	for i := 0; i < 3; i++ {
+		if !srv.acquireLogStream(fmt.Sprintf("user-%d", i)) {
+			t.Fatalf("acquire %d should succeed under the global cap", i)
+		}
+	}
+	// Fourth distinct user is under its own per-user cap but over the global cap.
+	if srv.acquireLogStream("user-4") {
+		t.Fatal("acquire past the global cap must be rejected even for a fresh user")
+	}
+	// Releasing one frees a global slot.
+	srv.releaseLogStream("user-0")
+	if !srv.acquireLogStream("user-4") {
+		t.Fatal("after a release, a global slot must free up")
 	}
 }
 

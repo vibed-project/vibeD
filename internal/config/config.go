@@ -65,10 +65,15 @@ type LimitsConfig struct {
 	MaxFileCount     int `yaml:"maxFileCount"`     // Max number of files per deploy/update (default: 500)
 	MaxLogLines      int `yaml:"maxLogLines"`      // Max log lines per request (default: 10000)
 	// MaxConcurrentLogStreamsPerUser caps simultaneous /v1/logs SSE streams a
-	// single authenticated user may hold open. 0 = unlimited (legacy). A
-	// modest default (10) blocks the trivial DoS where one user opens
-	// hundreds of streams to exhaust controller memory.
+	// single authenticated user may hold open. <=0 falls back to a safe server
+	// default (not unlimited): one user opening hundreds of streams is a
+	// trivial memory-exhaustion DoS.
 	MaxConcurrentLogStreamsPerUser int `yaml:"maxConcurrentLogStreamsPerUser"`
+	// MaxConcurrentLogStreamsGlobal caps simultaneous /v1/logs SSE streams
+	// across all users, so many users can't collectively exhaust controller
+	// memory while each stays under the per-user cap. <=0 falls back to a safe
+	// server default.
+	MaxConcurrentLogStreamsGlobal int `yaml:"maxConcurrentLogStreamsGlobal"`
 }
 
 // AuthConfig holds authentication and TLS settings.
@@ -85,6 +90,14 @@ type AuthConfig struct {
 	// direct client cannot spoof a user by setting the header. Ignored by the
 	// apikey/oidc modes.
 	TrustedProxies []string `yaml:"trustedProxies,omitempty"`
+
+	// DevInsecure must be set to true to run with auth disabled
+	// (enabled=false) on a non-loopback bind. Without it the server refuses to
+	// start in that configuration, because auth-disabled mode treats every
+	// request as admin and a non-loopback bind would expose the full admin API
+	// unauthenticated to the network. Intended only for trusted/network-isolated
+	// environments (local dev, or an in-cluster bind fronted by NetworkPolicy).
+	DevInsecure bool `yaml:"devInsecure,omitempty"`
 	// Options is a generic bag read by out-of-tree auth providers. Core providers
 	// (apikey/oauth/oidc) ignore it, so a new mode needs no field added to this
 	// struct.
@@ -158,6 +171,12 @@ type RateLimitConfig struct {
 	Enabled           bool    `yaml:"enabled"`           // Enable rate limiting (default: false)
 	RequestsPerSecond float64 `yaml:"requestsPerSecond"` // Steady-state rate per client (default: 10)
 	Burst             int     `yaml:"burst"`             // Max burst size per client (default: 20)
+	// WriteRequestsPerSecond / WriteBurst bound expensive mutating verbs
+	// (deploy/create/update/delete) with a stricter per-client budget than
+	// reads, so a single user can't flood the deploy path. <=0 falls back to a
+	// safe default (1 rps / burst 5).
+	WriteRequestsPerSecond float64 `yaml:"writeRequestsPerSecond"`
+	WriteBurst             int     `yaml:"writeBurst"`
 }
 
 type DeploymentConfig struct {
@@ -236,7 +255,10 @@ type RegistryConfig struct {
 }
 
 type StoreConfig struct {
-	Backend   string          `yaml:"backend"` // "sqlite" (default), "memory", or "configmap"
+	// Backend: "sqlite" (default, recommended — scales per-row), "memory", or
+	// "configmap" (small/dev deployments only; all artifacts share one ConfigMap
+	// bounded by etcd's ~1MB object ceiling — see internal/store/configmap.go).
+	Backend   string          `yaml:"backend"`
 	ConfigMap ConfigMapConfig `yaml:"configmap"`
 	SQLite    SQLiteConfig    `yaml:"sqlite"`
 	// Options is a generic bag passed verbatim to the store backend factory.
@@ -278,8 +300,10 @@ func Default() *Config {
 			LogFormat: "text",
 			LogLevel:  "info",
 			RateLimit: RateLimitConfig{
-				RequestsPerSecond: 10,
-				Burst:             20,
+				RequestsPerSecond:      10,
+				Burst:                  20,
+				WriteRequestsPerSecond: 1,
+				WriteBurst:             5,
 			},
 		},
 		Deployment: DeploymentConfig{
@@ -328,6 +352,7 @@ func Default() *Config {
 			MaxFileCount:                   500,
 			MaxLogLines:                    10000,
 			MaxConcurrentLogStreamsPerUser: 10,
+			MaxConcurrentLogStreamsGlobal:  100,
 		},
 		GC: GCConfig{
 			Enabled:  true,

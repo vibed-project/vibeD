@@ -372,7 +372,9 @@ func handleUsers(userStore store.UserStore) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodGet:
 			departmentID := r.URL.Query().Get("department")
-			users, err := userStore.ListUsers(r.Context(), departmentID)
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+			users, err := userStore.ListUsers(r.Context(), departmentID, limit, offset)
 			if err != nil {
 				writeError(w, err, http.StatusInternalServerError)
 				return
@@ -543,7 +545,9 @@ func handleDepartments(userStore store.UserStore, k8sClients *k8s.Clients) http.
 
 		switch r.Method {
 		case http.MethodGet:
-			depts, err := userStore.ListDepartments(r.Context())
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+			depts, err := userStore.ListDepartments(r.Context(), limit, offset)
 			if err != nil {
 				writeError(w, err, http.StatusInternalServerError)
 				return
@@ -783,9 +787,12 @@ func handleArtifactShareLinks(orch *orchestrator.Orchestrator, deploySvc *deploy
 		return
 	}
 
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+
 	owner := vibedauth.UserIDFromContext(r.Context())
 	if deploySvc != nil && deploySvc.ShareLinks != nil && owner != "" {
-		links, derr := deploySvc.ListShareLinks(r.Context(), owner, artifactID)
+		links, derr := deploySvc.ListShareLinks(r.Context(), owner, artifactID, limit, offset)
 		if derr == nil {
 			if links == nil {
 				links = []api.ShareLink{}
@@ -800,7 +807,7 @@ func handleArtifactShareLinks(orch *orchestrator.Orchestrator, deploySvc *deploy
 		}
 	}
 
-	links, err := orch.ListShareLinks(r.Context(), artifactID)
+	links, err := orch.ListShareLinks(r.Context(), artifactID, limit, offset)
 	if err != nil {
 		writeError(w, err, http.StatusBadRequest)
 		return

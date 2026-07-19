@@ -55,7 +55,7 @@ func registerListShareLinksTool(server *mcp.Server, orch *orchestrator.Orchestra
 		Name:        "list_share_links",
 		Description: "List all share links for an artifact. Only the artifact owner or admin can see these.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input listShareLinksInput) (*mcp.CallToolResult, *listShareLinksOutput, error) {
-		links, err := orch.ListShareLinks(ctx, input.ArtifactID)
+		links, err := orch.ListShareLinks(ctx, input.ArtifactID, 0, 0)
 		if err != nil {
 			return nil, nil, err
 		}

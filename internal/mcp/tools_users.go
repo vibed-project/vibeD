@@ -29,7 +29,7 @@ func registerListUsersTool(server *mcp.Server, userStore store.UserStore) {
 		if !vibedauth.IsAdmin(ctx) {
 			return nil, nil, fmt.Errorf("admin access required")
 		}
-		users, err := userStore.ListUsers(ctx, input.DepartmentID)
+		users, err := userStore.ListUsers(ctx, input.DepartmentID, 0, 0)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -76,7 +76,7 @@ func registerListDepartmentsTool(server *mcp.Server, userStore store.UserStore) 
 		if !vibedauth.IsAdmin(ctx) {
 			return nil, nil, fmt.Errorf("admin access required")
 		}
-		depts, err := userStore.ListDepartments(ctx)
+		depts, err := userStore.ListDepartments(ctx, 0, 0)
 		if err != nil {
 			return nil, nil, err
 		}

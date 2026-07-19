@@ -38,7 +38,9 @@ func (f *fakeUserStore) UpdateUser(_ context.Context, u *api.User) error {
 func (f *fakeUserStore) GetUserByName(context.Context, string) (*api.User, error) {
 	return nil, errNoUser
 }
-func (f *fakeUserStore) ListUsers(context.Context, string) ([]api.User, error) { return nil, nil }
+func (f *fakeUserStore) ListUsers(context.Context, string, int, int) ([]api.User, error) {
+	return nil, nil
+}
 func (f *fakeUserStore) GetUserByAPIKeyHash(context.Context, string) (*api.User, error) {
 	return nil, errNoUser
 }
@@ -49,7 +51,9 @@ func (f *fakeUserStore) GetDepartment(context.Context, string) (*api.Department,
 func (f *fakeUserStore) GetDepartmentByName(context.Context, string) (*api.Department, error) {
 	return nil, errNoUser
 }
-func (f *fakeUserStore) ListDepartments(context.Context) ([]api.Department, error) { return nil, nil }
+func (f *fakeUserStore) ListDepartments(context.Context, int, int) ([]api.Department, error) {
+	return nil, nil
+}
 func (f *fakeUserStore) UpdateDepartment(context.Context, *api.Department) error   { return nil }
 func (f *fakeUserStore) DeleteDepartment(context.Context, string) error            { return nil }
 

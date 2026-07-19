@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/vibed-project/vibeD/pkg/api"
 
@@ -14,17 +13,36 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 )
+
+// maxConfigMapBytes caps the total size of a store ConfigMap's data. etcd
+// rejects objects over ~1MB, so we guard below that with headroom for keys and
+// API encoding and return an actionable error instead of a cryptic
+// "Request entity too large" that silently bricks the store for writes (#71).
+const maxConfigMapBytes = 900 * 1024
 
 // ConfigMapStore persists artifact metadata in a Kubernetes ConfigMap.
 // Each artifact is stored as a JSON entry keyed by its ID.
 // Versions are stored in a separate ConfigMap named "{name}-versions".
+//
+// Scale: all artifacts share one ConfigMap, so every write is a read-modify-write
+// of the whole object and the aggregate is bounded by etcd's ~1MB object ceiling
+// (updateConfigMap guards it and returns an actionable error before the API
+// would reject the write — #71). This backend is intended for small or dev
+// deployments; use the default "sqlite" backend for many artifacts, which stores
+// each row independently and scales without this ceiling.
+//
+// Concurrency: the store holds no process-wide lock. Reads are independent API
+// Gets. Writes are read-modify-write cycles wrapped in retry-on-conflict, so the
+// API server's optimistic concurrency (ResourceVersion) serializes them
+// correctly — across replicas too, which a local mutex never could — without
+// blocking on a lock across every remote round-trip (#72).
 type ConfigMapStore struct {
 	client       kubernetes.Interface
 	name         string
 	versionsName string // e.g. "vibed-artifacts-versions"
 	namespace    string
-	mu           sync.Mutex
 }
 
 func init() {
@@ -44,39 +62,35 @@ func NewConfigMapStore(client kubernetes.Interface, name, namespace string) *Con
 }
 
 func (s *ConfigMapStore) Create(ctx context.Context, artifact *api.Artifact) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cm, err := s.getOrCreateConfigMap(ctx, s.name)
-	if err != nil {
-		return err
-	}
-
-	// Check for name collision
-	for _, v := range cm.Data {
-		var existing api.Artifact
-		if json.Unmarshal([]byte(v), &existing) == nil && existing.Name == artifact.Name {
-			return &api.ErrAlreadyExists{Name: artifact.Name}
-		}
-	}
-
 	data, err := json.Marshal(artifact)
 	if err != nil {
 		return fmt.Errorf("marshaling artifact: %w", err)
 	}
 
-	if cm.Data == nil {
-		cm.Data = make(map[string]string)
-	}
-	cm.Data[artifact.ID] = string(data)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cm, err := s.getOrCreateConfigMap(ctx, s.name)
+		if err != nil {
+			return err
+		}
 
-	return s.updateConfigMap(ctx, cm)
+		// Check for name collision
+		for _, v := range cm.Data {
+			var existing api.Artifact
+			if json.Unmarshal([]byte(v), &existing) == nil && existing.Name == artifact.Name {
+				return &api.ErrAlreadyExists{Name: artifact.Name}
+			}
+		}
+
+		if cm.Data == nil {
+			cm.Data = make(map[string]string)
+		}
+		cm.Data[artifact.ID] = string(data)
+
+		return s.updateConfigMap(ctx, cm)
+	})
 }
 
 func (s *ConfigMapStore) Get(ctx context.Context, id string) (*api.Artifact, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	cm, err := s.getConfigMap(ctx, s.name)
 	if err != nil {
 		return nil, err
@@ -95,9 +109,6 @@ func (s *ConfigMapStore) Get(ctx context.Context, id string) (*api.Artifact, err
 }
 
 func (s *ConfigMapStore) GetByName(ctx context.Context, name string) (*api.Artifact, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	cm, err := s.getConfigMap(ctx, s.name)
 	if err != nil {
 		return nil, err
@@ -113,9 +124,6 @@ func (s *ConfigMapStore) GetByName(ctx context.Context, name string) (*api.Artif
 }
 
 func (s *ConfigMapStore) List(ctx context.Context, opts ListOptions) (*ListResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	cm, err := s.getConfigMap(ctx, s.name)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
@@ -159,84 +167,85 @@ func (s *ConfigMapStore) List(ctx context.Context, opts ListOptions) (*ListResul
 }
 
 func (s *ConfigMapStore) Update(ctx context.Context, artifact *api.Artifact) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cm, err := s.getConfigMap(ctx, s.name)
-	if err != nil {
-		return err
-	}
-
-	if _, ok := cm.Data[artifact.ID]; !ok {
-		return &api.ErrNotFound{ArtifactID: artifact.ID}
-	}
-
 	data, err := json.Marshal(artifact)
 	if err != nil {
 		return fmt.Errorf("marshaling artifact: %w", err)
 	}
 
-	cm.Data[artifact.ID] = string(data)
-	return s.updateConfigMap(ctx, cm)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cm, err := s.getConfigMap(ctx, s.name)
+		if err != nil {
+			return err
+		}
+		if _, ok := cm.Data[artifact.ID]; !ok {
+			return &api.ErrNotFound{ArtifactID: artifact.ID}
+		}
+		cm.Data[artifact.ID] = string(data)
+		return s.updateConfigMap(ctx, cm)
+	})
 }
 
 func (s *ConfigMapStore) Delete(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cm, err := s.getConfigMap(ctx, s.name)
-	if err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cm, err := s.getConfigMap(ctx, s.name)
+		if err != nil {
+			return err
+		}
+		if _, ok := cm.Data[id]; !ok {
+			return &api.ErrNotFound{ArtifactID: id}
+		}
+		delete(cm.Data, id)
+		return s.updateConfigMap(ctx, cm)
+	}); err != nil {
 		return err
 	}
 
-	if _, ok := cm.Data[id]; !ok {
-		return &api.ErrNotFound{ArtifactID: id}
-	}
-
-	delete(cm.Data, id)
-
-	// Clean up version entries
-	vcm, verr := s.getConfigMap(ctx, s.versionsName)
-	if verr == nil && vcm.Data != nil {
+	// Best-effort cleanup of the artifact's version entries in the sibling
+	// ConfigMap (its own read-modify-write; a conflict retries, a missing CM or
+	// other error is non-fatal to the delete).
+	_ = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		vcm, verr := s.getConfigMap(ctx, s.versionsName)
+		if verr != nil || vcm.Data == nil {
+			return nil // nothing to clean; don't retry
+		}
 		prefix := id + "-v"
+		changed := false
 		for key := range vcm.Data {
 			if strings.HasPrefix(key, prefix) {
 				delete(vcm.Data, key)
+				changed = true
 			}
 		}
-		_ = s.updateConfigMap(ctx, vcm)
-	}
+		if !changed {
+			return nil
+		}
+		return s.updateConfigMap(ctx, vcm)
+	})
 
-	return s.updateConfigMap(ctx, cm)
+	return nil
 }
 
 func (s *ConfigMapStore) CreateVersion(ctx context.Context, version *api.ArtifactVersion) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cm, err := s.getOrCreateConfigMap(ctx, s.versionsName)
-	if err != nil {
-		return err
-	}
-
 	data, err := json.Marshal(version)
 	if err != nil {
 		return fmt.Errorf("marshaling version: %w", err)
 	}
-
 	key := fmt.Sprintf("%s-v%d", version.ArtifactID, version.Version)
-	if cm.Data == nil {
-		cm.Data = make(map[string]string)
-	}
-	cm.Data[key] = string(data)
 
-	return s.updateConfigMap(ctx, cm)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		cm, err := s.getOrCreateConfigMap(ctx, s.versionsName)
+		if err != nil {
+			return err
+		}
+		if cm.Data == nil {
+			cm.Data = make(map[string]string)
+		}
+		cm.Data[key] = string(data)
+		return s.updateConfigMap(ctx, cm)
+	})
 }
 
 func (s *ConfigMapStore) ListVersions(ctx context.Context, artifactID string) ([]api.ArtifactVersion, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	cm, err := s.getConfigMap(ctx, s.versionsName)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
@@ -267,9 +276,6 @@ func (s *ConfigMapStore) ListVersions(ctx context.Context, artifactID string) ([
 }
 
 func (s *ConfigMapStore) GetVersion(ctx context.Context, artifactID string, version int) (*api.ArtifactVersion, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	cm, err := s.getConfigMap(ctx, s.versionsName)
 	if err != nil {
 		return nil, &api.ErrVersionNotFound{ArtifactID: artifactID, Version: version}
@@ -323,8 +329,18 @@ func (s *ConfigMapStore) getOrCreateConfigMap(ctx context.Context, name string) 
 }
 
 func (s *ConfigMapStore) updateConfigMap(ctx context.Context, cm *corev1.ConfigMap) error {
-	_, err := s.client.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{})
-	if err != nil {
+	// Guard the etcd ~1MB object ceiling before the write: past it, the API
+	// rejects every Update with a cryptic "Request entity too large" and the
+	// store is bricked for writes. Fail early with an actionable error (#71).
+	total := 0
+	for k, v := range cm.Data {
+		total += len(k) + len(v)
+	}
+	if total > maxConfigMapBytes {
+		return fmt.Errorf("artifact-store ConfigMap %q would be %d bytes, over the %d-byte safety limit (etcd caps objects near 1MB); switch store.backend to \"sqlite\" for this many artifacts", cm.Name, total, maxConfigMapBytes)
+	}
+
+	if _, err := s.client.CoreV1().ConfigMaps(s.namespace).Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("updating configmap: %w", err)
 	}
 	return nil

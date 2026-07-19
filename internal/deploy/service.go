@@ -93,9 +93,12 @@ type Service struct {
 }
 
 // Quota gates new deploys within a tenant and resolves the owner's department
-// (for labeling).
+// (for labeling). Authorize returns a non-nil release the caller must invoke
+// once the new app is durably created (List-visible) or the deploy has failed;
+// it drops the reservation Authorize took against the ceiling, which is what
+// keeps concurrent deploys from overshooting it.
 type Quota interface {
-	Authorize(ctx context.Context, t tenant.Tenant, owner string, isNew bool) (department string, err error)
+	Authorize(ctx context.Context, t tenant.Tenant, owner string, isNew bool) (department string, release func(), err error)
 }
 
 // Auditor records a mutating action; implementations read the actor from ctx.
@@ -163,16 +166,21 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("resolve tenant: %w", err)
 	}
 
-	// Read + cap the tarball once; we feed the same bytes to the classifier
-	// and the store.
-	buf, err := readCapped(req.Tarball, MaxTarballBytes)
+	// Read + cap the tarball once, hashing it in the same pass via a TeeReader
+	// instead of walking the full (up-to-50MB) buffer a second time with
+	// sha256.Sum256 — this is the latency-sensitive deploy hot path (#73). The
+	// buffer is still needed in memory because the policy engine evaluates over
+	// the full source bytes; the remaining passes (classify, store upload) are
+	// inherent to those operations.
+	hasher := sha256.New()
+	buf, err := readCapped(io.TeeReader(req.Tarball, hasher), MaxTarballBytes)
 	if err != nil {
 		return nil, err
 	}
 
 	// Enrich the audit events for this deploy with the tenant and a hash of the
 	// exact source (provenance). The context flows through every s.record call.
-	sum := sha256.Sum256(buf)
+	sum := hasher.Sum(nil)
 	ctx = audit.WithFields(ctx, audit.Fields{TenantID: t.ID, SourceHash: hex.EncodeToString(sum[:])})
 
 	// Classify (unless both lane + template are overridden).
@@ -258,14 +266,21 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	// Quota gates new deploys (within the tenant) and tells us the owner's
-	// department for labeling.
+	// department for labeling. The reservation Authorize takes must be released
+	// once the new app is durably created (List-visible via the direct client)
+	// or the deploy fails — releaseQuota, called both after the CR write and via
+	// defer, does that; it's idempotent, so the defer is a safety net for the
+	// error paths in between.
 	var department string
+	releaseQuota := func() {}
+	defer func() { releaseQuota() }()
 	if s.Quota != nil {
-		dept, qerr := s.Quota.Authorize(ctx, t, req.Owner, isNew)
+		dept, release, qerr := s.Quota.Authorize(ctx, t, req.Owner, isNew)
 		if qerr != nil {
 			_ = s.record(ctx, "deploy", req.Name, "denied", qerr.Error())
 			return nil, qerr
 		}
+		releaseQuota = release
 		department = dept
 	}
 
@@ -352,6 +367,12 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 			return nil, fmt.Errorf("update VibedApp: %w", uerr)
 		}
 	}
+
+	// The CR is durably written and now List-visible via the direct client, so
+	// the quota reservation is redundant with the live count — drop it promptly
+	// (rather than only on the deferred path after waitReady) so it isn't
+	// double-counted against a concurrent deploy at the exact ceiling boundary.
+	releaseQuota()
 
 	// Prune source tarballs for versions that aged out of the retained history.
 	for _, k := range evicted {
