@@ -2,6 +2,7 @@ package gc
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/vibed-project/vibeD/internal/config"
@@ -189,6 +191,28 @@ func TestGC_CleansOrphanedConfigMaps(t *testing.T) {
 	cms, err := clientset.CoreV1().ConfigMaps(testNamespace).List(ctx, metav1.ListOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, cms.Items, "orphaned configmap should be deleted")
+}
+
+// TestGC_CleansManyOrphansConcurrently exercises the bounded-concurrency delete
+// path (#76) with far more orphans than the worker-pool limit: every orphan must
+// still be deleted (nothing dropped or double-processed), and the run must be
+// race-clean (go test -race).
+func TestGC_CleansManyOrphansConcurrently(t *testing.T) {
+	ctx := context.Background()
+	const n = 50 // > gcDeleteConcurrency
+	objs := make([]runtime.Object, 0, n)
+	for i := 0; i < n; i++ {
+		objs = append(objs, testConfigMap(fmt.Sprintf("vibed-cm-%d", i), fmt.Sprintf("gone-%d", i), nil))
+	}
+	clientset := fake.NewSimpleClientset(objs...)
+	st := store.NewMemoryStore() // no active artifacts → all orphaned
+
+	gc := newTestGC(t, clientset, st, false)
+	gc.collect(ctx)
+
+	cms, err := clientset.CoreV1().ConfigMaps(testNamespace).List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, cms.Items, "all %d orphaned configmaps should be deleted", n)
 }
 
 func TestGC_SkipsStoreConfigMaps(t *testing.T) {
