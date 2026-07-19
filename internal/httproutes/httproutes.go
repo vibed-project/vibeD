@@ -19,6 +19,11 @@ import (
 type Route struct {
 	Pattern string // e.g. "POST /v1/rolebindings"
 	Handler http.Handler
+	// Public exempts this route's path from the core's user-auth middleware, so
+	// the module can enforce its own authentication (e.g. a SCIM provisioning
+	// token). The server registers the path as a public prefix; the module's
+	// handler is responsible for authenticating the request itself.
+	Public bool
 }
 
 // Deps is what a route factory receives; Options is a generic settings bag.
