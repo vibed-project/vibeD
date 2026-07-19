@@ -5,11 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vibed-project/vibeD/internal/events"
@@ -51,27 +48,17 @@ type eventBridge struct {
 	watchStarted func()
 }
 
-// newEventBridge builds a bridge over its own watch-capable client on the
-// same rest config + scheme the deploy service uses for VibedApp CRs.
-func newEventBridge(restCfg *rest.Config, namespace string, bus *events.EventBus, logger *slog.Logger) (*eventBridge, error) {
-	scheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		return nil, err
-	}
-	if err := vibedv1.AddToScheme(scheme); err != nil {
-		return nil, err
-	}
-	c, err := ctrlclient.NewWithWatch(restCfg, ctrlclient.Options{Scheme: scheme})
-	if err != nil {
-		return nil, err
-	}
+// newEventBridge builds a bridge over a watch-capable client for VibedApp
+// CRs — the deploy service's client, so one watch client serves both the
+// readiness wait and the bridge.
+func newEventBridge(c ctrlclient.WithWatch, namespace string, bus *events.EventBus, logger *slog.Logger) *eventBridge {
 	return &eventBridge{
 		client:    c,
 		namespace: namespace,
 		bus:       bus,
 		logger:    logger,
 		last:      make(map[types.UID]bridgeState),
-	}, nil
+	}
 }
 
 // Run watches VibedApps until ctx is cancelled, re-establishing the watch

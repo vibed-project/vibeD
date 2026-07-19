@@ -18,7 +18,9 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -45,6 +47,14 @@ type Service struct {
 	Client     client.Client
 	Store      tarball.Store
 	Classifier classifier.Classifier
+
+	// Watcher, when set, lets waitReady watch the VibedApp for its Ready/Failed
+	// transition instead of re-Getting it every PollInterval — one API call plus
+	// a watch stream instead of up to DeployTimeout/PollInterval round-trips on
+	// the latency-sensitive deploy path. Optional: when nil (or when the watch
+	// fails to start) waitReady falls back to the poll loop, so constructors
+	// passing only a plain Client keep working unchanged.
+	Watcher client.WithWatch
 
 	// Clientset streams pod logs for StreamLogs (the controller-runtime client
 	// can't read the pods/log subresource). nil disables log streaming.
@@ -439,22 +449,89 @@ func (s *Service) record(ctx context.Context, action, target, outcome, detail st
 	return s.Audit.Record(ctx, action, target, outcome, detail)
 }
 
-// waitReady polls the CR until it reaches Ready/Failed or DeployTimeout
-// elapses. A timeout is not an error — it's the 202 (still-claiming) path.
+// waitReady waits for the CR to reach Ready/Failed or for DeployTimeout to
+// elapse. A timeout is not an error — it's the 202 (still-claiming) path.
+// With a Watcher it consumes a server-side watch (one Get + an event stream);
+// without one — or when the watch can't be established — it falls back to
+// re-Getting the CR every PollInterval.
 func (s *Service) waitReady(ctx context.Context, namespace, name string) (*Result, error) {
 	deadline := time.Now().Add(s.DeployTimeout)
 	key := types.NamespacedName{Name: name, Namespace: namespace}
 
+	if s.Watcher != nil {
+		w, err := s.Watcher.Watch(ctx, &vibedv1.VibedAppList{},
+			client.InNamespace(namespace),
+			client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("metadata.name", name)},
+		)
+		if err == nil {
+			return s.watchReady(ctx, w, key, deadline)
+		}
+		// Watch setup failed (e.g. RBAC without watch verb) — poll instead.
+	}
+	return s.pollReady(ctx, key, deadline)
+}
+
+// watchReady consumes watch events until the app goes Ready/Failed or the
+// deadline passes. The watch starts before the initial Get so no transition
+// can fall between them: a plain watch does not replay existing objects, so
+// the Get catches an app that was already Ready/Failed, and anything that
+// changes afterwards arrives as an event.
+func (s *Service) watchReady(ctx context.Context, w watch.Interface, key types.NamespacedName, deadline time.Time) (*Result, error) {
+	defer w.Stop()
+	name := key.Name
+
+	app := &vibedv1.VibedApp{}
+	if err := s.Client.Get(ctx, key, app); err != nil {
+		return nil, fmt.Errorf("get VibedApp while waiting: %w", err)
+	}
+	if res := phaseResult(name, app); res != nil {
+		return res, nil
+	}
+	lastPhase := app.Status.Phase
+
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return &Result{AppID: name, Phase: lastPhase, Ready: false}, nil
+		case ev, ok := <-w.ResultChan():
+			if !ok {
+				// Server closed the watch early — finish out on the poll loop.
+				return s.pollReady(ctx, key, deadline)
+			}
+			evApp, ok := ev.Object.(*vibedv1.VibedApp)
+			if !ok {
+				continue // watch.Error carries *metav1.Status; Bookmark carries no app
+			}
+			if evApp.Name != name || evApp.Namespace != key.Namespace {
+				continue // defense in depth; the field selector filters server-side
+			}
+			if ev.Type == watch.Deleted {
+				return nil, fmt.Errorf("get VibedApp while waiting: %w",
+					apierrors.NewNotFound(vibedv1.GroupVersion.WithResource("vibedapps").GroupResource(), name))
+			}
+			lastPhase = evApp.Status.Phase
+			if res := phaseResult(name, evApp); res != nil {
+				return res, nil
+			}
+		}
+	}
+}
+
+// pollReady is the watchless fallback: re-Get the CR every PollInterval until
+// it reaches Ready/Failed or the deadline passes.
+func (s *Service) pollReady(ctx context.Context, key types.NamespacedName, deadline time.Time) (*Result, error) {
+	name := key.Name
 	for {
 		app := &vibedv1.VibedApp{}
 		if err := s.Client.Get(ctx, key, app); err != nil {
 			return nil, fmt.Errorf("get VibedApp while waiting: %w", err)
 		}
-		switch app.Status.Phase {
-		case vibedv1.PhaseReady:
-			return &Result{AppID: name, Phase: app.Status.Phase, URL: app.Status.URL, Ready: true}, nil
-		case vibedv1.PhaseFailed:
-			return &Result{AppID: name, Phase: app.Status.Phase, URL: app.Status.URL, Ready: false}, nil
+		if res := phaseResult(name, app); res != nil {
+			return res, nil
 		}
 		if time.Now().After(deadline) {
 			return &Result{AppID: name, Phase: app.Status.Phase, Ready: false}, nil
@@ -465,6 +542,17 @@ func (s *Service) waitReady(ctx context.Context, namespace, name string) (*Resul
 		case <-time.After(s.PollInterval):
 		}
 	}
+}
+
+// phaseResult maps a terminal phase to its Result; nil means keep waiting.
+func phaseResult(name string, app *vibedv1.VibedApp) *Result {
+	switch app.Status.Phase {
+	case vibedv1.PhaseReady:
+		return &Result{AppID: name, Phase: app.Status.Phase, URL: app.Status.URL, Ready: true}
+	case vibedv1.PhaseFailed:
+		return &Result{AppID: name, Phase: app.Status.Phase, URL: app.Status.URL, Ready: false}
+	}
+	return nil
 }
 
 func readCapped(r io.Reader, max int64) ([]byte, error) {

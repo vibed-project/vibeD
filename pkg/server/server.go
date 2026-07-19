@@ -413,12 +413,8 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	// path never touches the bus itself (only the legacy orchestrator does),
 	// so without the bridge dashboards fall back to polling for live deploys.
 	if deploySvc != nil {
-		bridge, berr := newEventBridge(k8sClients.RestConfig, deploySvc.Namespace, bus, logger)
-		if berr != nil {
-			logger.Warn("VibedApp event bridge disabled", "error", berr)
-		} else {
-			go bridge.Run(ctx)
-		}
+		bridge := newEventBridge(deploySvc.Watcher, deploySvc.Namespace, bus, logger)
+		go bridge.Run(ctx)
 	}
 
 	switch cfg.Server.Transport {
@@ -693,7 +689,10 @@ func buildDeployService(cfg *config.Config, k8sClients *k8s.Clients, logger *slo
 	if err := vibedv1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("scheme: %w", err)
 	}
-	c, err := ctrlclient.New(k8sClients.RestConfig, ctrlclient.Options{Scheme: scheme})
+	// Watch-capable client: waitReady watches the VibedApp for readiness
+	// instead of polling, and the event bridge reuses the same client for its
+	// watch (WithWatch embeds Client, so it serves all reads/writes too).
+	c, err := ctrlclient.NewWithWatch(k8sClients.RestConfig, ctrlclient.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("k8s client: %w", err)
 	}
@@ -704,6 +703,7 @@ func buildDeployService(cfg *config.Config, k8sClients *k8s.Clients, logger *slo
 	}
 	return &deploy.Service{
 		Client:     c,
+		Watcher:    c,
 		Clientset:  k8sClients.Clientset,
 		Store:      store,
 		Classifier: classifier.Classifier{},
