@@ -21,7 +21,11 @@ func TestK8sResolverAllowedFor(t *testing.T) {
 		Spec:       vibedv1.VibedAppSpec{Egress: vibedv1.Egress{AllowedHosts: []string{"api.example.com"}}},
 		Status:     vibedv1.VibedAppStatus{PodIP: "10.0.0.5"},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(app).Build()
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithIndex(&vibedv1.VibedApp{}, PodIPIndexField, IndexVibedAppPodIP).
+		WithObjects(app).
+		Build()
 	r := &K8sResolver{Client: c, Namespace: "vibed-apps"}
 
 	hosts, found := r.AllowedFor(context.Background(), "10.0.0.5")
@@ -33,5 +37,18 @@ func TestK8sResolverAllowedFor(t *testing.T) {
 	}
 	if _, found := r.AllowedFor(context.Background(), ""); found {
 		t.Error("empty IP should not resolve")
+	}
+
+	// Pod IP change (sandbox rebind): the new IP resolves, the old one doesn't.
+	app.Status.PodIP = "10.0.0.6"
+	if err := c.Update(context.Background(), app); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	hosts, found = r.AllowedFor(context.Background(), "10.0.0.6")
+	if !found || len(hosts) != 1 || hosts[0] != "api.example.com" {
+		t.Fatalf("AllowedFor(new IP) = %v, %v; want [api.example.com], true", hosts, found)
+	}
+	if _, found := r.AllowedFor(context.Background(), "10.0.0.5"); found {
+		t.Error("stale IP should no longer resolve after the pod IP changes")
 	}
 }
