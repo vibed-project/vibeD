@@ -171,6 +171,12 @@ type RateLimitConfig struct {
 	Enabled           bool    `yaml:"enabled"`           // Enable rate limiting (default: false)
 	RequestsPerSecond float64 `yaml:"requestsPerSecond"` // Steady-state rate per client (default: 10)
 	Burst             int     `yaml:"burst"`             // Max burst size per client (default: 20)
+	// WriteRequestsPerSecond / WriteBurst bound expensive mutating verbs
+	// (deploy/create/update/delete) with a stricter per-client budget than
+	// reads, so a single user can't flood the deploy path. <=0 falls back to a
+	// safe default (1 rps / burst 5).
+	WriteRequestsPerSecond float64 `yaml:"writeRequestsPerSecond"`
+	WriteBurst             int     `yaml:"writeBurst"`
 }
 
 type DeploymentConfig struct {
@@ -291,8 +297,10 @@ func Default() *Config {
 			LogFormat: "text",
 			LogLevel:  "info",
 			RateLimit: RateLimitConfig{
-				RequestsPerSecond: 10,
-				Burst:             20,
+				RequestsPerSecond:      10,
+				Burst:                  20,
+				WriteRequestsPerSecond: 1,
+				WriteBurst:             5,
 			},
 		},
 		Deployment: DeploymentConfig{

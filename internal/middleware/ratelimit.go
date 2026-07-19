@@ -18,6 +18,33 @@ import (
 
 const maxRateLimitClients = 50000
 
+// Fallback write-verb limits when RateLimitConfig leaves them unset (<=0), so a
+// partial config can't accidentally leave the deploy path unlimited.
+const (
+	defaultWriteRPS   = 1.0
+	defaultWriteBurst = 5
+)
+
+// limiterClass selects which per-client token-bucket pool a request draws from.
+type limiterClass int
+
+const (
+	classGeneral limiterClass = iota // reads / general API traffic
+	classToken                       // per-share-link password attempts
+	classWrite                       // expensive mutating verbs (deploy/create/update/delete)
+)
+
+// isWriteVerb reports whether method is a mutating HTTP verb that should draw
+// from the stricter write budget.
+func isWriteVerb(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
 // rateLimitEvictSample bounds the work of a single eviction: we look at this
 // many entries and drop the least-recently-seen among them. Redis uses a
 // similar sampled-LRU with a sample of ~5-10; 16 tightens the approximation
@@ -56,52 +83,69 @@ func evictOldestSampled(cmap map[string]*client) {
 // Only /api/ and /mcp paths are rate-limited; health, metrics, and static are skipped.
 // The ctx parameter controls the cleanup goroutine lifetime.
 func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Metrics) func(http.Handler) http.Handler {
+	// Write verbs get their own tighter budget; fall back to a safe default when
+	// unset so a partial config can't accidentally leave them unlimited.
+	writeRPS := cfg.WriteRequestsPerSecond
+	if writeRPS <= 0 {
+		writeRPS = defaultWriteRPS
+	}
+	writeBurst := cfg.WriteBurst
+	if writeBurst <= 0 {
+		writeBurst = defaultWriteBurst
+	}
+
 	var mu sync.RWMutex
 	clients := make(map[string]*client)
 
 	var tokenMu sync.RWMutex
 	tokenClients := make(map[string]*client)
 
+	var writeMu sync.RWMutex
+	writeClients := make(map[string]*client)
+
 	// Periodically clean up stale entries; stops when ctx is cancelled.
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
+		sweep := func(mu *sync.RWMutex, cmap map[string]*client) {
+			mu.Lock()
+			defer mu.Unlock()
+			for key, c := range cmap {
+				if time.Since(c.lastSeen) > 10*time.Minute {
+					delete(cmap, key)
+				}
+			}
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				mu.Lock()
-				for key, c := range clients {
-					if time.Since(c.lastSeen) > 10*time.Minute {
-						delete(clients, key)
-					}
-				}
-				mu.Unlock()
-
-				tokenMu.Lock()
-				for key, c := range tokenClients {
-					if time.Since(c.lastSeen) > 10*time.Minute {
-						delete(tokenClients, key)
-					}
-				}
-				tokenMu.Unlock()
+				sweep(&mu, clients)
+				sweep(&tokenMu, tokenClients)
+				sweep(&writeMu, writeClients)
 			}
 		}
 	}()
 
-	getLimiter := func(key string, isToken bool) *rate.Limiter {
+	getLimiter := func(key string, class limiterClass) *rate.Limiter {
 		var m *sync.RWMutex
 		var cmap map[string]*client
 		var r rate.Limit
 		var b int
 
-		if isToken {
+		switch class {
+		case classToken:
 			m = &tokenMu
 			cmap = tokenClients
 			r = rate.Every(time.Minute / 5) // 5 per minute
 			b = 5
-		} else {
+		case classWrite:
+			m = &writeMu
+			cmap = writeClients
+			r = rate.Limit(writeRPS)
+			b = writeBurst
+		default: // classGeneral
 			m = &mu
 			cmap = clients
 			r = rate.Limit(cfg.RequestsPerSecond)
@@ -146,8 +190,10 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 
-			// Only rate-limit API and MCP paths
-			if !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/mcp") {
+			// Rate-limit the API surfaces (REST /api, deploy/read /v1, and MCP);
+			// health, metrics, and static assets are skipped. /v1/* — including
+			// the expensive deploy path — was previously unthrottled (#50).
+			if !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/mcp") && !strings.HasPrefix(path, "/v1/") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -156,7 +202,7 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 			if r.Method == http.MethodPost && strings.HasPrefix(path, "/api/share/") {
 				token := strings.TrimPrefix(path, "/api/share/")
 				if token != "" {
-					if !getLimiter(token, true).Allow() {
+					if !getLimiter(token, classToken).Allow() {
 						m.RateLimitedTotal.WithLabelValues("token").Inc()
 						w.Header().Set("Retry-After", "12")
 						http.Error(w, "rate limit exceeded for this share link", http.StatusTooManyRequests)
@@ -176,7 +222,17 @@ func RateLimiter(ctx context.Context, cfg config.RateLimitConfig, m *metrics.Met
 				}
 			}
 
-			if !getLimiter(key, false).Allow() {
+			// Expensive mutating REST verbs (deploy/create/update/delete on /v1
+			// or /api) draw from a stricter per-client budget so one user can't
+			// flood the deploy path. MCP stays on the general limiter — it's
+			// JSON-RPC over POST, so the HTTP method doesn't distinguish reads
+			// from writes there.
+			class := classGeneral
+			if isWriteVerb(r.Method) && (strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/api/")) {
+				class = classWrite
+			}
+
+			if !getLimiter(key, class).Allow() {
 				m.RateLimitedTotal.WithLabelValues(clientType).Inc()
 				w.Header().Set("Retry-After", "1")
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)

@@ -500,6 +500,13 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	// Apply rate limiting (after auth so we can key by user)
 	if cfg.Server.RateLimit.Enabled {
 		handler = middleware.RateLimiter(ctx, cfg.Server.RateLimit, m)(handler)
+	} else if cfg.Server.Transport != "stdio" {
+		// Rate limiting is off on a network-facing transport: the deploy path and
+		// all of /v1/* are unthrottled, so one authenticated user can flood the
+		// expensive deploy path (#50). We don't silently flip the default, but we
+		// make the exposure loud.
+		logger.Warn("rate limiting is DISABLED on a network transport; /v1/* (including the deploy path) is unthrottled — set server.rateLimit.enabled=true in production",
+			"transport", cfg.Server.Transport)
 	}
 
 	// Apply OTel HTTP tracing middleware (extracts/injects trace context)
