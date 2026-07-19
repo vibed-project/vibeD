@@ -38,12 +38,20 @@ func (f *fakeShareLinkStore) GetShareLink(_ context.Context, t string) (*api.Sha
 	return l, f.hash[t], nil
 }
 
-func (f *fakeShareLinkStore) ListShareLinks(_ context.Context, artifactID string) ([]api.ShareLink, error) {
+func (f *fakeShareLinkStore) ListShareLinks(_ context.Context, artifactID string, limit, offset int) ([]api.ShareLink, error) {
 	var out []api.ShareLink
 	for _, l := range f.links {
 		if l.ArtifactID == artifactID {
 			out = append(out, *l)
 		}
+	}
+	if offset > 0 && offset < len(out) {
+		out = out[offset:]
+	} else if offset >= len(out) {
+		out = nil
+	}
+	if limit > 0 && limit < len(out) {
+		out = out[:limit]
 	}
 	return out, nil
 }
@@ -92,7 +100,7 @@ func TestShareLinks(t *testing.T) {
 		t.Fatal("expected error for non-owner create")
 	}
 
-	links, err := svc.ListShareLinks(context.Background(), "alice@example.com", "shareapp")
+	links, err := svc.ListShareLinks(context.Background(), "alice@example.com", "shareapp", 0, 0)
 	if err != nil || len(links) != 1 {
 		t.Fatalf("list: err=%v n=%d", err, len(links))
 	}

@@ -907,16 +907,11 @@ func (s *SQLiteStore) GetShareLink(ctx context.Context, token string) (*api.Shar
 	return &link, passwordHash, nil
 }
 
-// maxShareLinksPerList bounds the share-link list for one artifact. Share links
-// are per-artifact and few in practice, so rather than thread pagination through
-// the deploy/orchestrator wrappers, a fixed ceiling keeps the result set bounded
-// (#80) — high enough never to truncate a real app's links.
-const maxShareLinksPerList = 500
-
-func (s *SQLiteStore) ListShareLinks(ctx context.Context, artifactID string) ([]api.ShareLink, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT token, artifact_id, created_by, password, expires_at, created_at, revoked FROM share_links WHERE artifact_id=? ORDER BY created_at DESC LIMIT ?`,
-		artifactID, maxShareLinksPerList)
+func (s *SQLiteStore) ListShareLinks(ctx context.Context, artifactID string, limit, offset int) ([]api.ShareLink, error) {
+	query, args := appendPage(
+		`SELECT token, artifact_id, created_by, password, expires_at, created_at, revoked FROM share_links WHERE artifact_id=? ORDER BY created_at DESC`,
+		[]interface{}{artifactID}, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing share links: %w", err)
 	}

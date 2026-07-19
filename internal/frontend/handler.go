@@ -787,9 +787,12 @@ func handleArtifactShareLinks(orch *orchestrator.Orchestrator, deploySvc *deploy
 		return
 	}
 
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+
 	owner := vibedauth.UserIDFromContext(r.Context())
 	if deploySvc != nil && deploySvc.ShareLinks != nil && owner != "" {
-		links, derr := deploySvc.ListShareLinks(r.Context(), owner, artifactID)
+		links, derr := deploySvc.ListShareLinks(r.Context(), owner, artifactID, limit, offset)
 		if derr == nil {
 			if links == nil {
 				links = []api.ShareLink{}
@@ -804,7 +807,7 @@ func handleArtifactShareLinks(orch *orchestrator.Orchestrator, deploySvc *deploy
 		}
 	}
 
-	links, err := orch.ListShareLinks(r.Context(), artifactID)
+	links, err := orch.ListShareLinks(r.Context(), artifactID, limit, offset)
 	if err != nil {
 		writeError(w, err, http.StatusBadRequest)
 		return

@@ -30,7 +30,9 @@ type UserStore interface {
 type ShareLinkStore interface {
 	CreateShareLink(ctx context.Context, link *api.ShareLink, passwordHash string) error
 	GetShareLink(ctx context.Context, token string) (*api.ShareLink, string, error) // returns link + password hash
-	ListShareLinks(ctx context.Context, artifactID string) ([]api.ShareLink, error)
+	// ListShareLinks lists an artifact's share links. limit<=0 returns all;
+	// limit>0 pages with offset.
+	ListShareLinks(ctx context.Context, artifactID string, limit, offset int) ([]api.ShareLink, error)
 	RevokeShareLink(ctx context.Context, token string) error
 }
 

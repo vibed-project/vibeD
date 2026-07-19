@@ -60,15 +60,16 @@ func (s *Service) CreateShareLink(ctx context.Context, owner, appID, password st
 	return link, nil
 }
 
-// ListShareLinks returns the app's share links if owner owns it.
-func (s *Service) ListShareLinks(ctx context.Context, owner, appID string) ([]api.ShareLink, error) {
+// ListShareLinks returns the app's share links if owner owns it. limit<=0
+// returns all; limit>0 pages with offset.
+func (s *Service) ListShareLinks(ctx context.Context, owner, appID string, limit, offset int) ([]api.ShareLink, error) {
 	if s.ShareLinks == nil {
 		return nil, fmt.Errorf("share links require the sqlite store backend")
 	}
 	if _, err := s.Get(ctx, owner, appID); err != nil {
 		return nil, err
 	}
-	return s.ShareLinks.ListShareLinks(ctx, appID)
+	return s.ShareLinks.ListShareLinks(ctx, appID, limit, offset)
 }
 
 // RevokeShareLink revokes a token if owner owns the app it points at.
