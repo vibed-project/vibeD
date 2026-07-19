@@ -18,7 +18,7 @@ func TestOAuthPassthroughTrustsForwardedUserOnlyFromTrustedProxy(t *testing.T) {
 	const secret = "proxy-secret"
 	keys := []config.APIKeyConf{{Key: secret, Name: "proxy"}}
 	trusted := parseTrustedProxies([]string{"10.0.0.0/8"}, logger)
-	verifier := oauthPassthroughVerifier(keys, trusted, logger)
+	verifier := oauthPassthroughVerifier(resolveAPIKeys(keys, logger), trusted, logger)
 
 	userIDFrom := func(remote, fwd string) string {
 		r := httptest.NewRequest("GET", "/mcp", nil)
@@ -47,7 +47,7 @@ func TestOAuthPassthroughTrustsForwardedUserOnlyFromTrustedProxy(t *testing.T) {
 	}
 
 	// With no trusted proxies configured, the header is never trusted.
-	verifierNoTrust := oauthPassthroughVerifier(keys, nil, logger)
+	verifierNoTrust := oauthPassthroughVerifier(resolveAPIKeys(keys, logger), nil, logger)
 	r := httptest.NewRequest("GET", "/mcp", nil)
 	r.RemoteAddr = "10.1.2.3:5555"
 	r.Header.Set("X-Forwarded-User", "admin")

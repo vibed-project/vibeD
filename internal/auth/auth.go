@@ -190,26 +190,28 @@ func apiKeyUserID(name string) string {
 }
 
 // apiKeyVerifier returns a TokenVerifier that validates tokens against configured API keys.
+// Key secrets are resolved once at construction (see resolveAPIKeys), so the
+// per-request path is a pure in-memory constant-time comparison — no filesystem
+// or environment access on the hot path.
 // If userStore is non-nil, it auto-provisions users on first authentication.
-func apiKeyVerifier(keys []config.APIKeyConf, userStore store.UserStore, logger *slog.Logger) mcpauth.TokenVerifier {
+func apiKeyVerifier(keys []resolvedAPIKey, userStore store.UserStore, logger *slog.Logger) mcpauth.TokenVerifier {
 	return func(ctx context.Context, token string, req *http.Request) (*mcpauth.TokenInfo, error) {
 		for _, key := range keys {
-			resolvedKey := resolveKeyValue(key.Key)
-			if subtle.ConstantTimeCompare([]byte(token), []byte(resolvedKey)) == 1 {
+			if subtle.ConstantTimeCompare([]byte(token), []byte(key.secret)) == 1 {
 				logger.Debug("API key authenticated",
-					"name", key.Name,
+					"name", key.conf.Name,
 					"path", req.URL.Path,
 				)
 
 				// Auto-provision user on first authentication
-				if userStore != nil && key.Name != "" {
-					autoProvisionAPIKeyUser(ctx, userStore, key, logger)
+				if userStore != nil && key.conf.Name != "" {
+					autoProvisionAPIKeyUser(ctx, userStore, key.conf, logger)
 				}
 
 				return &mcpauth.TokenInfo{
-					Scopes:     key.Scopes,
+					Scopes:     key.conf.Scopes,
 					Expiration: time.Now().Add(24 * time.Hour),
-					UserID:     apiKeyUserID(key.Name),
+					UserID:     apiKeyUserID(key.conf.Name),
 				}, nil
 			}
 		}
@@ -297,7 +299,10 @@ func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key
 // an admin) by setting the header itself. When no trusted proxies are
 // configured, the header is never trusted and every request maps to the generic
 // "oauth-user" identity.
-func oauthPassthroughVerifier(keys []config.APIKeyConf, trustedCIDRs []*net.IPNet, logger *slog.Logger) mcpauth.TokenVerifier {
+//
+// Like apiKeyVerifier, the proxy-secret values are resolved once at
+// construction (see resolveAPIKeys), keeping the per-request path in-memory.
+func oauthPassthroughVerifier(keys []resolvedAPIKey, trustedCIDRs []*net.IPNet, logger *slog.Logger) mcpauth.TokenVerifier {
 	return func(ctx context.Context, token string, req *http.Request) (*mcpauth.TokenInfo, error) {
 		if token == "" {
 			return nil, mcpauth.ErrInvalidToken
@@ -305,8 +310,7 @@ func oauthPassthroughVerifier(keys []config.APIKeyConf, trustedCIDRs []*net.IPNe
 
 		valid := false
 		for _, key := range keys {
-			resolvedKey := resolveKeyValue(key.Key)
-			if subtle.ConstantTimeCompare([]byte(token), []byte(resolvedKey)) == 1 {
+			if subtle.ConstantTimeCompare([]byte(token), []byte(key.secret)) == 1 {
 				valid = true
 				break
 			}
@@ -416,12 +420,31 @@ func RoleMiddleware(roleMap map[string]string, userStore store.UserStore) func(h
 	}
 }
 
-// resolveKeyValue resolves an API key value using the shared config.ResolveSecret helper.
-// Supports "env:VAR_NAME" and "file:/path" patterns, or literal values.
-func resolveKeyValue(key string) string {
-	resolved, err := config.ResolveSecret(key)
-	if err != nil || resolved == "" {
-		return key // Fall back to literal if resolution fails
+// resolvedAPIKey pairs a configured API key (metadata: name/role/scopes) with
+// its secret value resolved once at verifier construction, keeping "file:"
+// filesystem reads and "env:" lookups off the per-request hot path. A
+// consequence: file-referenced keys are read at startup, so rotating the file's
+// content requires a restart to take effect.
+type resolvedAPIKey struct {
+	conf   config.APIKeyConf
+	secret string
+}
+
+// resolveAPIKeys resolves every configured key value once using the shared
+// config.ResolveSecret helper ("env:VAR_NAME", "file:/path", or literal). A key
+// that fails to resolve (or resolves to empty) falls back to its literal value
+// — the same fallback the per-request path applied — but the failure is now
+// logged once at startup instead of passing silently on every request.
+func resolveAPIKeys(keys []config.APIKeyConf, logger *slog.Logger) []resolvedAPIKey {
+	resolved := make([]resolvedAPIKey, 0, len(keys))
+	for _, key := range keys {
+		secret, err := config.ResolveSecret(key.Key)
+		if err != nil || secret == "" {
+			logger.Warn("API key secret did not resolve; using the configured value as a literal key",
+				"name", key.Name, "error", err)
+			secret = key.Key // Fall back to literal if resolution fails
+		}
+		resolved = append(resolved, resolvedAPIKey{conf: key, secret: secret})
 	}
 	return resolved
 }
