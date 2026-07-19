@@ -12,26 +12,29 @@ import (
 
 // RegisterTools registers all vibeD MCP tools with the server.
 //
-// deploySvc, when non-nil, routes the core artifact lifecycle (deploy /
-// update / list / status / delete) through the VibedApp path. When nil those
-// fall back to the orchestrator path. Either way they agree on one backend, so
-// MCP never goes split-brain. The remaining tools (logs, versions, rollback,
-// share) stay on the orchestrator pending a follow-up.
+// deploySvc, when non-nil, routes the artifact lifecycle (deploy / update /
+// list / status / delete) plus logs, versions, rollback, and public share
+// links through the VibedApp path. When nil those fall back to the
+// orchestrator path. Either way they all agree on one backend, so MCP never
+// goes split-brain. Two tool groups stay orchestrator-only: deployment-target
+// discovery (the /v1 path has no target/template enumeration yet — GET
+// /v1/templates is a stub pending milestone C) and per-user share/unshare
+// grants (VibedApp has no SharedWith model).
 func RegisterTools(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, limits config.LimitsConfig, userStore store.UserStore, auditRec *audit.Recorder) {
 	registerDeployTool(server, orch, deploySvc, limits)
 	registerListTool(server, orch, deploySvc)
 	registerStatusTool(server, orch, deploySvc)
 	registerDeleteTool(server, orch, deploySvc)
-	registerLogsTool(server, orch, limits)
+	registerLogsTool(server, orch, deploySvc, limits)
 	registerTargetsTool(server, orch)
 	registerUpdateTool(server, orch, deploySvc, limits)
-	registerListVersionsTool(server, orch)
-	registerRollbackTool(server, orch, auditRec)
+	registerListVersionsTool(server, orch, deploySvc)
+	registerRollbackTool(server, orch, deploySvc, auditRec)
 	registerShareTool(server, orch)
 	registerUnshareTool(server, orch)
-	registerCreateShareLinkTool(server, orch)
-	registerListShareLinksTool(server, orch)
-	registerRevokeShareLinkTool(server, orch)
+	registerCreateShareLinkTool(server, orch, deploySvc)
+	registerListShareLinksTool(server, orch, deploySvc)
+	registerRevokeShareLinkTool(server, orch, deploySvc)
 	if userStore != nil {
 		registerListUsersTool(server, userStore)
 		registerGetUserTool(server, userStore)

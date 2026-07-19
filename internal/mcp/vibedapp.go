@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"sort"
+	"time"
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/pkg/api"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
@@ -96,6 +99,29 @@ func appToArtifact(app *vibedv1.VibedApp) *api.Artifact {
 		a.UpdatedAt = app.Status.LastDeployedAt.Time
 	}
 	return a
+}
+
+// versionRecordToArtifactVersion maps one deploy-history record onto the
+// api.ArtifactVersion shape MCP returns for list_versions (field names are an
+// MCP client contract). Warm-pool apps have no per-version image, so image_ref
+// stays empty and storage_ref carries the retained source instead. Every
+// recorded version was a successful deploy — matching the legacy
+// snapshot-at-success semantics — hence status "running"; URL and creator come
+// from the app (both are per-app, not per-version, on this path).
+func versionRecordToArtifactVersion(app *vibedv1.VibedApp, rec deploy.VersionRecord) api.ArtifactVersion {
+	v := api.ArtifactVersion{
+		VersionID:  fmt.Sprintf("%s.v%d", app.Name, rec.Version),
+		ArtifactID: app.Name,
+		Version:    rec.Version,
+		StorageRef: rec.TarballRef,
+		Status:     api.StatusRunning,
+		URL:        app.Status.URL,
+		CreatedBy:  app.Spec.Owner,
+	}
+	if t, err := time.Parse(time.RFC3339, rec.Timestamp); err == nil {
+		v.CreatedAt = t
+	}
+	return v
 }
 
 // appToSummary maps a VibedApp CR to the api.ArtifactSummary shape MCP
