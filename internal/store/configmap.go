@@ -26,6 +26,13 @@ const maxConfigMapBytes = 900 * 1024
 // Each artifact is stored as a JSON entry keyed by its ID.
 // Versions are stored in a separate ConfigMap named "{name}-versions".
 //
+// Scale: all artifacts share one ConfigMap, so every write is a read-modify-write
+// of the whole object and the aggregate is bounded by etcd's ~1MB object ceiling
+// (updateConfigMap guards it and returns an actionable error before the API
+// would reject the write — #71). This backend is intended for small or dev
+// deployments; use the default "sqlite" backend for many artifacts, which stores
+// each row independently and scales without this ceiling.
+//
 // Concurrency: the store holds no process-wide lock. Reads are independent API
 // Gets. Writes are read-modify-write cycles wrapped in retry-on-conflict, so the
 // API server's optimistic concurrency (ResourceVersion) serializes them

@@ -255,7 +255,10 @@ type RegistryConfig struct {
 }
 
 type StoreConfig struct {
-	Backend   string          `yaml:"backend"` // "sqlite" (default), "memory", or "configmap"
+	// Backend: "sqlite" (default, recommended — scales per-row), "memory", or
+	// "configmap" (small/dev deployments only; all artifacts share one ConfigMap
+	// bounded by etcd's ~1MB object ceiling — see internal/store/configmap.go).
+	Backend   string          `yaml:"backend"`
 	ConfigMap ConfigMapConfig `yaml:"configmap"`
 	SQLite    SQLiteConfig    `yaml:"sqlite"`
 	// Options is a generic bag passed verbatim to the store backend factory.
