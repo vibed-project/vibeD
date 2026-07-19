@@ -85,16 +85,24 @@ func TestSyncOIDCUser_CreateAndResync(t *testing.T) {
 	lg := quietLogger()
 
 	// First login: creates the user.
-	if err := syncOIDCUser(ctx, fs, "sub-1", "alice", "alice@corp", "user", "dept-eng", lg); err != nil {
+	persisted, err := syncOIDCUser(ctx, fs, "sub-1", "alice", "alice@corp", "user", "dept-eng", lg)
+	if err != nil {
 		t.Fatalf("create: %v", err)
+	}
+	if !persisted {
+		t.Error("create reported persisted=false")
 	}
 	u := fs.users["sub-1"]
 	if u == nil || u.Provider != "oidc" || u.Role != "user" || u.DepartmentID != "dept-eng" {
 		t.Fatalf("created = %+v", u)
 	}
 	// Second login with promoted role + new email + dept: re-syncs.
-	if err := syncOIDCUser(ctx, fs, "sub-1", "alice", "alice@newcorp", "admin", "dept-plat", lg); err != nil {
+	persisted, err = syncOIDCUser(ctx, fs, "sub-1", "alice", "alice@newcorp", "admin", "dept-plat", lg)
+	if err != nil {
 		t.Fatalf("resync: %v", err)
+	}
+	if !persisted {
+		t.Error("resync reported persisted=false")
 	}
 	u = fs.users["sub-1"]
 	if u.Role != "admin" || u.Email != "alice@newcorp" || u.DepartmentID != "dept-plat" {
@@ -108,7 +116,7 @@ func TestSyncOIDCUser_CrossProviderBindRefused(t *testing.T) {
 	// An apikey account whose id collides with an OIDC sub.
 	fs.users["collide"] = &api.User{ID: "collide", Name: "svc", Provider: "local", Status: "active"}
 
-	err := syncOIDCUser(ctx, fs, "collide", "attacker", "", "admin", "", quietLogger())
+	_, err := syncOIDCUser(ctx, fs, "collide", "attacker", "", "admin", "", quietLogger())
 	if err == nil {
 		t.Fatal("cross-provider bind was allowed")
 	}

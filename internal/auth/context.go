@@ -10,6 +10,7 @@ type contextKey string
 
 const roleKey contextKey = "vibed-role"
 const userIDKey contextKey = "vibed-user-id"
+const identityKey contextKey = "vibed-identity"
 
 // UserIDFromContext extracts the authenticated user's ID from the request context.
 // The MCP SDK stores TokenInfo in context via auth.TokenInfoFromContext().
@@ -30,6 +31,25 @@ func UserIDFromContext(ctx context.Context) string {
 // that must preserve the caller's identity (e.g. async deploy goroutines).
 func WithUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, userIDKey, userID)
+}
+
+// WithIdentity stores the request's resolved identity in the context. The auth
+// middleware sets it once per request after token verification (see Build);
+// downstream consumers (the suspended-user check, RoleMiddleware) read it via
+// IdentityFromContext instead of re-querying the user store.
+func WithIdentity(ctx context.Context, ident *Identity) context.Context {
+	return context.WithValue(ctx, identityKey, ident)
+}
+
+// IdentityFromContext returns the identity resolved for this request, or nil
+// when none was resolved (auth disabled, no user store, or an exotic
+// middleware order that bypassed resolution — callers must keep their store
+// fallback for that case).
+func IdentityFromContext(ctx context.Context) *Identity {
+	if ident, ok := ctx.Value(identityKey).(*Identity); ok {
+		return ident
+	}
+	return nil
 }
 
 // WithRole adds the user's role to the context.

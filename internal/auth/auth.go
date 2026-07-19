@@ -61,16 +61,28 @@ func Build(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger
 	tokenMiddleware := mcpauth.RequireBearerToken(prov.Verifier, opts)
 	logger.Info("authentication enabled", "mode", cfg.Mode, "loginRoutes", len(prov.Routes))
 
-	// Wrap with suspended user check
+	// Resolve the caller's identity ONCE per request (with a bounded TTL cache
+	// in front of the user store, see identityResolver) and flow it via context.
+	// The suspended-user check below and RoleMiddleware both read that identity,
+	// so an authenticated request costs at most one user-store lookup — zero
+	// within the cache TTL.
+	resolver := newIdentityResolver(userStore, cfg.IdentityCacheTTL)
+
+	// Wrap with identity resolution + suspended user check
 	middleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Let token auth run first (sets user identity in context)
 			// We intercept by wrapping next with a status checker
 			statusChecker := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				userID := UserIDFromContext(r.Context())
-				if userStore != nil && userID != "" {
-					user, err := userStore.GetUser(r.Context(), userID)
-					if err == nil && user.Status == "suspended" {
+				if userID != "" {
+					ident := IdentityFromContext(r.Context())
+					if ident == nil || ident.ID != userID {
+						if ident = resolver.Resolve(r.Context(), userID); ident != nil {
+							r = r.WithContext(WithIdentity(r.Context(), ident))
+						}
+					}
+					if ident != nil && ident.Status == "suspended" {
 						http.Error(w, "account suspended", http.StatusUnauthorized)
 						return
 					}
@@ -195,6 +207,17 @@ func apiKeyUserID(name string) string {
 // or environment access on the hot path.
 // If userStore is non-nil, it auto-provisions users on first authentication.
 func apiKeyVerifier(keys []resolvedAPIKey, userStore store.UserStore, logger *slog.Logger) mcpauth.TokenVerifier {
+	// Auto-provision runs at most once per key per process: the record's
+	// existence never regresses (the user store has no delete), so re-checking
+	// it on every request only cost an extra GetUser round-trip. First
+	// authentication still performs the full existence check + create, so a
+	// record that already exists (e.g. after a restart) is never re-created.
+	provisionOnce := make(map[string]*sync.Once, len(keys))
+	for _, key := range keys {
+		if key.conf.Name != "" {
+			provisionOnce[key.conf.Name] = &sync.Once{}
+		}
+	}
 	return func(ctx context.Context, token string, req *http.Request) (*mcpauth.TokenInfo, error) {
 		for _, key := range keys {
 			if subtle.ConstantTimeCompare([]byte(token), []byte(key.secret)) == 1 {
@@ -205,7 +228,9 @@ func apiKeyVerifier(keys []resolvedAPIKey, userStore store.UserStore, logger *sl
 
 				// Auto-provision user on first authentication
 				if userStore != nil && key.conf.Name != "" {
-					autoProvisionAPIKeyUser(ctx, userStore, key.conf, logger)
+					if once := provisionOnce[key.conf.Name]; once != nil {
+						once.Do(func() { autoProvisionAPIKeyUser(ctx, userStore, key.conf, logger) })
+					}
 				}
 
 				return &mcpauth.TokenInfo{
@@ -397,16 +422,24 @@ func BuildRoleMap(keys []config.APIKeyConf) map[string]string {
 }
 
 // RoleMiddleware creates middleware that injects the authenticated user's role into the context.
-// It checks the roleMap first (for API key users), then falls back to the user store (for OIDC users).
+// It checks the roleMap first (for API key users), then the request-scoped
+// identity the auth middleware resolved (for OIDC / runtime-key users), and
+// only falls back to a user-store lookup when no identity was resolved —
+// defensive for middleware orders that bypass Build's resolution, preserving
+// the pre-identity behavior on such paths.
 func RoleMiddleware(roleMap map[string]string, userStore store.UserStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID := UserIDFromContext(r.Context())
 			if userID != "" {
 				role := roleMap[userID]
-				if role == "" && userStore != nil {
-					if u, err := userStore.GetUser(r.Context(), userID); err == nil {
-						role = u.Role
+				if role == "" {
+					if ident := IdentityFromContext(r.Context()); ident != nil && ident.ID == userID {
+						role = ident.Role
+					} else if userStore != nil {
+						if u, err := userStore.GetUser(r.Context(), userID); err == nil {
+							role = u.Role
+						}
 					}
 				}
 				if role == "" {
@@ -450,8 +483,11 @@ func resolveAPIKeys(keys []config.APIKeyConf, logger *slog.Logger) []resolvedAPI
 }
 
 // newOIDCVerifier creates a TokenVerifier that validates JWTs against an OIDC provider.
-// It auto-provisions user records in the store on first login.
-func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *slog.Logger) (mcpauth.TokenVerifier, error) {
+// It auto-provisions user records in the store on first login and re-syncs
+// them only when the incoming claims changed since the last persisted sync
+// (see oidcSyncer); syncTTL is how long an unchanged-claims fingerprint may
+// skip the store, sharing auth.identityCacheTTL.
+func newOIDCVerifier(cfg config.OIDCConfig, syncTTL time.Duration, userStore store.UserStore, logger *slog.Logger) (mcpauth.TokenVerifier, error) {
 	provider, err := oidc.NewProvider(context.Background(), cfg.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("discovering OIDC provider %q: %w", cfg.Issuer, err)
@@ -490,6 +526,8 @@ func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *s
 		"adminRole", adminRole,
 	)
 
+	syncer := newOIDCSyncer(userStore, cfg.DepartmentClaim, syncTTL, logger)
+
 	return func(ctx context.Context, token string, req *http.Request) (*mcpauth.TokenInfo, error) {
 		idToken, err := idTokenVerifier.Verify(ctx, token)
 		if err != nil {
@@ -522,11 +560,13 @@ func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *s
 		}
 
 		// Provision / re-sync the user (parity with SAML: cross-provider bind
-		// guard + role/email/department sync on every login). A refused bind
-		// (the sub collides with a non-OIDC account) rejects the token.
+		// guard + role/email/department sync). A refused bind (the sub
+		// collides with a non-OIDC account) rejects the token — and is never
+		// fingerprint-cached, so it stays refused on the next request. When
+		// the claims match the subject's last persisted sync (within syncTTL),
+		// the store round-trips are skipped entirely.
 		if userStore != nil {
-			deptID := resolveOIDCDepartment(ctx, userStore, cfg.DepartmentClaim, claims, logger)
-			if err := syncOIDCUser(ctx, userStore, sub, username, email, role, deptID, logger); err != nil {
+			if err := syncer.sync(ctx, sub, username, email, role, claims); err != nil {
 				logger.Warn("OIDC: bind refused", "sub", sub, "error", err)
 				return nil, mcpauth.ErrInvalidToken
 			}
@@ -544,11 +584,14 @@ func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *s
 // syncOIDCUser provisions a new OIDC user or re-syncs an existing one. It
 // returns an error when sub already belongs to a non-OIDC account (cross-
 // provider bind refused), so the verifier can reject the token — mirroring the
-// SAML provider's guard. Re-sync updates role/email/department on each login.
-func syncOIDCUser(ctx context.Context, userStore store.UserStore, sub, username, email, role, deptID string, logger *slog.Logger) error {
+// SAML provider's guard. Re-sync writes only when role/email/department
+// actually changed. persisted reports whether the store now matches the
+// incoming claims; it is false when a write failed (or lost a create race) so
+// the caller must not fingerprint-cache the sync and the next login retries.
+func syncOIDCUser(ctx context.Context, userStore store.UserStore, sub, username, email, role, deptID string, logger *slog.Logger) (persisted bool, err error) {
 	if existing, err := userStore.GetUser(ctx, sub); err == nil && existing != nil {
 		if existing.Provider != "oidc" {
-			return fmt.Errorf("refusing to bind to %s account %q", existing.Provider, sub)
+			return false, fmt.Errorf("refusing to bind to %s account %q", existing.Provider, sub)
 		}
 		changed := false
 		if existing.Role != role {
@@ -567,9 +610,10 @@ func syncOIDCUser(ctx context.Context, userStore store.UserStore, sub, username,
 			existing.UpdatedAt = time.Now()
 			if err := userStore.UpdateUser(ctx, existing); err != nil {
 				logger.Warn("OIDC: user re-sync failed", "sub", sub, "error", err)
+				return false, nil
 			}
 		}
-		return nil
+		return true, nil
 	}
 	now := time.Now()
 	u := &api.User{
@@ -580,10 +624,10 @@ func syncOIDCUser(ctx context.Context, userStore store.UserStore, sub, username,
 	if err := userStore.CreateUser(ctx, u); err != nil {
 		// A lost create race is fine (the row now exists); only log.
 		logger.Debug("OIDC auto-provision (may already exist)", "sub", sub, "error", err)
-	} else {
-		logger.Info("auto-provisioned OIDC user", "sub", sub, "name", username, "role", role, "department", deptID)
+		return false, nil
 	}
-	return nil
+	logger.Info("auto-provisioned OIDC user", "sub", sub, "name", username, "role", role, "department", deptID)
+	return true, nil
 }
 
 // resolveOIDCDepartment get-or-creates the department named by departmentClaim

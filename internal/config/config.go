@@ -91,6 +91,16 @@ type AuthConfig struct {
 	// apikey/oidc modes.
 	TrustedProxies []string `yaml:"trustedProxies,omitempty"`
 
+	// IdentityCacheTTL caps how long a resolved user identity (role, status,
+	// department) — and, for OIDC, an unchanged-claims sync fingerprint — may
+	// be served from the in-memory cache before the user store is consulted
+	// again. It is therefore the propagation bound for account changes: a
+	// suspension or role edit takes effect within at most this TTL on a warm
+	// cache. <=0 disables caching; every request then hits the user store
+	// exactly once (identity is still resolved once per request, not once per
+	// middleware). Default: 30s.
+	IdentityCacheTTL time.Duration `yaml:"identityCacheTTL,omitempty"`
+
 	// DevInsecure must be set to true to run with auth disabled
 	// (enabled=false) on a non-loopback bind. Without it the server refuses to
 	// start in that configuration, because auth-disabled mode treats every
@@ -305,6 +315,9 @@ func Default() *Config {
 				WriteRequestsPerSecond: 1,
 				WriteBurst:             5,
 			},
+		},
+		Auth: AuthConfig{
+			IdentityCacheTTL: 30 * time.Second, // suspension/role-change propagation bound; 0 disables
 		},
 		Deployment: DeploymentConfig{
 			PreferredTarget: "auto",

@@ -31,7 +31,7 @@ func init() {
 	})
 
 	RegisterProvider("oidc", func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (*Provider, error) {
-		v, err := newOIDCVerifier(cfg.OIDC, userStore, logger)
+		v, err := newOIDCVerifier(cfg.OIDC, cfg.IdentityCacheTTL, userStore, logger)
 		if err != nil {
 			return nil, fmt.Errorf("initializing OIDC verifier: %w", err)
 		}
