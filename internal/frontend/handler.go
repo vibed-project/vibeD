@@ -10,6 +10,7 @@ import (
         "fmt"
         "io"
         "io/fs"
+        "log/slog"
         "net/http"
         "strconv"
         "strings"
@@ -60,8 +61,13 @@ func NewHandler(orch *orchestrator.Orchestrator, deploySvc *deploy.Service, cfg 
         mux.HandleFunc("/api/events", handleSSE(bus, m))
 
         // API routes
-        mux.HandleFunc("/api/artifacts", handleArtifacts(orch, deploySvc))
-        mux.HandleFunc("/api/artifacts/", handleArtifacts(orch, deploySvc))
+        //
+        // The legacy /api/artifacts surface is superseded by /v1/apps and slated
+        // for removal in a later release. Keep serving it for now, but flag every
+        // response via deprecated() and warn once at startup so operators notice.
+        slog.Warn("the /api/artifacts endpoints are deprecated; use /v1/apps")
+        mux.HandleFunc("/api/artifacts", deprecated(handleArtifacts(orch, deploySvc)))
+        mux.HandleFunc("/api/artifacts/", deprecated(handleArtifacts(orch, deploySvc)))
         mux.HandleFunc("/api/targets", handleTargets(orch))
         mux.HandleFunc("/api/whoami", handleWhoami(userStore))
         mux.HandleFunc("/api/organization", handleOrganization(cfg))
@@ -911,6 +917,19 @@ func handlePublicShareLink(orch *orchestrator.Orchestrator, deploySvc *deploy.Se
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// deprecated marks a legacy route by attaching advisory headers to every
+// response before delegating. Kept deliberately minimal: "Deprecation: true"
+// follows the draft-ietf-httpapi-deprecation-header convention, and
+// X-Deprecated-Use points callers at the replacement surface. No Sunset
+// header is set because removal has no fixed date yet.
+func deprecated(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Deprecation", "true")
+		w.Header().Set("X-Deprecated-Use", "/v1/apps")
+		next(w, r)
 	}
 }
 
