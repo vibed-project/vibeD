@@ -9,6 +9,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vibed-project/vibeD/internal/audit"
+	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/authz"
 	"github.com/vibed-project/vibeD/internal/meter"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
@@ -35,10 +37,41 @@ func (s *Service) Get(ctx context.Context, owner, id string) (*vibedv1.VibedApp,
 	if err != nil {
 		return nil, fmt.Errorf("get VibedApp: %w", err)
 	}
+	// An Authorizer replaces the built-in owner check: it may grant a teammate
+	// read access. A denied read is reported as ErrNotFound (not 403) to avoid
+	// leaking the existence of apps the caller cannot see, matching the built-in.
+	if s.Authz != nil {
+		if aerr := s.authorize(ctx, authz.ActionAppGet, app, owner); aerr != nil {
+			return nil, ErrNotFound
+		}
+		return app, nil
+	}
 	if app.Spec.Owner != owner {
 		return nil, ErrNotFound
 	}
 	return app, nil
+}
+
+// authorize consults the registered Authorizer for action on app by owner. It
+// returns nil (allow) when no Authorizer is registered. app may be nil for
+// collection/creation actions, in which case only the identity is checked.
+func (s *Service) authorize(ctx context.Context, action authz.Action, app *vibedv1.VibedApp, owner string) error {
+	if s.Authz == nil {
+		return nil
+	}
+	res := authz.Resource{Kind: "app"}
+	if app != nil {
+		res.ID = app.Name
+		res.Owner = app.Spec.Owner
+		res.Namespace = app.Namespace
+		res.Department = app.Labels[vibedv1.LabelDepartment]
+	}
+	return s.Authz.Authorize(ctx, authz.Request{
+		Subject:  owner,
+		Role:     vibedauth.RoleFromContext(ctx),
+		Action:   action,
+		Resource: res,
+	})
 }
 
 // List returns every VibedApp owned by owner in the request's tenant namespace.
@@ -70,9 +103,13 @@ func (s *Service) SetSuspended(ctx context.Context, owner, id string, suspended 
 	if suspended {
 		action = "suspend"
 	}
-	app, err := s.Get(ctx, owner, id) // ownership-checked
+	app, err := s.Get(ctx, owner, id) // ownership-checked (read)
 	if err != nil {
 		return nil, err
+	}
+	if aerr := s.authorize(ctx, authz.ActionAppSuspend, app, owner); aerr != nil {
+		_ = s.record(ctx, action, id, "denied", aerr.Error())
+		return nil, aerr
 	}
 	if app.Spec.Suspended == suspended {
 		return app, nil // already in the desired state
@@ -99,6 +136,10 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 	app, err := s.Get(ctx, owner, id)
 	if err != nil {
 		return err
+	}
+	if aerr := s.authorize(ctx, authz.ActionAppDelete, app, owner); aerr != nil {
+		_ = s.record(ctx, "delete", id, "denied", aerr.Error())
+		return aerr
 	}
 	if derr := s.Client.Delete(ctx, app); derr != nil && !apierrors.IsNotFound(derr) {
 		_ = s.record(ctx, "delete", id, "error", derr.Error())

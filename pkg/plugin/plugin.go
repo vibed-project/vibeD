@@ -29,6 +29,7 @@ import (
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 
 	"github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/authz"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/entitlements"
 	"github.com/vibed-project/vibeD/internal/meter"
@@ -158,6 +159,41 @@ type (
 // RegisterPolicyGate installs the process policy gate factory (at most one). The
 // core installs no gate, so deploys are unrestricted until one is registered.
 func RegisterPolicyGate(f func(PolicyDeps) (PolicyGate, error)) { policy.Register(f) }
+
+// --- Authorization (per-action RBAC) ---------------------------------------
+
+// Authorizer decides a single AuthzRequest — may a subject perform an action on
+// a resource. When registered it replaces the core's built-in owner/admin check
+// at the artifact chokepoints, so it can grant scoped access (e.g. a teammate)
+// or deny access the owner check would allow. AuthzResource/AuthzAction describe
+// the target; AuthzDeniedError (or any error whose Forbidden() is true) makes
+// the API return 403. AuthzDeps is what an authorizer factory receives.
+type (
+	Authorizer       = authz.Authorizer
+	AuthzRequest     = authz.Request
+	AuthzResource    = authz.Resource
+	AuthzAction      = authz.Action
+	AuthzDeniedError = authz.DeniedError
+	AuthzDeps        = authz.Deps
+)
+
+// Authz action constants, re-exported for out-of-tree authorizers.
+const (
+	AuthzAppGet      = authz.ActionAppGet
+	AuthzAppList     = authz.ActionAppList
+	AuthzAppDeploy   = authz.ActionAppDeploy
+	AuthzAppDelete   = authz.ActionAppDelete
+	AuthzAppRollback = authz.ActionAppRollback
+	AuthzAppSuspend  = authz.ActionAppSuspend
+	AuthzAppShare    = authz.ActionAppShare
+	AuthzUserManage  = authz.ActionUserManage
+	AuthzAuditRead   = authz.ActionAuditRead
+)
+
+// RegisterAuthorizer installs the process authorizer factory (at most one). The
+// core installs none, so the built-in owner/admin checks stay in effect until
+// one is registered.
+func RegisterAuthorizer(f func(AuthzDeps) (Authorizer, error)) { authz.Register(f) }
 
 // --- Metering (usage) ------------------------------------------------------
 

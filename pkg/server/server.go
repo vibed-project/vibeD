@@ -25,6 +25,7 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/audit"
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/authz"
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
@@ -338,6 +339,18 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 			os.Exit(1)
 		}
 		deploySvc.Policy = gate
+
+		// Per-action authorizer (none by default → built-in owner/admin checks).
+		// An out-of-tree module may register RBAC.
+		az, aerr := authz.Build(authz.Deps{})
+		if aerr != nil {
+			logger.Error("failed to build authorizer", "error", aerr)
+			os.Exit(1)
+		}
+		deploySvc.Authz = az
+		if az != nil {
+			logger.Info("per-action authorizer enabled")
+		}
 
 		sink, merr := meter.Build(meter.Deps{})
 		if merr != nil {
