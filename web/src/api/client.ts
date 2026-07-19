@@ -112,6 +112,25 @@ async function fetchWithTimeout(url: string, opts?: RequestInit): Promise<Respon
   }
 }
 
+// ApiError carries the numeric HTTP status so callers can branch on it reliably.
+// Response.statusText is empty over HTTP/2 (the protocol dropped the reason
+// phrase), so error handling must never depend on it — e.g. the dashboard's
+// login gate keys off a 401 (issue #41).
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+// httpError builds an ApiError from a failed response, tagging the message with
+// the numeric status (not statusText, which is blank over HTTP/2).
+function httpError(res: Response, context: string): ApiError {
+  return new ApiError(res.status, `${context} (HTTP ${res.status})`);
+}
+
 export interface ArtifactListResult {
   artifacts: ArtifactSummary[];
   total: number;
@@ -163,7 +182,7 @@ function mapApp(a: ApiApp): Artifact {
 
 export async function fetchArtifacts(_status?: string, _offset = 0, _limit = 50): Promise<ArtifactListResult> {
   const res = await fetchWithTimeout(`${BASE}/v1/apps`);
-  if (!res.ok) throw new Error(`Failed to fetch apps: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch apps");
   const data = await res.json();
   const items: ApiApp[] = data?.items ?? [];
   const artifacts = items.map(mapApp);
@@ -172,7 +191,7 @@ export async function fetchArtifacts(_status?: string, _offset = 0, _limit = 50)
 
 export async function fetchArtifact(id: string): Promise<Artifact> {
   const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}`);
-  if (!res.ok) throw new Error(`Failed to fetch app: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch app");
   return mapApp(await res.json());
 }
 
@@ -182,7 +201,7 @@ export async function fetchLogs(id: string): Promise<LogsResponse> {
   // snapshot is sent — so a plain fetch resolves. The viewer polls this.
   const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}/logs`);
   if (res.status === 404) return { artifact_id: id, logs: [] };
-  if (!res.ok) throw new Error(`Failed to fetch logs: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch logs");
   const logs = (await res.text())
     .split('\n')
     .filter((l) => l.startsWith('data: '))
@@ -192,24 +211,24 @@ export async function fetchLogs(id: string): Promise<LogsResponse> {
 
 export async function deleteArtifact(id: string): Promise<void> {
   const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}`, { method: 'DELETE' });
-  if (!res.ok && res.status !== 404) throw new Error(`Failed to delete app: ${res.statusText}`);
+  if (!res.ok && res.status !== 404) throw httpError(res, "Failed to delete app");
 }
 
 export async function fetchTargets(): Promise<TargetInfo[]> {
   const res = await fetchWithTimeout(`${BASE}/api/targets`);
-  if (!res.ok) throw new Error(`Failed to fetch targets: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch targets");
   return res.json();
 }
 
 export async function fetchWhoami(): Promise<WhoAmI> {
   const res = await fetchWithTimeout(`${BASE}/api/whoami`);
-  if (!res.ok) throw new Error(`Failed to fetch user info: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch user info");
   return res.json();
 }
 
 export async function fetchOrganization(): Promise<OrganizationInfo> {
   const res = await fetchWithTimeout(`${BASE}/api/organization`);
-  if (!res.ok) throw new Error(`Failed to fetch organization: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch organization");
   return res.json();
 }
 
@@ -226,7 +245,7 @@ interface ApiVersion {
 export async function fetchVersions(id: string): Promise<ArtifactVersion[]> {
   const res = await fetchWithTimeout(`${BASE}/v1/apps/${id}/versions`);
   if (res.status === 404) return [];
-  if (!res.ok) throw new Error(`Failed to fetch versions: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch versions");
   const data = await res.json();
   const items: ApiVersion[] = data?.items ?? [];
   return items.map((v) => ({
@@ -246,7 +265,7 @@ export async function rollbackArtifact(id: string, version: number): Promise<voi
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version }),
   });
-  if (!res.ok) throw new Error(`Failed to roll back app: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to roll back app");
 }
 
 export async function shareArtifact(id: string, userIds: string[]): Promise<void> {
@@ -255,7 +274,7 @@ export async function shareArtifact(id: string, userIds: string[]): Promise<void
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_ids: userIds }),
   });
-  if (!res.ok) throw new Error(`Failed to share artifact: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to share artifact");
 }
 
 export async function unshareArtifact(id: string, userIds: string[]): Promise<void> {
@@ -264,14 +283,14 @@ export async function unshareArtifact(id: string, userIds: string[]): Promise<vo
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_ids: userIds }),
   });
-  if (!res.ok) throw new Error(`Failed to unshare artifact: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to unshare artifact");
 }
 
 // User management (admin)
 
 export async function fetchUsers(): Promise<User[]> {
   const res = await fetchWithTimeout(`${BASE}/api/users`);
-  if (!res.ok) throw new Error(`Failed to fetch users: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch users");
   return res.json();
 }
 
@@ -281,13 +300,13 @@ export async function createUser(name: string, email: string, role: string): Pro
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, email, role }),
   });
-  if (!res.ok) throw new Error(`Failed to create user: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to create user");
   return res.json();
 }
 
 export async function fetchUser(id: string): Promise<User> {
   const res = await fetchWithTimeout(`${BASE}/api/users/${id}`);
-  if (!res.ok) throw new Error(`Failed to fetch user: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch user");
   return res.json();
 }
 
@@ -297,13 +316,13 @@ export async function updateUser(id: string, updates: { role?: string; status?: 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
   });
-  if (!res.ok) throw new Error(`Failed to update user: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to update user");
   return res.json();
 }
 
 export async function suspendUser(id: string): Promise<User> {
   const res = await fetchWithTimeout(`${BASE}/api/users/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Failed to suspend user: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to suspend user");
   return res.json();
 }
 
@@ -311,7 +330,7 @@ export async function suspendUser(id: string): Promise<User> {
 
 export async function fetchDepartments(): Promise<Department[]> {
   const res = await fetchWithTimeout(`${BASE}/api/departments`);
-  if (!res.ok) throw new Error(`Failed to fetch departments: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to fetch departments");
   return res.json();
 }
 
@@ -321,7 +340,7 @@ export async function createDepartment(name: string): Promise<Department> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   });
-  if (!res.ok) throw new Error(`Failed to create department: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to create department");
   return res.json();
 }
 
@@ -331,13 +350,13 @@ export async function updateDepartment(id: string, name: string): Promise<Depart
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   });
-  if (!res.ok) throw new Error(`Failed to update department: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to update department");
   return res.json();
 }
 
 export async function deleteDepartment(id: string): Promise<void> {
   const res = await fetchWithTimeout(`${BASE}/api/departments/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Failed to delete department: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to delete department");
 }
 
 // Share links
@@ -363,19 +382,19 @@ export async function createShareLink(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password: password || '', expires_in: expiresIn || '' }),
   });
-  if (!res.ok) throw new Error(`Failed to create share link: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to create share link");
   return res.json();
 }
 
 export async function listShareLinks(artifactId: string): Promise<ShareLink[]> {
   const res = await fetchWithTimeout(`${BASE}/api/artifacts/${artifactId}/share-links`);
-  if (!res.ok) throw new Error(`Failed to list share links: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to list share links");
   return res.json();
 }
 
 export async function revokeShareLink(token: string): Promise<void> {
   const res = await fetchWithTimeout(`${BASE}/api/share-links/${token}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Failed to revoke share link: ${res.statusText}`);
+  if (!res.ok) throw httpError(res, "Failed to revoke share link");
 }
 
 export async function resolveShareLink(

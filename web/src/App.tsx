@@ -109,7 +109,11 @@ function App() {
         setNeedsAuth(false)
       })
       .catch((err) => {
-        if (err?.message?.includes('401') || err?.message?.includes('Unauthorized')) {
+        // Key off the numeric status, not the message: Response.statusText is
+        // empty over HTTP/2 so the old string match never fired behind an HTTP/2
+        // gateway, leaving the login form hidden (issue #41). The string checks
+        // stay as a fallback for any error that doesn't carry a status.
+        if (err?.status === 401 || err?.message?.includes('401') || err?.message?.includes('Unauthorized')) {
           setNeedsAuth(true)
         }
         // Auth may be disabled — that's fine
