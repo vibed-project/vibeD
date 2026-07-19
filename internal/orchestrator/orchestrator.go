@@ -18,6 +18,7 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/appspec"
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/authz"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deployer"
 	"github.com/vibed-project/vibeD/internal/environment"
@@ -85,6 +86,10 @@ type Orchestrator struct {
 	shareLinkStore store.ShareLinkStore
 	tracer         trace.Tracer
 	logger         *slog.Logger
+
+	// authorizer, when set, replaces the built-in owner/admin/shared checks with
+	// per-action RBAC (see checkOwnership/checkWriteOwnership). nil = built-in.
+	authorizer authz.Authorizer
 
 	// lifeCtx is cancelled on orchestrator Shutdown — async goroutines derive
 	// their context from this so SIGTERM unblocks in-flight deploys instead of
@@ -421,7 +426,7 @@ func (o *Orchestrator) AsyncUpdate(ctx context.Context, req UpdateRequest) (*Dep
 	if err != nil {
 		return nil, err
 	}
-	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+	if err := o.checkWriteOwnership(ctx, artifact, authz.ActionAppDeploy); err != nil {
 		return nil, err
 	}
 
@@ -494,7 +499,7 @@ func (o *Orchestrator) doUpdate(ctx context.Context, req UpdateRequest) (*Deploy
 		return nil, err
 	}
 
-	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+	if err := o.checkWriteOwnership(ctx, artifact, authz.ActionAppDeploy); err != nil {
 		return nil, err
 	}
 
@@ -565,7 +570,7 @@ func (o *Orchestrator) Delete(ctx context.Context, artifactID string) error {
 		return err
 	}
 
-	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+	if err := o.checkWriteOwnership(ctx, artifact, authz.ActionAppDelete); err != nil {
 		o.metrics.DeletesTotal.WithLabelValues("failed").Inc()
 		return err
 	}
@@ -621,7 +626,7 @@ func (o *Orchestrator) Status(ctx context.Context, artifactID string) (*api.Arti
 	if err != nil {
 		return nil, err
 	}
-	if err := o.checkOwnership(ctx, artifact); err != nil {
+	if err := o.checkOwnership(ctx, artifact, authz.ActionAppGet); err != nil {
 		return nil, err
 	}
 	return artifact, nil
@@ -654,7 +659,7 @@ func (o *Orchestrator) Logs(ctx context.Context, artifactID string, lines int) (
 		return nil, err
 	}
 
-	if err := o.checkOwnership(ctx, artifact); err != nil {
+	if err := o.checkOwnership(ctx, artifact, authz.ActionAppGet); err != nil {
 		return nil, err
 	}
 
@@ -684,18 +689,42 @@ func (o *Orchestrator) authEnabled() bool {
 	return o.cfg != nil && o.cfg.Auth.Enabled
 }
 
-// checkOwnership verifies that the current user can read the artifact.
-// Allows: owner, admin, or users in the SharedWith list.
+// SetAuthorizer installs a per-action authorizer that replaces the built-in
+// owner/admin/shared checks. Called once at startup; nil keeps the built-ins.
+func (o *Orchestrator) SetAuthorizer(a authz.Authorizer) { o.authorizer = a }
+
+// artifactResource maps a legacy artifact to the authorizer's resource shape.
+func artifactResource(a *api.Artifact) authz.Resource {
+	return authz.Resource{
+		Kind: "app", ID: a.ID, Owner: a.OwnerID,
+		Namespace: a.Namespace, SharedWith: a.SharedWith,
+	}
+}
+
+// checkOwnership verifies that the current user can read the artifact under the
+// given read action. Allows: owner, admin, or users in the SharedWith list —
+// or, when an authorizer is installed, whatever it permits.
 // Returns ErrNotFound (not Forbidden) to avoid leaking artifact existence to non-owners.
 // With auth disabled all checks pass (dev/no-auth); with auth enabled a caller
 // with no identity is denied.
-func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifact) error {
+func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifact, action authz.Action) error {
 	if !o.authEnabled() {
 		return nil // Auth disabled — no ownership enforcement
 	}
 	ownerID := vibedauth.UserIDFromContext(ctx)
 	if ownerID == "" {
 		return &api.ErrNotFound{ArtifactID: artifact.ID} // auth on, no identity → fail closed
+	}
+	if o.authorizer != nil {
+		// A denial is reported as ErrNotFound (not Forbidden) to preserve this
+		// path's existence-hiding convention; the authorizer still records it.
+		if err := o.authorizer.Authorize(ctx, authz.Request{
+			Subject: ownerID, Role: vibedauth.RoleFromContext(ctx),
+			Action: action, Resource: artifactResource(artifact),
+		}); err != nil {
+			return &api.ErrNotFound{ArtifactID: artifact.ID}
+		}
+		return nil
 	}
 	if vibedauth.IsAdmin(ctx) {
 		return nil // Admin can access everything
@@ -712,15 +741,25 @@ func (o *Orchestrator) checkOwnership(ctx context.Context, artifact *api.Artifac
 	return &api.ErrNotFound{ArtifactID: artifact.ID}
 }
 
-// checkWriteOwnership verifies that the current user can modify the artifact.
-// Only owner and admin can write — shared users have read-only access.
-func (o *Orchestrator) checkWriteOwnership(ctx context.Context, artifact *api.Artifact) error {
+// checkWriteOwnership verifies that the current user can perform the given write
+// action on the artifact. Only owner and admin can write — shared users have
+// read-only access — or, when an authorizer is installed, whatever it permits.
+func (o *Orchestrator) checkWriteOwnership(ctx context.Context, artifact *api.Artifact, action authz.Action) error {
 	if !o.authEnabled() {
 		return nil // Auth disabled
 	}
 	ownerID := vibedauth.UserIDFromContext(ctx)
 	if ownerID == "" {
 		return &api.ErrNotFound{ArtifactID: artifact.ID} // auth on, no identity → fail closed
+	}
+	if o.authorizer != nil {
+		if err := o.authorizer.Authorize(ctx, authz.Request{
+			Subject: ownerID, Role: vibedauth.RoleFromContext(ctx),
+			Action: action, Resource: artifactResource(artifact),
+		}); err != nil {
+			return &api.ErrNotFound{ArtifactID: artifact.ID}
+		}
+		return nil
 	}
 	if vibedauth.IsAdmin(ctx) {
 		return nil // Admin can modify everything
@@ -1163,7 +1202,7 @@ func (o *Orchestrator) ListVersions(ctx context.Context, artifactID string) ([]a
 	if err != nil {
 		return nil, err
 	}
-	if err := o.checkOwnership(ctx, artifact); err != nil {
+	if err := o.checkOwnership(ctx, artifact, authz.ActionAppGet); err != nil {
 		return nil, err
 	}
 	return o.store.ListVersions(ctx, artifactID)
@@ -1184,7 +1223,7 @@ func (o *Orchestrator) Rollback(ctx context.Context, artifactID string, targetVe
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
 	}
-	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+	if err := o.checkWriteOwnership(ctx, artifact, authz.ActionAppRollback); err != nil {
 		return nil, err
 	}
 
@@ -1253,7 +1292,7 @@ func (o *Orchestrator) ShareArtifact(ctx context.Context, artifactID string, use
 	if err != nil {
 		return err
 	}
-	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+	if err := o.checkWriteOwnership(ctx, artifact, authz.ActionAppShare); err != nil {
 		return err
 	}
 
@@ -1281,7 +1320,7 @@ func (o *Orchestrator) UnshareArtifact(ctx context.Context, artifactID string, u
 	if err != nil {
 		return err
 	}
-	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+	if err := o.checkWriteOwnership(ctx, artifact, authz.ActionAppShare); err != nil {
 		return err
 	}
 
@@ -1316,7 +1355,7 @@ func (o *Orchestrator) CreateShareLink(ctx context.Context, artifactID, password
 	if err != nil {
 		return nil, err
 	}
-	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+	if err := o.checkWriteOwnership(ctx, artifact, authz.ActionAppShare); err != nil {
 		return nil, err
 	}
 
@@ -1370,7 +1409,7 @@ func (o *Orchestrator) ListShareLinks(ctx context.Context, artifactID string) ([
 	if err != nil {
 		return nil, err
 	}
-	if err := o.checkOwnership(ctx, artifact); err != nil {
+	if err := o.checkOwnership(ctx, artifact, authz.ActionAppGet); err != nil {
 		return nil, err
 	}
 	links, err := o.shareLinkStore.ListShareLinks(ctx, artifactID)
@@ -1399,7 +1438,7 @@ func (o *Orchestrator) RevokeShareLink(ctx context.Context, token string) error 
 	if err != nil {
 		return err
 	}
-	if err := o.checkWriteOwnership(ctx, artifact); err != nil {
+	if err := o.checkWriteOwnership(ctx, artifact, authz.ActionAppShare); err != nil {
 		return err
 	}
 	return o.shareLinkStore.RevokeShareLink(ctx, token)

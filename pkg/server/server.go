@@ -279,6 +279,19 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 
 	orch := orchestrator.NewOrchestrator(cfg, detector, factory, stg, st, userStore, m, k8sClients.Clientset, bus, shareLinkStore, logger)
 
+	// Per-action authorizer (none by default → built-in owner/admin checks). An
+	// out-of-tree module may register RBAC; it applies to both the orchestrator
+	// (legacy /api/artifacts) and the deploy service (/v1) paths.
+	authorizer, aerr := authz.Build(authz.Deps{})
+	if aerr != nil {
+		logger.Error("failed to build authorizer", "error", aerr)
+		os.Exit(1)
+	}
+	orch.SetAuthorizer(authorizer)
+	if authorizer != nil {
+		logger.Info("per-action authorizer enabled")
+	}
+
 	// Lifecycle context shared by GC and orchestrator's async goroutines so
 	// SIGTERM cancels in-flight builds and the GC loop together.
 	lifeCtx, lifeCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -341,17 +354,8 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 		}
 		deploySvc.Policy = gate
 
-		// Per-action authorizer (none by default → built-in owner/admin checks).
-		// An out-of-tree module may register RBAC.
-		az, aerr := authz.Build(authz.Deps{})
-		if aerr != nil {
-			logger.Error("failed to build authorizer", "error", aerr)
-			os.Exit(1)
-		}
-		deploySvc.Authz = az
-		if az != nil {
-			logger.Info("per-action authorizer enabled")
-		}
+		// Same authorizer instance that gates the orchestrator path (built above).
+		deploySvc.Authz = authorizer
 
 		sink, merr := meter.Build(meter.Deps{})
 		if merr != nil {
