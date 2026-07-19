@@ -180,13 +180,22 @@ function mapApp(a: ApiApp): Artifact {
   };
 }
 
-export async function fetchArtifacts(_status?: string, _offset = 0, _limit = 50): Promise<ArtifactListResult> {
-  const res = await fetchWithTimeout(`${BASE}/v1/apps`);
+// _status is accepted for signature compatibility with the legacy orchestrator
+// client but ignored: /v1/apps has no status filter.
+export async function fetchArtifacts(_status?: string, offset = 0, limit = 50): Promise<ArtifactListResult> {
+  const params = new URLSearchParams();
+  if (limit > 0) params.set('limit', String(limit));
+  if (offset > 0) params.set('offset', String(offset));
+  const qs = params.toString();
+  const res = await fetchWithTimeout(`${BASE}/v1/apps${qs ? `?${qs}` : ''}`);
   if (!res.ok) throw httpError(res, "Failed to fetch apps");
   const data = await res.json();
   const items: ApiApp[] = data?.items ?? [];
   const artifacts = items.map(mapApp);
-  return { artifacts, total: artifacts.length };
+  // Prefer the server's post-filter total; fall back to a length-based
+  // estimate against servers that predate the total field.
+  const total = typeof data?.total === 'number' ? data.total : offset + artifacts.length;
+  return { artifacts, total };
 }
 
 export async function fetchArtifact(id: string): Promise<Artifact> {

@@ -344,12 +344,12 @@ func TestGetListDeleteOwnership(t *testing.T) {
 		).Build()
 	svc := newService(c, newFakeStore())
 
-	list, err := svc.List(context.Background(), "alice")
+	list, total, err := svc.List(context.Background(), "alice", 0, 0)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(list) != 1 || list[0].Name != "a" {
-		t.Errorf("alice's list = %+v, want [a]", list)
+	if len(list) != 1 || list[0].Name != "a" || total != 1 {
+		t.Errorf("alice's list = %+v (total %d), want [a]", list, total)
 	}
 
 	if _, err := svc.Get(context.Background(), "alice", "b"); err != ErrNotFound {
@@ -361,6 +361,69 @@ func TestGetListDeleteOwnership(t *testing.T) {
 	}
 	if _, err := svc.Get(context.Background(), "alice", "a"); err != ErrNotFound {
 		t.Errorf("app should be gone after delete")
+	}
+}
+
+// List paginates AFTER ownership filtering: limit/offset slice the
+// caller-visible set (bob's app never leaks into alice's pages), total counts
+// the filtered set, limit <= 0 returns everything, and a negative offset is
+// clamped to 0.
+func TestListPagination(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).
+		WithObjects(
+			ownedApp("a1", "vibed-apps", "alice"),
+			ownedApp("a2", "vibed-apps", "alice"),
+			ownedApp("a3", "vibed-apps", "alice"),
+			ownedApp("b1", "vibed-apps", "bob"),
+		).Build()
+	svc := newService(c, newFakeStore())
+
+	// Default (limit 0): all of alice's apps, none of bob's.
+	all, total, err := svc.List(context.Background(), "alice", 0, 0)
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	if len(all) != 3 || total != 3 {
+		t.Fatalf("List all = %d apps total=%d, want 3/3", len(all), total)
+	}
+	for _, a := range all {
+		if a.Spec.Owner != "alice" {
+			t.Fatalf("pagination leaked another owner's app: %q", a.Name)
+		}
+	}
+
+	// Page 1 + page 2 (limit 2) reassemble the full filtered set in order;
+	// total stays the filtered count on every page.
+	p1, total1, err := svc.List(context.Background(), "alice", 2, 0)
+	if err != nil {
+		t.Fatalf("List page1: %v", err)
+	}
+	p2, total2, err := svc.List(context.Background(), "alice", 2, 2)
+	if err != nil {
+		t.Fatalf("List page2: %v", err)
+	}
+	if len(p1) != 2 || len(p2) != 1 || total1 != 3 || total2 != 3 {
+		t.Fatalf("pages = %d/%d totals = %d/%d, want 2/1 and 3/3", len(p1), len(p2), total1, total2)
+	}
+	got := appNames(append(append([]vibedv1.VibedApp{}, p1...), p2...))
+	want := appNames(all)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("paged names = %v, want %v", got, want)
+		}
+	}
+
+	// Offset past the end: empty page, total intact.
+	empty, total3, err := svc.List(context.Background(), "alice", 2, 10)
+	if err != nil || len(empty) != 0 || total3 != 3 {
+		t.Fatalf("List past end = %d apps total=%d (err %v), want 0/3", len(empty), total3, err)
+	}
+
+	// Negative offset clamps to 0 (same as page 1).
+	neg, _, err := svc.List(context.Background(), "alice", 2, -5)
+	if err != nil || len(neg) != 2 || neg[0].Name != p1[0].Name {
+		t.Fatalf("negative offset: got %v (err %v), want page1 %v", appNames(neg), err, appNames(p1))
 	}
 }
 
@@ -400,7 +463,7 @@ func TestDeployRoutesToTenantNamespace(t *testing.T) {
 	if got, err := svc.Get(context.Background(), "alice", "app1"); err != nil || got.Namespace != "tenant-acme" {
 		t.Fatalf("Get in tenant: %v %+v", err, got)
 	}
-	if list, err := svc.List(context.Background(), "alice"); err != nil || len(list) != 1 {
+	if list, _, err := svc.List(context.Background(), "alice", 0, 0); err != nil || len(list) != 1 {
 		t.Fatalf("List in tenant: %v n=%d", err, len(list))
 	}
 }

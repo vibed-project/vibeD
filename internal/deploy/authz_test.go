@@ -58,17 +58,17 @@ func TestListScopingWithAuthorizer(t *testing.T) {
 	svc.Authz = stubAuthorizer{readers: map[string]bool{"carol": true}}
 
 	// carol is a team reader (a Viewer): sees both apps read-only.
-	if list, err := svc.List(context.Background(), "carol"); err != nil || len(list) != 2 {
-		t.Fatalf("carol List = %v (err %v), want 2", appNames(list), err)
+	if list, total, err := svc.List(context.Background(), "carol", 0, 0); err != nil || len(list) != 2 || total != 2 {
+		t.Fatalf("carol List = %v total=%d (err %v), want 2", appNames(list), total, err)
 	}
 	// dave has no read grant and owns nothing: sees none.
-	if list, err := svc.List(context.Background(), "dave"); err != nil || len(list) != 0 {
-		t.Fatalf("dave List = %v (err %v), want 0", appNames(list), err)
+	if list, total, err := svc.List(context.Background(), "dave", 0, 0); err != nil || len(list) != 0 || total != 0 {
+		t.Fatalf("dave List = %v total=%d (err %v), want 0", appNames(list), total, err)
 	}
 	// alice still sees her own app via ownership.
-	list, err := svc.List(context.Background(), "alice")
-	if err != nil || len(list) != 1 || list[0].Name != "a" {
-		t.Fatalf("alice List = %v (err %v), want [a]", appNames(list), err)
+	list, total, err := svc.List(context.Background(), "alice", 0, 0)
+	if err != nil || len(list) != 1 || list[0].Name != "a" || total != 1 {
+		t.Fatalf("alice List = %v total=%d (err %v), want [a]", appNames(list), total, err)
 	}
 }
 

@@ -266,7 +266,7 @@ func (s *Server) runDeploy(w http.ResponseWriter, r *http.Request, owner, forced
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
-func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ListApps(w http.ResponseWriter, r *http.Request, params ListAppsParams) {
 	if s.Deploy == nil {
 		notImplemented(w, "list_apps", "deploy service not configured")
 		return
@@ -276,7 +276,17 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
 		return
 	}
-	apps, err := s.Deploy.List(r.Context(), owner)
+	// limit <= 0 (or absent) returns everything, so pre-pagination clients see
+	// the exact pre-existing behavior; a negative offset is clamped to 0 by
+	// the service.
+	limit, offset := 0, 0
+	if params.Limit != nil {
+		limit = *params.Limit
+	}
+	if params.Offset != nil {
+		offset = *params.Offset
+	}
+	apps, total, err := s.Deploy.List(r.Context(), owner, limit, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, Error{Code: "list_failed", Message: err.Error()})
 		return
@@ -287,7 +297,8 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Items []App `json:"items"`
-	}{Items: items})
+		Total int   `json:"total"`
+	}{Items: items, Total: total})
 }
 
 func (s *Server) GetApp(w http.ResponseWriter, r *http.Request, appID AppID) {

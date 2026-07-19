@@ -90,6 +90,23 @@ paths:
       tags: [apps]
       operationId: listApps
       summary: List apps owned by the authenticated user.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: >-
+            Maximum number of apps to return. Omitted or <= 0 returns every
+            app (backward compatible with pre-pagination clients).
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: >-
+            Number of apps to skip before the first returned item. Negative
+            values are treated as 0.
       responses:
         '200':
           description: List of apps.
@@ -102,6 +119,12 @@ paths:
                   items:
                     type: array
                     items: { $ref: '#/components/schemas/App' }
+                  total:
+                    type: integer
+                    description: >-
+                      Total number of apps visible to the caller after
+                      ownership/authorization filtering, before limit/offset
+                      slicing.
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /v1/apps/{app_id}:

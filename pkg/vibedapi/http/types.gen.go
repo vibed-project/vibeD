@@ -162,6 +162,15 @@ type NotFound = Error
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
+// ListAppsParams defines parameters for ListApps.
+type ListAppsParams struct {
+	// Limit Maximum number of apps to return. Omitted or <= 0 returns every app (backward compatible with pre-pagination clients).
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Offset Number of apps to skip before the first returned item. Negative values are treated as 0.
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
 // RedeployAppMultipartBody defines parameters for RedeployApp.
 type RedeployAppMultipartBody struct {
 	Metadata *DeployMetadata    `json:"metadata,omitempty"`

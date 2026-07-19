@@ -74,12 +74,17 @@ func (s *Service) authorize(ctx context.Context, action authz.Action, app *vibed
 	})
 }
 
-// List returns every VibedApp owned by owner in the request's tenant namespace.
-func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, error) {
+// List returns the VibedApps owned by owner (or visible to them via the
+// Authorizer) in the request's tenant namespace, plus the total count of
+// visible apps. Pagination is applied AFTER ownership/authorization
+// filtering — matching the sqlite store's ListOptions semantics — so
+// limit/offset slice the caller-visible set, never the raw namespace. limit
+// <= 0 returns everything after offset; a negative offset is clamped to 0.
+func (s *Service) List(ctx context.Context, owner string, limit, offset int) ([]vibedv1.VibedApp, int, error) {
 	s.defaults()
 	t, err := s.tenant(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("resolve tenant: %w", err)
+		return nil, 0, fmt.Errorf("resolve tenant: %w", err)
 	}
 	listOpts := []client.ListOption{client.InNamespace(t.Namespace)}
 	// Without an Authorizer, List is owner-only, so pre-filter server-side by the
@@ -93,7 +98,7 @@ func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, e
 	}
 	var list vibedv1.VibedAppList
 	if err := s.Client.List(ctx, &list, listOpts...); err != nil {
-		return nil, fmt.Errorf("list VibedApps: %w", err)
+		return nil, 0, fmt.Errorf("list VibedApps: %w", err)
 	}
 	out := make([]vibedv1.VibedApp, 0, len(list.Items))
 	for i := range list.Items {
@@ -111,7 +116,18 @@ func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, e
 			out = append(out, a)
 		}
 	}
-	return out, nil
+	total := len(out)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	out = out[offset:]
+	if limit > 0 && limit < len(out) {
+		out = out[:limit]
+	}
+	return out, total, nil
 }
 
 // SetSuspended toggles spec.suspended on an app the owner owns (suspend when
