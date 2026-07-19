@@ -153,6 +153,7 @@ func (s *Service) defaults() {
 // the VibedApp, and waits up to DeployTimeout for it to go Ready.
 func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	s.defaults()
+	start := time.Now() // request start, observed by the DeployDuration defer below
 
 	if !dnsName.MatchString(req.Name) {
 		return nil, fmt.Errorf("invalid app name %q: must be a DNS label (lowercase alphanumeric and -)", req.Name)
@@ -209,22 +210,27 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("get VibedApp: %w", getErr)
 	}
 
-	// Deploy outcome metric: template + isNew are known now, so a single defer
+	// Deploy outcome metrics: template + isNew are known now, so a single defer
 	// records success/failure for every return below (a waitReady timeout is
 	// still a successful deploy — the CR was created — hence the explicit flag
-	// rather than keying off the returned error). ArtifactsActive tracks live
-	// apps, so it only rises on a genuinely new app (a redeploy reuses the CR).
+	// rather than keying off the returned error). DeployDuration observes
+	// request-start → return under the same status/template labels, making the
+	// sub-2s p50 deploy contract measurable on this path; the vec's labels
+	// carry no ready-vs-pending outcome, so a 202-pending return records as a
+	// (long) success. ArtifactsActive tracks live apps, so it only rises on a
+	// genuinely new app (a redeploy reuses the CR).
 	deployed := false
 	defer func() {
 		if s.Metrics == nil {
 			return
 		}
+		status := "success"
 		if !deployed {
-			s.Metrics.DeploysTotal.WithLabelValues("failed", template).Inc()
-			return
+			status = "failed"
 		}
-		s.Metrics.DeploysTotal.WithLabelValues("success", template).Inc()
-		if isNew {
+		s.Metrics.DeploysTotal.WithLabelValues(status, template).Inc()
+		s.Metrics.DeployDuration.WithLabelValues(status, template).Observe(time.Since(start).Seconds())
+		if deployed && isNew {
 			s.Metrics.ArtifactsActive.WithLabelValues(template).Inc()
 		}
 	}()

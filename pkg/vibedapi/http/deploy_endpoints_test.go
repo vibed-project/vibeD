@@ -231,10 +231,11 @@ func TestGetAndListAndDelete(t *testing.T) {
 	}
 	var list struct {
 		Items []App `json:"items"`
+		Total int   `json:"total"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &list)
-	if len(list.Items) != 1 || list.Items[0].AppId != "seeded" {
-		t.Errorf("list = %+v", list.Items)
+	if len(list.Items) != 1 || list.Items[0].AppId != "seeded" || list.Total != 1 {
+		t.Errorf("list = %+v total = %d", list.Items, list.Total)
 	}
 
 	// DELETE /v1/apps/seeded
@@ -248,6 +249,73 @@ func TestGetAndListAndDelete(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/apps/seeded", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("after delete, get status = %d, want 404", rec.Code)
+	}
+}
+
+// GET /v1/apps honors optional limit/offset query params: pages carry the
+// filtered total, and omitting them keeps the pre-pagination return-everything
+// behavior.
+func TestListAppsPagination(t *testing.T) {
+	h, c := newDeployRouter(t, "alice@example.com")
+	for _, name := range []string{"app-a", "app-b", "app-c"} {
+		app := &vibedv1.VibedApp{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "vibed-apps",
+				Labels:    map[string]string{vibedv1.LabelOwner: vibedv1.SanitizeLabel("alice@example.com")},
+			},
+			Spec: vibedv1.VibedAppSpec{Owner: "alice@example.com"},
+		}
+		if err := c.Create(context.Background(), app); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	listApps := func(query string) (items []App, total int) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/apps"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list%s status = %d, body=%s", query, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Items []App `json:"items"`
+			Total int   `json:"total"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode list%s: %v", query, err)
+		}
+		return body.Items, body.Total
+	}
+
+	// Default: no params returns everything (backward compatible).
+	all, total := listApps("")
+	if len(all) != 3 || total != 3 {
+		t.Fatalf("default list = %d items total=%d, want 3/3", len(all), total)
+	}
+
+	// Page 1 then page 2: sizes 2 + 1, both report the full total, and the
+	// concatenation matches the default ordering.
+	p1, total1 := listApps("?limit=2")
+	p2, total2 := listApps("?limit=2&offset=2")
+	if len(p1) != 2 || len(p2) != 1 || total1 != 3 || total2 != 3 {
+		t.Fatalf("pages = %d/%d totals = %d/%d, want 2/1 and 3/3", len(p1), len(p2), total1, total2)
+	}
+	paged := append(append([]App{}, p1...), p2...)
+	for i := range all {
+		if paged[i].AppId != all[i].AppId {
+			t.Fatalf("paged ids != default ids: %+v vs %+v", paged, all)
+		}
+	}
+
+	// Offset past the end: empty page, total intact.
+	if items, tot := listApps("?limit=2&offset=99"); len(items) != 0 || tot != 3 {
+		t.Fatalf("past-end page = %d items total=%d, want 0/3", len(items), tot)
+	}
+
+	// Negative offset clamps to 0.
+	if items, _ := listApps("?limit=2&offset=-4"); len(items) != 2 || items[0].AppId != p1[0].AppId {
+		t.Fatalf("negative offset page = %+v, want page 1 %+v", items, p1)
 	}
 }
 

@@ -41,7 +41,9 @@ func registerListTool(server *mcp.Server, orch *orchestrator.Orchestrator, deplo
 			}, nil
 		}
 
-		apps, err := deploySvc.List(ctx, ownerFromContext(ctx))
+		// Fetch everything (limit 0 = all): the status filter below must apply
+		// before any pagination, so server-side slicing can't be used here.
+		apps, _, err := deploySvc.List(ctx, ownerFromContext(ctx), 0, 0)
 		if err != nil {
 			return nil, nil, err
 		}

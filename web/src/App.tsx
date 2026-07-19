@@ -8,6 +8,7 @@ import {
   fetchWhoami,
   fetchOrganization,
   subscribeToEvents,
+  phaseToStatus,
   getAuthToken,
   setAuthToken,
   clearAuthToken,
@@ -186,6 +187,14 @@ function App() {
     setArtifacts((prev) => prev.filter((a) => a.id !== id))
   }, [])
 
+  // Mirror of artifacts for the SSE handler below: the subscription effect
+  // runs once, so its closure would otherwise see a stale list when deciding
+  // whether an event's app is already known.
+  const artifactsRef = useRef<ArtifactSummary[]>([])
+  useEffect(() => {
+    artifactsRef.current = artifacts
+  }, [artifacts])
+
   useEffect(() => {
     loadData()
 
@@ -196,23 +205,46 @@ function App() {
       (event) => {
         if (event.type === 'artifact.deleted') {
           setArtifacts((prev) => prev.filter((a) => a.id !== event.artifact_id))
-        } else {
-          // Refetch the single changed artifact for full data
-          fetchArtifact(event.artifact_id)
-            .then((updated) => {
-              setArtifacts((prev) => {
-                const idx = prev.findIndex((a) => a.id === event.artifact_id)
-                if (idx >= 0) {
-                  const next = [...prev]
-                  next[idx] = updated
-                  return next
-                }
-                // New artifact — add to list
-                return [...prev, updated]
-              })
-            })
-            .catch(() => loadData()) // Full reload on fetch failure
+          return
         }
+        // Enriched bridge events (name + raw VibedApp phase) carry enough to
+        // update a known artifact in place — no per-event refetch. Legacy
+        // orchestrator events lack these fields and keep the refetch path;
+        // unknown apps also refetch once, since the event has no lane/created
+        // info to build a faithful list entry from.
+        const known = artifactsRef.current.some((a) => a.id === event.artifact_id)
+        if (event.name && event.phase && known) {
+          const status = phaseToStatus(event.phase)
+          setArtifacts((prev) =>
+            prev.map((a) =>
+              a.id === event.artifact_id
+                ? {
+                    ...a,
+                    name: event.name ?? a.name,
+                    status,
+                    url: event.url ?? a.url,
+                    updated_at: event.timestamp,
+                  }
+                : a,
+            ),
+          )
+          return
+        }
+        // Refetch the single changed artifact for full data
+        fetchArtifact(event.artifact_id)
+          .then((updated) => {
+            setArtifacts((prev) => {
+              const idx = prev.findIndex((a) => a.id === event.artifact_id)
+              if (idx >= 0) {
+                const next = [...prev]
+                next[idx] = updated
+                return next
+              }
+              // New artifact — add to list
+              return [...prev, updated]
+            })
+          })
+          .catch(() => loadData()) // Full reload on fetch failure
       },
       () => {
         // SSE connection error — EventSource auto-reconnects, but

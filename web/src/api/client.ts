@@ -151,7 +151,10 @@ interface ApiApp {
   last_deployed_at?: string;
 }
 
-function phaseToStatus(phase: ApiApp['phase']): ArtifactSummary['status'] {
+// Exported so SSE consumers (App.tsx) can map the raw phase carried on
+// enriched bridge events without a per-event refetch. Accepts any string:
+// unknown phases read as pending, same as the default arm always did.
+export function phaseToStatus(phase: string): ArtifactSummary['status'] {
   switch (phase) {
     case 'Ready':     return 'running';
     case 'Starting':  return 'deploying';
@@ -180,13 +183,22 @@ function mapApp(a: ApiApp): Artifact {
   };
 }
 
-export async function fetchArtifacts(_status?: string, _offset = 0, _limit = 50): Promise<ArtifactListResult> {
-  const res = await fetchWithTimeout(`${BASE}/v1/apps`);
+// _status is accepted for signature compatibility with the legacy orchestrator
+// client but ignored: /v1/apps has no status filter.
+export async function fetchArtifacts(_status?: string, offset = 0, limit = 50): Promise<ArtifactListResult> {
+  const params = new URLSearchParams();
+  if (limit > 0) params.set('limit', String(limit));
+  if (offset > 0) params.set('offset', String(offset));
+  const qs = params.toString();
+  const res = await fetchWithTimeout(`${BASE}/v1/apps${qs ? `?${qs}` : ''}`);
   if (!res.ok) throw httpError(res, "Failed to fetch apps");
   const data = await res.json();
   const items: ApiApp[] = data?.items ?? [];
   const artifacts = items.map(mapApp);
-  return { artifacts, total: artifacts.length };
+  // Prefer the server's post-filter total; fall back to a length-based
+  // estimate against servers that predate the total field.
+  const total = typeof data?.total === 'number' ? data.total : offset + artifacts.length;
+  return { artifacts, total };
 }
 
 export async function fetchArtifact(id: string): Promise<Artifact> {
@@ -207,6 +219,63 @@ export async function fetchLogs(id: string): Promise<LogsResponse> {
     .filter((l) => l.startsWith('data: '))
     .map((l) => l.slice('data: '.length));
   return { artifact_id: id, logs };
+}
+
+/**
+ * Follow an app's logs live via GET /v1/apps/{id}/logs?follow=true.
+ *
+ * The endpoint is SSE-shaped (`data: <line>` frames) but requires the same
+ * Bearer token as every other /v1 call, and EventSource cannot set an
+ * Authorization header (the /api/events dashboard stream gets away with a
+ * bare EventSource only because no browser-held token is involved there).
+ * So this streams over fetch() and parses SSE frames off the response's
+ * ReadableStream. A plain fetchWithTimeout can't be used: its 30s abort
+ * would kill a healthy long-lived tail.
+ *
+ * Resolves when the server ends the stream; rejects on HTTP errors, abort,
+ * or an `event: error` frame from the server.
+ */
+export async function followLogs(
+  id: string,
+  onLine: (line: string) => void,
+  opts?: { signal?: AbortSignal; onOpen?: () => void },
+): Promise<void> {
+  const token = getAuthToken();
+  const headers = new Headers({ Accept: 'text/event-stream' });
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(`${BASE}/v1/apps/${id}/logs?follow=true`, {
+    headers,
+    signal: opts?.signal,
+  });
+  if (!res.ok) throw httpError(res, 'Failed to follow logs');
+  if (!res.body) throw new Error('Log streaming unsupported by this browser');
+  opts?.onOpen?.();
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let eventName = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? ''; // keep the trailing partial line for the next chunk
+    for (const line of lines) {
+      if (line === '') {
+        eventName = ''; // blank line = frame boundary, reset the event name
+        continue;
+      }
+      if (line.startsWith('event: ')) {
+        eventName = line.slice('event: '.length);
+        continue;
+      }
+      if (!line.startsWith('data: ')) continue; // ids / heartbeat comments
+      const data = line.slice('data: '.length);
+      if (eventName === 'error') throw new Error(data);
+      onLine(data);
+    }
+  }
 }
 
 export async function deleteArtifact(id: string): Promise<void> {
@@ -426,6 +495,16 @@ export interface ArtifactEvent {
   status?: string;
   error?: string;
   timestamp: string;
+  // Enriched fields carried by the VibedApp event bridge (absent on legacy
+  // orchestrator events — consumers must fall back to refetching then).
+  // phase is the RAW VibedApp phase string (Pending/Claiming/Starting/Ready/
+  // Suspended/Failed); on bridge events status carries the same raw phase,
+  // so map through phaseToStatus rather than trusting status.
+  name?: string;
+  owner_id?: string;
+  phase?: string;
+  url?: string;
+  template?: string;
 }
 
 /**
