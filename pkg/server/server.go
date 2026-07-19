@@ -427,6 +427,7 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	if deploySvc != nil {
 		vibedAPI.Deploy = deploySvc
 		vibedAPI.MaxConcurrentLogStreamsPerUser = cfg.Limits.MaxConcurrentLogStreamsPerUser
+		vibedAPI.MaxConcurrentLogStreamsGlobal = cfg.Limits.MaxConcurrentLogStreamsGlobal
 		// Served tarball backend: vibeD serves the source blobs the agent pulls.
 		if blob, berr := tarball.NewBlobHandler(cfg.Storage.Tarball); berr != nil {
 			logger.Warn("blob handler init failed", "error", berr)

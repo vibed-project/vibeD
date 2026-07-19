@@ -65,10 +65,15 @@ type LimitsConfig struct {
 	MaxFileCount     int `yaml:"maxFileCount"`     // Max number of files per deploy/update (default: 500)
 	MaxLogLines      int `yaml:"maxLogLines"`      // Max log lines per request (default: 10000)
 	// MaxConcurrentLogStreamsPerUser caps simultaneous /v1/logs SSE streams a
-	// single authenticated user may hold open. 0 = unlimited (legacy). A
-	// modest default (10) blocks the trivial DoS where one user opens
-	// hundreds of streams to exhaust controller memory.
+	// single authenticated user may hold open. <=0 falls back to a safe server
+	// default (not unlimited): one user opening hundreds of streams is a
+	// trivial memory-exhaustion DoS.
 	MaxConcurrentLogStreamsPerUser int `yaml:"maxConcurrentLogStreamsPerUser"`
+	// MaxConcurrentLogStreamsGlobal caps simultaneous /v1/logs SSE streams
+	// across all users, so many users can't collectively exhaust controller
+	// memory while each stays under the per-user cap. <=0 falls back to a safe
+	// server default.
+	MaxConcurrentLogStreamsGlobal int `yaml:"maxConcurrentLogStreamsGlobal"`
 }
 
 // AuthConfig holds authentication and TLS settings.
@@ -328,6 +333,7 @@ func Default() *Config {
 			MaxFileCount:                   500,
 			MaxLogLines:                    10000,
 			MaxConcurrentLogStreamsPerUser: 10,
+			MaxConcurrentLogStreamsGlobal:  100,
 		},
 		GC: GCConfig{
 			Enabled:  true,

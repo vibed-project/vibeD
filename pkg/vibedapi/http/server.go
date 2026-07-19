@@ -48,44 +48,74 @@ type Server struct {
 	Deploy *deploy.Service
 
 	// MaxConcurrentLogStreamsPerUser caps simultaneous /v1/logs SSE
-	// connections per authenticated user. 0 disables the cap (legacy
-	// behavior). Hard-coded gate against a trivial DoS where one user opens
-	// many streams to exhaust controller memory.
+	// connections per authenticated user. <=0 falls back to
+	// defaultMaxLogStreamsPerUser rather than disabling the cap — an
+	// unlimited per-user count is a trivial DoS (each stream holds a goroutine
+	// and a 1 MB scanner buffer).
 	MaxConcurrentLogStreamsPerUser int
 
-	logStreamMu sync.Mutex
-	logStreams  map[string]int // userID -> current open count
+	// MaxConcurrentLogStreamsGlobal caps simultaneous /v1/logs SSE connections
+	// across ALL users, so many users (or many distinct identities) can't
+	// collectively exhaust controller memory even while each stays under its
+	// per-user cap. <=0 falls back to defaultMaxLogStreamsGlobal.
+	MaxConcurrentLogStreamsGlobal int
+
+	logStreamMu    sync.Mutex
+	logStreams     map[string]int // userID -> current open count
+	logStreamTotal int            // total open across all users
 
 	Logger *slog.Logger
 }
 
-// acquireLogStream reserves one stream slot for user. Returns false (over
-// cap) when MaxConcurrentLogStreamsPerUser > 0 and the user is already at it.
-// Each acquire must be paired with releaseLogStream.
-func (s *Server) acquireLogStream(user string) bool {
-	if s.MaxConcurrentLogStreamsPerUser <= 0 {
-		return true
+// Safe defaults applied when the corresponding cap is left <=0. Neither cap can
+// be disabled: an uncapped log-stream count is a memory-exhaustion DoS.
+const (
+	defaultMaxLogStreamsPerUser = 10
+	defaultMaxLogStreamsGlobal  = 100
+)
+
+func (s *Server) perUserLogStreamLimit() int {
+	if s.MaxConcurrentLogStreamsPerUser > 0 {
+		return s.MaxConcurrentLogStreamsPerUser
 	}
+	return defaultMaxLogStreamsPerUser
+}
+
+func (s *Server) globalLogStreamLimit() int {
+	if s.MaxConcurrentLogStreamsGlobal > 0 {
+		return s.MaxConcurrentLogStreamsGlobal
+	}
+	return defaultMaxLogStreamsGlobal
+}
+
+// acquireLogStream reserves one stream slot for user. It returns false when the
+// global cap is reached or the user is already at their per-user cap. Each
+// successful acquire must be paired with releaseLogStream.
+func (s *Server) acquireLogStream(user string) bool {
 	s.logStreamMu.Lock()
 	defer s.logStreamMu.Unlock()
 	if s.logStreams == nil {
 		s.logStreams = map[string]int{}
 	}
-	if s.logStreams[user] >= s.MaxConcurrentLogStreamsPerUser {
+	// Global cap first: it bounds total memory regardless of how many distinct
+	// users are involved.
+	if s.logStreamTotal >= s.globalLogStreamLimit() {
+		return false
+	}
+	if s.logStreams[user] >= s.perUserLogStreamLimit() {
 		return false
 	}
 	s.logStreams[user]++
+	s.logStreamTotal++
 	return true
 }
 
 func (s *Server) releaseLogStream(user string) {
-	if s.MaxConcurrentLogStreamsPerUser <= 0 {
-		return
-	}
 	s.logStreamMu.Lock()
 	defer s.logStreamMu.Unlock()
 	if s.logStreams[user] > 0 {
 		s.logStreams[user]--
+		s.logStreamTotal--
 	}
 	if s.logStreams[user] == 0 {
 		delete(s.logStreams, user)
@@ -420,7 +450,7 @@ func (s *Server) StreamAppLogs(w http.ResponseWriter, r *http.Request, appID App
 		w.Header().Set("Retry-After", "5")
 		writeJSON(w, http.StatusTooManyRequests, Error{
 			Code:    "too_many_log_streams",
-			Message: fmt.Sprintf("max %d concurrent log streams per user", s.MaxConcurrentLogStreamsPerUser),
+			Message: fmt.Sprintf("too many concurrent log streams (per-user limit %d, or global capacity reached)", s.perUserLogStreamLimit()),
 		})
 		return
 	}
