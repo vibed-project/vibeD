@@ -498,49 +498,14 @@ func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *s
 			}
 		}
 
-		// Auto-provision user if store is available
+		// Provision / re-sync the user (parity with SAML: cross-provider bind
+		// guard + role/email/department sync on every login). A refused bind
+		// (the sub collides with a non-OIDC account) rejects the token.
 		if userStore != nil {
-			if _, err := userStore.GetUser(ctx, sub); err != nil {
-				// Resolve department from claim
-				var deptID string
-				if cfg.DepartmentClaim != "" {
-					deptName := extractStringClaim(claims, cfg.DepartmentClaim)
-					if deptName != "" {
-						dept, dErr := userStore.GetDepartmentByName(ctx, deptName)
-						if dErr != nil {
-							now := time.Now()
-							dept = &api.Department{
-								ID: fmt.Sprintf("dept-%x", now.UnixNano()), Name: deptName,
-								CreatedAt: now, UpdatedAt: now,
-							}
-							if cErr := userStore.CreateDepartment(ctx, dept); cErr != nil {
-								dept, _ = userStore.GetDepartmentByName(ctx, deptName)
-							}
-						}
-						if dept != nil {
-							deptID = dept.ID
-						}
-					}
-				}
-
-				// User doesn't exist — create
-				now := time.Now()
-				newUser := &api.User{
-					ID:           sub,
-					Name:         username,
-					Email:        email,
-					Role:         role,
-					Status:       "active",
-					Provider:     "oidc",
-					DepartmentID: deptID,
-					CreatedAt:    now,
-					UpdatedAt:    now,
-				}
-				if createErr := userStore.CreateUser(ctx, newUser); createErr != nil {
-					logger.Debug("auto-provision user failed (may already exist)", "sub", sub, "error", createErr)
-				} else {
-					logger.Info("auto-provisioned OIDC user", "sub", sub, "name", username, "role", role, "department", deptID)
-				}
+			deptID := resolveOIDCDepartment(ctx, userStore, cfg.DepartmentClaim, claims, logger)
+			if err := syncOIDCUser(ctx, userStore, sub, username, email, role, deptID, logger); err != nil {
+				logger.Warn("OIDC: bind refused", "sub", sub, "error", err)
+				return nil, mcpauth.ErrInvalidToken
 			}
 		}
 
@@ -551,6 +516,97 @@ func newOIDCVerifier(cfg config.OIDCConfig, userStore store.UserStore, logger *s
 			Expiration: idToken.Expiry,
 		}, nil
 	}, nil
+}
+
+// syncOIDCUser provisions a new OIDC user or re-syncs an existing one. It
+// returns an error when sub already belongs to a non-OIDC account (cross-
+// provider bind refused), so the verifier can reject the token — mirroring the
+// SAML provider's guard. Re-sync updates role/email/department on each login.
+func syncOIDCUser(ctx context.Context, userStore store.UserStore, sub, username, email, role, deptID string, logger *slog.Logger) error {
+	if existing, err := userStore.GetUser(ctx, sub); err == nil && existing != nil {
+		if existing.Provider != "oidc" {
+			return fmt.Errorf("refusing to bind to %s account %q", existing.Provider, sub)
+		}
+		changed := false
+		if existing.Role != role {
+			existing.Role = role
+			changed = true
+		}
+		if email != "" && existing.Email != email {
+			existing.Email = email
+			changed = true
+		}
+		if deptID != "" && existing.DepartmentID != deptID {
+			existing.DepartmentID = deptID
+			changed = true
+		}
+		if changed {
+			existing.UpdatedAt = time.Now()
+			if err := userStore.UpdateUser(ctx, existing); err != nil {
+				logger.Warn("OIDC: user re-sync failed", "sub", sub, "error", err)
+			}
+		}
+		return nil
+	}
+	now := time.Now()
+	u := &api.User{
+		ID: sub, Name: username, Email: email, Role: role,
+		Status: "active", Provider: "oidc", DepartmentID: deptID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := userStore.CreateUser(ctx, u); err != nil {
+		// A lost create race is fine (the row now exists); only log.
+		logger.Debug("OIDC auto-provision (may already exist)", "sub", sub, "error", err)
+	} else {
+		logger.Info("auto-provisioned OIDC user", "sub", sub, "name", username, "role", role, "department", deptID)
+	}
+	return nil
+}
+
+// resolveOIDCDepartment get-or-creates the department named by departmentClaim
+// and returns its id ("" when unset). The id is a deterministic dept-<slug> (as
+// SAML does), so concurrent replicas converge on one row instead of the previous
+// non-deterministic dept-<nanos> that could create duplicates.
+func resolveOIDCDepartment(ctx context.Context, userStore store.UserStore, departmentClaim string, claims map[string]interface{}, logger *slog.Logger) string {
+	if departmentClaim == "" {
+		return ""
+	}
+	name := extractStringClaim(claims, departmentClaim)
+	if name == "" {
+		return ""
+	}
+	if dept, err := userStore.GetDepartmentByName(ctx, name); err == nil && dept != nil {
+		return dept.ID
+	}
+	now := time.Now()
+	dept := &api.Department{ID: "dept-" + slugify(name), Name: name, CreatedAt: now, UpdatedAt: now}
+	if err := userStore.CreateDepartment(ctx, dept); err != nil {
+		if existing, e := userStore.GetDepartmentByName(ctx, name); e == nil && existing != nil {
+			return existing.ID
+		}
+		logger.Warn("OIDC: resolving department", "name", name, "error", err)
+		return ""
+	}
+	return dept.ID
+}
+
+// slugify lowercases s and keeps only [a-z0-9-], collapsing other runs to '-'.
+func slugify(s string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 // extractStringClaim extracts a string value from a claims map.
