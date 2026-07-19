@@ -301,12 +301,27 @@ func TestDeployHonorsOverride(t *testing.T) {
 	}
 }
 
+// ownedApp builds a VibedApp with the vibed.dev/owner label the deploy path
+// stamps, so tests exercising the label-filtered List behave like production.
+func ownedApp(name, namespace, owner string) *vibedv1.VibedApp {
+	return &vibedv1.VibedApp{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)},
+		},
+		Spec: vibedv1.VibedAppSpec{Owner: owner},
+	}
+}
+
 func TestGetListDeleteOwnership(t *testing.T) {
 	s := newScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).
 		WithObjects(
-			&vibedv1.VibedApp{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "vibed-apps"}, Spec: vibedv1.VibedAppSpec{Owner: "alice"}},
-			&vibedv1.VibedApp{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "vibed-apps"}, Spec: vibedv1.VibedAppSpec{Owner: "bob"}},
+			// Apps carry the vibed.dev/owner label the deploy path stamps, so
+			// List's server-side owner pre-filter (#74) selects them.
+			ownedApp("a", "vibed-apps", "alice"),
+			ownedApp("b", "vibed-apps", "bob"),
 		).Build()
 	svc := newService(c, newFakeStore())
 

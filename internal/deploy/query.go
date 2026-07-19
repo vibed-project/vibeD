@@ -48,8 +48,16 @@ func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve tenant: %w", err)
 	}
+	// Pre-filter server-side by the owner label so the API server returns only
+	// this owner's apps instead of every app in the namespace. The label is a
+	// sanitized, lossy mirror of spec.owner (distinct owners can collide onto one
+	// label value — see #66), so it can only over-return, never drop a match; the
+	// exact spec.owner check below is still authoritative.
 	var list vibedv1.VibedAppList
-	if err := s.Client.List(ctx, &list, client.InNamespace(t.Namespace)); err != nil {
+	if err := s.Client.List(ctx, &list,
+		client.InNamespace(t.Namespace),
+		client.MatchingLabels{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)},
+	); err != nil {
 		return nil, fmt.Errorf("list VibedApps: %w", err)
 	}
 	out := make([]vibedv1.VibedApp, 0, len(list.Items))
