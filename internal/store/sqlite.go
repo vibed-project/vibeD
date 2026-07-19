@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_id ON artifacts(owner_id);
+-- The List hot path orders by created_at DESC, often with a status filter.
+-- A plain created_at index serves the unfiltered (admin) listing; the composite
+-- serves "WHERE status = ? ORDER BY created_at DESC" without a filesort.
+CREATE INDEX IF NOT EXISTS idx_artifacts_created_at ON artifacts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_status_created ON artifacts(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact_id ON artifact_versions(artifact_id);
 CREATE INDEX IF NOT EXISTS idx_share_links_artifact_id ON share_links(artifact_id);
 
@@ -181,6 +186,15 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 			db.Close()
 			return nil, fmt.Errorf("migrating users table (api_key_hash): %w", err)
 		}
+	}
+
+	// Index the api_key_hash auth-lookup path (GetUserByAPIKeyHash runs on every
+	// API-key request). Created here rather than in the base schema because the
+	// column is added by the migration above. Partial index: the lookup always
+	// filters api_key_hash != '', and most rows have no key, so this stays small.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_users_api_key_hash ON users(api_key_hash) WHERE api_key_hash != ''`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("creating api_key_hash index: %w", err)
 	}
 
 	// Migration: add the enriched audit columns if missing (older DBs).

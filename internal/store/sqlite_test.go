@@ -277,6 +277,40 @@ func TestSQLiteStore_Versions(t *testing.T) {
 	assert.IsType(t, &api.ErrVersionNotFound{}, err)
 }
 
+// TestSQLiteStore_PerfIndexes locks in the indexes added for issue #80: the
+// created_at ordering path and the api_key_hash auth lookup must be indexed so
+// they don't degrade into full-table scans as the tables grow.
+func TestSQLiteStore_PerfIndexes(t *testing.T) {
+	s := newTestSQLiteStore(t)
+
+	want := []string{
+		"idx_artifacts_created_at",
+		"idx_artifacts_status_created",
+		"idx_users_api_key_hash",
+	}
+	for _, name := range want {
+		var got string
+		err := s.db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, name,
+		).Scan(&got)
+		require.NoErrorf(t, err, "index %q should exist", name)
+		assert.Equal(t, name, got)
+	}
+
+	// The api_key_hash lookup must actually use its index, not scan the table.
+	var plan string
+	rows, err := s.db.Query(`EXPLAIN QUERY PLAN SELECT id FROM users WHERE api_key_hash = ? AND api_key_hash != ''`, "x")
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		require.NoError(t, rows.Scan(&id, &parent, &notused, &detail))
+		plan += detail + "\n"
+	}
+	assert.Contains(t, plan, "idx_users_api_key_hash", "api-key lookup should use its index; plan was:\n"+plan)
+}
+
 func TestSQLiteStore_Persistence(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "persist.db")
 	ctx := context.Background()
