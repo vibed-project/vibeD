@@ -115,8 +115,11 @@ func (c *SandboxClaimer) buildClaim(app *vibedv1.VibedApp, template string) *uns
 	u := newClaim()
 	u.SetName(app.Name)
 	u.SetNamespace(app.Namespace)
+	// appLabelKey keeps the claim inside the scoped informer cache (see
+	// ManagerCacheOptions) — the Get in EnsureClaim, the boundPodSelector read
+	// in service.go, and the SandboxClaim watch all depend on it.
 	u.SetLabels(map[string]string{
-		"vibed.dev/app":      app.Name,
+		appLabelKey:          app.Name,
 		"vibed.dev/owner":    app.Spec.Owner,
 		"vibed.dev/template": template,
 	})

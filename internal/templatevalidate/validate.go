@@ -28,6 +28,12 @@ import (
 // results are stored, keyed by template slot → JSON Result.
 const ConfigMapName = "vibed-template-validation"
 
+// TemplateLabelKey is the label warmpools.yaml stamps on every warm-pool pod
+// with its slot name. readyPod selects on it, and the controller manager's
+// scoped informer cache (controller.ManagerCacheOptions) relies on the same
+// key to bound which Pods it caches.
+const TemplateLabelKey = "vibed.dev/template"
+
 // SandboxTemplateGVK identifies the agent-sandbox SandboxTemplate.
 var SandboxTemplateGVK = schema.GroupVersionKind{
 	Group:   "extensions.agents.x-k8s.io",
@@ -171,7 +177,7 @@ func (v *Validator) readyPod(ctx context.Context, slot string) (podIP, imageID s
 	pods := &corev1.PodList{}
 	if err := v.Client.List(ctx, pods,
 		client.InNamespace(v.Namespace),
-		client.MatchingLabels{"vibed.dev/template": slot},
+		client.MatchingLabels{TemplateLabelKey: slot},
 	); err != nil {
 		return "", "", false
 	}

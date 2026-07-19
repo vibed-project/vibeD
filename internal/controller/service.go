@@ -87,7 +87,9 @@ func (m *K8sServiceManager) EnsureService(ctx context.Context, app *vibedv1.Vibe
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: app.Namespace,
-			Labels:    map[string]string{"vibed.dev/app": app.Name},
+			// appLabelKey keeps the Service inside the scoped informer cache
+			// (see ManagerCacheOptions) — reconcileSelector's Get depends on it.
+			Labels: map[string]string{appLabelKey: app.Name},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         vibedv1.GroupVersion.String(),
 				Kind:               "VibedApp",
