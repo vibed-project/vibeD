@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { fetchLogs } from '../api/client'
+import { fetchLogs, followLogs } from '../api/client'
 import './LogViewer.css'
 
 interface Props {
@@ -15,6 +15,11 @@ export default function LogViewer({ artifactId, onClose }: Props) {
 
   useEffect(() => {
     let mounted = true
+    let pollInterval: ReturnType<typeof setInterval> | null = null
+    const controller = new AbortController()
+
+    // Snapshot-polling path, kept as the fallback for when the live stream
+    // can't be established or drops (older server, proxy buffering, pod gone).
     async function loadLogs() {
       try {
         setLoading(true)
@@ -31,11 +36,40 @@ export default function LogViewer({ artifactId, onClose }: Props) {
         if (mounted) setLoading(false)
       }
     }
-    loadLogs()
-    const interval = setInterval(loadLogs, 3000)
+
+    function startPolling() {
+      if (!mounted || pollInterval) return
+      loadLogs()
+      pollInterval = setInterval(loadLogs, 3000)
+    }
+
+    // Live tail: follow=true seeds the recent tail then streams new lines,
+    // so no interval is needed while the stream is healthy.
+    setLogs([])
+    followLogs(
+      artifactId,
+      (line) => {
+        if (mounted) setLogs((prev) => [...prev, line])
+      },
+      {
+        signal: controller.signal,
+        onOpen: () => {
+          if (mounted) {
+            setLoading(false)
+            setError(null)
+          }
+        },
+      },
+    )
+      // Stream over (server closed it) or failed (HTTP error / abort):
+      // fall back to the 3s polling path. startPolling no-ops after unmount.
+      .then(() => startPolling())
+      .catch(() => startPolling())
+
     return () => {
       mounted = false
-      clearInterval(interval)
+      controller.abort()
+      if (pollInterval) clearInterval(pollInterval)
     }
   }, [artifactId])
 
