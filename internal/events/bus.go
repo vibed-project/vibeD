@@ -4,6 +4,7 @@ package events
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -27,10 +28,31 @@ type Event struct {
 	ID         string    `json:"id"`
 	Type       EventType `json:"type"`
 	ArtifactID string    `json:"artifact_id"`
+	Name       string    `json:"name,omitempty"`
 	OwnerID    string    `json:"owner_id,omitempty"`
 	Status     string    `json:"status,omitempty"`
+	Phase      string    `json:"phase,omitempty"`
+	URL        string    `json:"url,omitempty"`
+	Template   string    `json:"template,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`
+
+	// payload is the JSON encoding of the event, computed once in Publish so
+	// every subscriber writes the same bytes instead of re-marshaling per
+	// connection. Unexported fields are invisible to encoding/json, so it
+	// never appears in the encoded output.
+	payload []byte
+}
+
+// Payload returns the JSON encoding of the event. Events routed through
+// Publish carry pre-marshaled bytes; for events constructed by hand (tests)
+// it falls back to marshaling on demand.
+func (e Event) Payload() []byte {
+	if e.payload != nil {
+		return e.payload
+	}
+	data, _ := json.Marshal(e)
+	return data
 }
 
 // subscriberBufferSize is the channel buffer for each subscriber.
@@ -59,6 +81,14 @@ func NewEventBus() *EventBus {
 func (b *EventBus) Publish(event Event) {
 	seq := b.eventSeq.Add(1)
 	event.ID = fmt.Sprintf("%d", seq)
+
+	// Marshal once here so N SSE connections share the encoded bytes rather
+	// than each re-encoding the event. Event contains only marshalable field
+	// types, so an encoding error is not reachable in practice; on the off
+	// chance, Payload falls back to marshaling on demand.
+	if data, err := json.Marshal(event); err == nil {
+		event.payload = data
+	}
 
 	b.mu.RLock()
 	defer b.mu.RUnlock()

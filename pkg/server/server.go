@@ -409,6 +409,18 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Bridge VibedApp status changes onto the SSE event bus. The /v1 deploy
+	// path never touches the bus itself (only the legacy orchestrator does),
+	// so without the bridge dashboards fall back to polling for live deploys.
+	if deploySvc != nil {
+		bridge, berr := newEventBridge(k8sClients.RestConfig, deploySvc.Namespace, bus, logger)
+		if berr != nil {
+			logger.Warn("VibedApp event bridge disabled", "error", berr)
+		} else {
+			go bridge.Run(ctx)
+		}
+	}
+
 	switch cfg.Server.Transport {
 	case "stdio":
 		logger.Info("starting MCP server on stdio")
