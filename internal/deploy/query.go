@@ -86,7 +86,17 @@ func (s *Service) List(ctx context.Context, owner string) ([]vibedv1.VibedApp, e
 		return nil, fmt.Errorf("list VibedApps: %w", err)
 	}
 	out := make([]vibedv1.VibedApp, 0, len(list.Items))
-	for _, a := range list.Items {
+	for i := range list.Items {
+		a := list.Items[i]
+		// With an Authorizer, list every app in the tenant namespace the caller
+		// may read (team-scoped visibility, e.g. a Viewer seeing team apps).
+		// Without one, keep the built-in owner-only scoping.
+		if s.Authz != nil {
+			if s.authorize(ctx, authz.ActionAppGet, &a, owner) == nil {
+				out = append(out, a)
+			}
+			continue
+		}
 		if a.Spec.Owner == owner {
 			out = append(out, a)
 		}
