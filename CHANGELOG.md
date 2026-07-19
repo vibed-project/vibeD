@@ -4,6 +4,81 @@ All notable changes to vibeD are recorded here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); each release is also a signed
 git tag, and the Helm chart's `appVersion` tracks the release.
 
+## v0.5.2 — 2026-07-19
+
+A hardening and team-visibility release. It closes the entire sev-labeled issue
+backlog — performance, correctness, and security fixes across the deploy path,
+controller, quota, rate limiting, and the state stores — adds a pluggable
+authorizer for team-scoped app visibility and SCIM-ready public routes, and
+rolls up the security patch that was staged as v0.5.1 (never tagged).
+
+### Added
+- **Authorizer seam + team visibility**: a per-action `RegisterAuthorizer` seam
+  and an authorizer-scoped app List, so a viewer can see the team's apps rather
+  than only their own; plus an authenticated HTTP-route seam. (#113, #21)
+- **SCIM-ready public HTTP routes** and OIDC provisioning hardening toward SAML
+  parity. (#116, #17)
+- **Rate limiting now covers `/v1/*`** (including the deploy path) with a
+  separate, stricter per-client budget for mutating verbs
+  (`rateLimit.writeRequestsPerSecond` / `rateLimit.writeBurst`); it also warns at
+  startup when disabled on a network transport. (#50)
+- **Global log-stream cap** `limits.maxConcurrentLogStreamsGlobal` alongside the
+  per-user cap. (#81)
+- **List pagination** (`?limit=&offset=`) for the users, departments, and
+  share-link APIs. (#80)
+
+### Changed
+- Helm chart `version` / `appVersion` → **0.5.2**.
+- Auth-disabled mode treats every request as admin, so vibeD now **refuses to
+  start with auth disabled on a non-loopback bind** unless `auth.devInsecure:
+  true` is set (the chart's no-auth path sets it automatically). (#55)
+- `limits.maxConcurrentLogStreamsPerUser` `<=0` now falls back to a safe default
+  instead of meaning unlimited. (#81)
+- Quota counts against the exact `spec.owner`, not a lossy sanitized label, so
+  colliding identities no longer share a quota bucket. (#66)
+
+### Fixed
+- **HTTP 502 on warm-pool adoption**: the per-app Service selected the
+  `agents.x-k8s.io/claim-uid` label that agent-sandbox v0.5 filters off the
+  adopted pod; it now selects `sandbox-name-hash`. (#42)
+- **Dashboard login form** never appeared behind an HTTP/2 gateway (blank
+  `Response.statusText`); the client now branches on the numeric 401. (#41)
+- Quota List-then-Create overshoot under concurrent deploys, closed with an
+  in-process reservation ledger. (#75)
+- The app List and the log-stream pod lookup no longer scan the whole namespace
+  (owner-label pre-filter + a `status.podIP` field selector). (#74, #77)
+
+### Performance
+- O(1) circular log ring buffer, replacing an O(capacity)-per-line shift. (#79)
+- Bounded-sample rate-limiter eviction, replacing an O(n) scan under the write
+  lock. (#62)
+- Controller uses capped exponential backoff for transitional requeues instead
+  of a flat 2s hot-poll. (#70)
+- GC paginates its list sweeps and deletes with bounded concurrency. (#76)
+- Deploy hot path hashes the source during the read pass (one fewer full pass
+  over the up-to-50MB tarball). (#73)
+- SQLite: `created_at` and partial `api_key_hash` indexes, plus an indexed
+  `shared_with` join table replacing a `LIKE` full-table scan. (#80)
+- ConfigMap store: lock-free reads and optimistic-concurrency writes (no
+  process-wide lock held across API I/O), plus a pre-write size guard that fails
+  with an actionable error instead of bricking at etcd's ~1MB ceiling. (#71, #72)
+
+### Security
+- Rolls up the **v0.5.1 security patch**: dependency bumps closing all
+  critical/high advisories (`golang.org/x/crypto`, `x/net`, the npm docs chain,
+  …), CodeQL-flagged hardening (bounded audit allocation, workerd path
+  containment, source-fetch fail-closed), and least-privilege GitHub Actions
+  permissions. (#110)
+- The no-auth startup guard (#55) and stricter deploy-path rate limiting (#50)
+  reduce accidental exposure of an unauthenticated control plane.
+
+### Docs
+- Config reference documents `rateLimit.writeRequestsPerSecond` / `writeBurst`,
+  `limits.maxConcurrentLogStreamsGlobal`, and `auth.devInsecure`; corrects the
+  per-user log-stream `<=0` semantics; and notes the ConfigMap backend's ~1MB
+  scale bound (use `sqlite` at scale).
+- Authentication guide documents the no-auth non-loopback-bind guard.
+
 ## v0.5.0 — 2026-07-09
 
 The `/v1` app data plane reaches parity with the dashboard — version history &

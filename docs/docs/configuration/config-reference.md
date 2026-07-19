@@ -25,10 +25,16 @@ server:
   baseURL: ""                  # public URL for share-link generation
   logFormat: "text"            # text | json
   logLevel: "info"             # debug | info | warn | error
-  rateLimit: { enabled: false, requestsPerSecond: 10, burst: 20 }
+  rateLimit:                   # covers /api, /mcp, and /v1 (incl. the deploy path)
+    enabled: false
+    requestsPerSecond: 10      # steady-state per client (reads)
+    burst: 20
+    writeRequestsPerSecond: 1  # stricter budget for deploy/create/update/delete
+    writeBurst: 5
 
 auth:
   enabled: false               # enable before exposing the API
+  devInsecure: false           # required to run auth-disabled on a non-loopback bind
   mode: "apikey"               # apikey | oauth | oidc
   apiKeys: []                  # see auth section below
   # oidc: { issuer, audience, usernameClaim, roleClaim, adminRole, ... }
@@ -74,7 +80,8 @@ limits:
   maxTotalFileSize: 52428800   # 50 MiB
   maxFileCount: 500
   maxLogLines: 10000
-  maxConcurrentLogStreamsPerUser: 10
+  maxConcurrentLogStreamsPerUser: 10   # <=0 -> safe default (not unlimited)
+  maxConcurrentLogStreamsGlobal: 100   # cap across all users; <=0 -> safe default
 
 quotas:
   enabled: false
@@ -116,17 +123,20 @@ tracing:
 | `baseURL`                      | string  | `""`      | Public-facing base URL used to generate share links, e.g. `http://localhost:8080`. |
 | `logFormat`                    | string  | `text`    | `text` or `json`.                                                                |
 | `logLevel`                     | string  | `info`    | `debug`, `info`, `warn`, or `error`.                                             |
-| `rateLimit.enabled`            | bool    | `false`   | Enable per-client HTTP rate limiting.                                            |
-| `rateLimit.requestsPerSecond`  | float   | `10`      | Steady-state rate per client.                                                    |
-| `rateLimit.burst`              | int     | `20`      | Max burst size per client.                                                       |
+| `rateLimit.enabled`            | bool    | `false`   | Enable per-client HTTP rate limiting. Covers `/api`, `/mcp`, and `/v1` (including the deploy path). Off on a network transport logs a startup warning. |
+| `rateLimit.requestsPerSecond`  | float   | `10`      | Steady-state rate per client for reads.                                          |
+| `rateLimit.burst`              | int     | `20`      | Max burst size per client for reads.                                             |
+| `rateLimit.writeRequestsPerSecond` | float | `1`     | Stricter steady-state rate for mutating verbs (deploy/create/update/delete), so one user can't flood the expensive deploy path. `<=0` → safe default. |
+| `rateLimit.writeBurst`         | int     | `5`       | Max burst for mutating verbs. `<=0` → safe default.                              |
 
 ## `auth`
 
-Governs authentication and TLS termination. When `enabled` is `false` the API is open — enable it before exposing vibeD. See [Authentication](authentication.md) for a full walkthrough.
+Governs authentication and TLS termination. When `enabled` is `false` the API is open (every request is treated as admin) — enable it before exposing vibeD. To guard against that being exposed by accident, vibeD **refuses to start** with auth disabled on a non-loopback bind unless `devInsecure: true` is set. See [Authentication](authentication.md) for a full walkthrough.
 
 | Key       | Type              | Default | Description                                                                             |
 | --------- | ----------------- | ------- | --------------------------------------------------------------------------------------- |
 | `enabled` | bool              | `false` | Turn authentication on.                                                                  |
+| `devInsecure` | bool          | `false` | Acknowledge running with auth disabled on a non-loopback bind. Required to start in that config (otherwise vibeD refuses); intended for local dev or a network-isolated in-cluster listener. The Helm chart's no-auth path sets it automatically. |
 | `mode`    | string            | `""`    | `apikey`, `oauth`, or `oidc`. Out-of-tree providers may register additional modes.      |
 | `apiKeys` | list              | `[]`    | Configured API keys (see below). At least one is required when `mode` is `apikey`/`oauth`/empty. |
 | `oidc`    | object            | —       | OIDC settings (see below).                                                              |
@@ -215,9 +225,9 @@ The state store for control-plane objects (the control plane is stateless; all d
 
 | Key         | Type              | Default  | Description                                                                                  |
 | ----------- | ----------------- | -------- | ------------------------------------------------------------------------------------------- |
-| `backend`   | string            | `sqlite` | `sqlite`, `memory`, or `configmap`. Validated at startup.                                    |
+| `backend`   | string            | `sqlite` | `sqlite` (default, recommended — scales per-row), `memory`, or `configmap`. Validated at startup. |
 | `sqlite`    | object            | —        | `path` (default `/data/vibed.db`). Required when `backend` is `sqlite`.                      |
-| `configmap` | object            | —        | `name` (default `vibed-artifacts`), `namespace` (default `vibed-system`).                   |
+| `configmap` | object            | —        | `name` (default `vibed-artifacts`), `namespace` (default `vibed-system`). Small/dev deployments only — all artifacts share one ConfigMap, bounded by etcd's ~1MB object ceiling; use `sqlite` at scale. |
 | `options`   | map[string]string | `{}`     | Passed verbatim to the backend factory. Core backends ignore it; an out-of-tree backend reads its own settings (DSN, pool size, …) from here, so adding a backend needs no schema change. See [Store backends](../extending/store-backends.md). |
 
 ## `kubernetes`
@@ -236,7 +246,8 @@ Guards on MCP tool inputs and log streaming.
 | `maxTotalFileSize`               | int  | `52428800` | Max total source size per deploy/update, in bytes (50 MiB).                       |
 | `maxFileCount`                   | int  | `500`      | Max number of files per deploy/update.                                           |
 | `maxLogLines`                    | int  | `10000`    | Max log lines returned per request.                                              |
-| `maxConcurrentLogStreamsPerUser` | int  | `10`       | Max simultaneous `/v1/logs` SSE streams per authenticated user. `0` = unlimited. |
+| `maxConcurrentLogStreamsPerUser` | int  | `10`       | Max simultaneous `/v1/logs` SSE streams per authenticated user. `<=0` falls back to a safe default (not unlimited). |
+| `maxConcurrentLogStreamsGlobal`  | int  | `100`      | Max simultaneous `/v1/logs` SSE streams across **all** users, so many users can't collectively exhaust controller memory. `<=0` → safe default. |
 
 ## `quotas`
 
