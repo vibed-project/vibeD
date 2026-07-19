@@ -52,13 +52,11 @@ func (s *Service) Get(ctx context.Context, owner, id string) (*vibedv1.VibedApp,
 	return app, nil
 }
 
-// authorize consults the registered Authorizer for action on app by owner. It
-// returns nil (allow) when no Authorizer is registered. app may be nil for
-// collection/creation actions, in which case only the identity is checked.
-func (s *Service) authorize(ctx context.Context, action authz.Action, app *vibedv1.VibedApp, owner string) error {
-	if s.Authz == nil {
-		return nil
-	}
+// appRequest builds the authz.Request for action on app by owner. app may be
+// nil for collection/creation actions, in which case only the identity is
+// carried. Both the per-item and batch authorization paths build Requests
+// here, so they decide from identical inputs.
+func (s *Service) appRequest(ctx context.Context, action authz.Action, app *vibedv1.VibedApp, owner string) authz.Request {
 	res := authz.Resource{Kind: "app"}
 	if app != nil {
 		res.ID = app.Name
@@ -66,12 +64,53 @@ func (s *Service) authorize(ctx context.Context, action authz.Action, app *vibed
 		res.Namespace = app.Namespace
 		res.Department = app.Labels[vibedv1.LabelDepartment]
 	}
-	return s.Authz.Authorize(ctx, authz.Request{
+	return authz.Request{
 		Subject:  owner,
 		Role:     vibedauth.RoleFromContext(ctx),
 		Action:   action,
 		Resource: res,
-	})
+	}
+}
+
+// authorize consults the registered Authorizer for action on app by owner. It
+// returns nil (allow) when no Authorizer is registered.
+func (s *Service) authorize(ctx context.Context, action authz.Action, app *vibedv1.VibedApp, owner string) error {
+	if s.Authz == nil {
+		return nil
+	}
+	return s.Authz.Authorize(ctx, s.appRequest(ctx, action, app, owner))
+}
+
+// filterAuthorized returns the subset of apps the caller may read, in input
+// order. When the Authorizer also implements authz.BatchAuthorizer, all
+// candidates are decided in one AuthorizeBatch call; otherwise — or when the
+// batch reply is not length-matched to the requests and so cannot be trusted —
+// it falls back to per-item Authorize, the semantics of record. Both paths
+// produce identical decisions by the BatchAuthorizer contract.
+func (s *Service) filterAuthorized(ctx context.Context, apps []vibedv1.VibedApp, owner string) []vibedv1.VibedApp {
+	out := make([]vibedv1.VibedApp, 0, len(apps))
+	if ba, ok := s.Authz.(authz.BatchAuthorizer); ok {
+		reqs := make([]authz.Request, len(apps))
+		for i := range apps {
+			reqs[i] = s.appRequest(ctx, authz.ActionAppGet, &apps[i], owner)
+		}
+		if errs := ba.AuthorizeBatch(ctx, reqs); len(errs) == len(reqs) {
+			for i := range apps {
+				if errs[i] == nil {
+					out = append(out, apps[i])
+				}
+			}
+			return out
+		}
+		// Length mismatch: alignment is unknowable, so ignore the batch reply
+		// and decide per item below.
+	}
+	for i := range apps {
+		if s.authorize(ctx, authz.ActionAppGet, &apps[i], owner) == nil {
+			out = append(out, apps[i])
+		}
+	}
+	return out
 }
 
 // List returns the VibedApps owned by owner (or visible to them via the
@@ -91,29 +130,41 @@ func (s *Service) List(ctx context.Context, owner string, limit, offset int) ([]
 	// owner label (#74) instead of fetching the whole namespace. The label is a
 	// lossy mirror of spec.owner (collisions possible — #66), so it can only
 	// over-return; the exact spec.owner check below stays authoritative. With an
-	// Authorizer we must fetch every app in the namespace so it can grant
-	// team-scoped visibility (apps the caller doesn't own), so skip the pre-filter.
+	// Authorizer we must by default fetch every app in the namespace so it can
+	// grant team-scoped visibility (apps the caller doesn't own) — unless the
+	// Authorizer also implements authz.ListScoper, whose selector narrows the
+	// fetch. That selector may likewise only over-return (candidates are still
+	// exactly filtered below), so applying it cannot change the result, only
+	// shrink the fetch; a nil selector declines narrowing.
 	if s.Authz == nil {
 		listOpts = append(listOpts, client.MatchingLabels{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)})
+	} else if sc, ok := s.Authz.(authz.ListScoper); ok {
+		req := s.appRequest(ctx, authz.ActionAppList, nil, owner)
+		req.Resource.Namespace = t.Namespace
+		sel, serr := sc.ScopeList(ctx, req)
+		if serr != nil {
+			return nil, 0, fmt.Errorf("scope list: %w", serr)
+		}
+		if sel != nil {
+			listOpts = append(listOpts, client.MatchingLabelsSelector{Selector: sel})
+		}
 	}
 	var list vibedv1.VibedAppList
 	if err := s.Client.List(ctx, &list, listOpts...); err != nil {
 		return nil, 0, fmt.Errorf("list VibedApps: %w", err)
 	}
-	out := make([]vibedv1.VibedApp, 0, len(list.Items))
-	for i := range list.Items {
-		a := list.Items[i]
-		// With an Authorizer, list every app in the tenant namespace the caller
-		// may read (team-scoped visibility, e.g. a Viewer seeing team apps).
-		// Without one, keep the built-in owner-only scoping.
-		if s.Authz != nil {
-			if s.authorize(ctx, authz.ActionAppGet, &a, owner) == nil {
-				out = append(out, a)
+	// With an Authorizer, list every fetched app the caller may read (team-
+	// scoped visibility, e.g. a Viewer seeing team apps), batching the decisions
+	// when supported. Without one, keep the built-in owner-only scoping.
+	var out []vibedv1.VibedApp
+	if s.Authz != nil {
+		out = s.filterAuthorized(ctx, list.Items, owner)
+	} else {
+		out = make([]vibedv1.VibedApp, 0, len(list.Items))
+		for i := range list.Items {
+			if list.Items[i].Spec.Owner == owner {
+				out = append(out, list.Items[i])
 			}
-			continue
-		}
-		if a.Spec.Owner == owner {
-			out = append(out, a)
 		}
 	}
 	total := len(out)
