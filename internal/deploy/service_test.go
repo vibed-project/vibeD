@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -162,6 +164,17 @@ func TestDeployReachesReady(t *testing.T) {
 	}
 }
 
+// histSampleCount reads a histogram series' cumulative sample count
+// (testutil.ToFloat64 only handles counters/gauges, not histograms).
+func histSampleCount(t *testing.T, o prometheus.Observer) uint64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := o.(prometheus.Metric).Write(m); err != nil {
+		t.Fatalf("write histogram metric: %v", err)
+	}
+	return m.GetHistogram().GetSampleCount()
+}
+
 func TestDeployAndDeleteRecordMetrics(t *testing.T) {
 	s := newScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
@@ -171,6 +184,7 @@ func TestDeployAndDeleteRecordMetrics(t *testing.T) {
 
 	deploysBefore := testutil.ToFloat64(svc.Metrics.DeploysTotal.WithLabelValues("success", tmpl))
 	activeBefore := testutil.ToFloat64(svc.Metrics.ArtifactsActive.WithLabelValues(tmpl))
+	durationsBefore := histSampleCount(t, svc.Metrics.DeployDuration.WithLabelValues("success", tmpl))
 
 	if _, err := svc.Deploy(context.Background(), Request{
 		Name:    "metricsapp",
@@ -182,6 +196,9 @@ func TestDeployAndDeleteRecordMetrics(t *testing.T) {
 
 	if d := testutil.ToFloat64(svc.Metrics.DeploysTotal.WithLabelValues("success", tmpl)) - deploysBefore; d != 1 {
 		t.Fatalf("deploys_total{success,%s} delta = %v, want 1", tmpl, d)
+	}
+	if d := histSampleCount(t, svc.Metrics.DeployDuration.WithLabelValues("success", tmpl)) - durationsBefore; d != 1 {
+		t.Fatalf("deploy_duration_seconds{success,%s} sample count delta = %v, want 1", tmpl, d)
 	}
 	if d := testutil.ToFloat64(svc.Metrics.ArtifactsActive.WithLabelValues(tmpl)) - activeBefore; d != 1 {
 		t.Fatalf("artifacts_active{%s} delta after deploy = %v, want 1", tmpl, d)
