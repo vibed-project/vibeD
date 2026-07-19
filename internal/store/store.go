@@ -11,14 +11,17 @@ type UserStore interface {
 	CreateUser(ctx context.Context, user *api.User) error
 	GetUser(ctx context.Context, id string) (*api.User, error)
 	GetUserByName(ctx context.Context, name string) (*api.User, error)
-	ListUsers(ctx context.Context, departmentID string) ([]api.User, error)
+	// ListUsers lists users (optionally scoped to a department). limit<=0
+	// returns all; limit>0 pages with offset, matching artifact ListOptions.
+	ListUsers(ctx context.Context, departmentID string, limit, offset int) ([]api.User, error)
 	GetUserByAPIKeyHash(ctx context.Context, hash string) (*api.User, error)
 	UpdateUser(ctx context.Context, user *api.User) error
 
 	CreateDepartment(ctx context.Context, dept *api.Department) error
 	GetDepartment(ctx context.Context, id string) (*api.Department, error)
 	GetDepartmentByName(ctx context.Context, name string) (*api.Department, error)
-	ListDepartments(ctx context.Context) ([]api.Department, error)
+	// ListDepartments lists departments. limit<=0 returns all; limit>0 pages.
+	ListDepartments(ctx context.Context, limit, offset int) ([]api.Department, error)
 	UpdateDepartment(ctx context.Context, dept *api.Department) error
 	DeleteDepartment(ctx context.Context, id string) error
 }

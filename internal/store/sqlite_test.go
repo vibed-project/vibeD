@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -278,6 +279,50 @@ func TestSQLiteStore_SharesBackfillOnOpen(t *testing.T) {
 	back, err := s2.List(ctx, ListOptions{OwnerID: "bob"})
 	require.NoError(t, err)
 	assert.Len(t, back.Artifacts, 1, "backfill should restore bob's shared view")
+}
+
+// TestSQLiteStore_ListPagination locks in the #80 pagination: limit<=0 returns
+// all, limit>0 pages with offset, for both ListUsers and ListDepartments.
+func TestSQLiteStore_ListPagination(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+
+	for i := 0; i < 5; i++ {
+		require.NoError(t, s.CreateUser(ctx, &api.User{
+			ID: fmt.Sprintf("id-%d", i), Name: fmt.Sprintf("u%d", i),
+			Role: "user", Status: "active", CreatedAt: now, UpdatedAt: now,
+		}))
+	}
+
+	all, err := s.ListUsers(ctx, "", 0, 0) // 0 = all
+	require.NoError(t, err)
+	assert.Len(t, all, 5)
+
+	page1, err := s.ListUsers(ctx, "", 2, 0)
+	require.NoError(t, err)
+	require.Len(t, page1, 2)
+	assert.Equal(t, "u0", page1[0].Name)
+	assert.Equal(t, "u1", page1[1].Name)
+
+	page2, err := s.ListUsers(ctx, "", 2, 2)
+	require.NoError(t, err)
+	require.Len(t, page2, 2)
+	assert.Equal(t, "u2", page2[0].Name)
+
+	for i := 0; i < 3; i++ {
+		require.NoError(t, s.CreateDepartment(ctx, &api.Department{
+			ID: fmt.Sprintf("d-%d", i), Name: fmt.Sprintf("dept%d", i),
+			CreatedAt: now, UpdatedAt: now,
+		}))
+	}
+	depAll, err := s.ListDepartments(ctx, 0, 0)
+	require.NoError(t, err)
+	assert.Len(t, depAll, 3)
+	depPage, err := s.ListDepartments(ctx, 1, 1)
+	require.NoError(t, err)
+	require.Len(t, depPage, 1)
+	assert.Equal(t, "dept1", depPage[0].Name)
 }
 
 func TestSQLiteStore_Versions(t *testing.T) {

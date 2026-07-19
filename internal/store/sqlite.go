@@ -790,7 +790,19 @@ func (s *SQLiteStore) GetUserByName(ctx context.Context, name string) (*api.User
 	return &u, nil
 }
 
-func (s *SQLiteStore) ListUsers(ctx context.Context, departmentID string) ([]api.User, error) {
+// appendPage adds LIMIT/OFFSET to query when limit > 0 (limit <= 0 means "all",
+// matching artifact ListOptions). A negative offset is clamped to 0.
+func appendPage(query string, args []interface{}, limit, offset int) (string, []interface{}) {
+	if limit <= 0 {
+		return query, args
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return query + " LIMIT ? OFFSET ?", append(args, limit, offset)
+}
+
+func (s *SQLiteStore) ListUsers(ctx context.Context, departmentID string, limit, offset int) ([]api.User, error) {
 	query := `SELECT id, name, email, role, status, provider, department_id, created_at, updated_at FROM users`
 	var args []interface{}
 	if departmentID != "" {
@@ -798,6 +810,7 @@ func (s *SQLiteStore) ListUsers(ctx context.Context, departmentID string) ([]api
 		args = append(args, departmentID)
 	}
 	query += ` ORDER BY name`
+	query, args = appendPage(query, args, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -894,9 +907,16 @@ func (s *SQLiteStore) GetShareLink(ctx context.Context, token string) (*api.Shar
 	return &link, passwordHash, nil
 }
 
+// maxShareLinksPerList bounds the share-link list for one artifact. Share links
+// are per-artifact and few in practice, so rather than thread pagination through
+// the deploy/orchestrator wrappers, a fixed ceiling keeps the result set bounded
+// (#80) — high enough never to truncate a real app's links.
+const maxShareLinksPerList = 500
+
 func (s *SQLiteStore) ListShareLinks(ctx context.Context, artifactID string) ([]api.ShareLink, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT token, artifact_id, created_by, password, expires_at, created_at, revoked FROM share_links WHERE artifact_id=? ORDER BY created_at DESC`, artifactID)
+		`SELECT token, artifact_id, created_by, password, expires_at, created_at, revoked FROM share_links WHERE artifact_id=? ORDER BY created_at DESC LIMIT ?`,
+		artifactID, maxShareLinksPerList)
 	if err != nil {
 		return nil, fmt.Errorf("listing share links: %w", err)
 	}
@@ -985,9 +1005,9 @@ func (s *SQLiteStore) GetDepartmentByName(ctx context.Context, name string) (*ap
 	return &d, nil
 }
 
-func (s *SQLiteStore) ListDepartments(ctx context.Context) ([]api.Department, error) {
-	rows, err := s.db.QueryContext(ctx,
-	        `SELECT id, name, namespace, created_at, updated_at FROM departments ORDER BY name`)
+func (s *SQLiteStore) ListDepartments(ctx context.Context, limit, offset int) ([]api.Department, error) {
+	query, args := appendPage(`SELECT id, name, namespace, created_at, updated_at FROM departments ORDER BY name`, nil, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 	        return nil, fmt.Errorf("listing departments: %w", err)
 	}

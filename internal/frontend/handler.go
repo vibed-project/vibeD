@@ -372,7 +372,9 @@ func handleUsers(userStore store.UserStore) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodGet:
 			departmentID := r.URL.Query().Get("department")
-			users, err := userStore.ListUsers(r.Context(), departmentID)
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+			users, err := userStore.ListUsers(r.Context(), departmentID, limit, offset)
 			if err != nil {
 				writeError(w, err, http.StatusInternalServerError)
 				return
@@ -543,7 +545,9 @@ func handleDepartments(userStore store.UserStore, k8sClients *k8s.Clients) http.
 
 		switch r.Method {
 		case http.MethodGet:
-			depts, err := userStore.ListDepartments(r.Context())
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+			depts, err := userStore.ListDepartments(r.Context(), limit, offset)
 			if err != nil {
 				writeError(w, err, http.StatusInternalServerError)
 				return
