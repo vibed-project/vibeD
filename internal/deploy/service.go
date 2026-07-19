@@ -12,7 +12,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
+	"os"
 	"regexp"
 	"time"
 
@@ -177,16 +179,37 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("resolve tenant: %w", err)
 	}
 
-	// Read + cap the tarball once, hashing it in the same pass via a TeeReader
-	// instead of walking the full (up-to-50MB) buffer a second time with
-	// sha256.Sum256 — this is the latency-sensitive deploy hot path (#73). The
-	// buffer is still needed in memory because the policy engine evaluates over
-	// the full source bytes; the remaining passes (classify, store upload) are
-	// inherent to those operations.
+	// Acquire the source. With a policy gate configured the full tarball is
+	// still buffered in memory, because policy.Input.Source is a []byte
+	// contract gates evaluate over. Without one — the default; policy.Build
+	// returns nil unless an out-of-tree gate registered — the source is
+	// streamed instead: one hashing pass over the request body, then classify
+	// and Store.Put re-read the same bytes by rewinding the caller's reader
+	// when it is seekable (the multipart layer hands us a seekable file/section
+	// either way) or a local spool file written during the hashing pass. The
+	// nil-gate path therefore never allocates a full-payload buffer; peak heap
+	// stays at io.Copy's fixed buffer no matter the tarball size. Both paths
+	// hash in-pass via a TeeReader-style tee (#73), enforce MaxTarballBytes
+	// with identical errors, and produce identical sha256 bytes.
 	hasher := sha256.New()
-	buf, err := readCapped(io.TeeReader(req.Tarball, hasher), MaxTarballBytes)
-	if err != nil {
-		return nil, err
+	var (
+		buf        []byte // buffered path only (s.Policy != nil)
+		openSource func() (io.Reader, error)
+	)
+	if s.Policy != nil {
+		b, rerr := readCapped(io.TeeReader(req.Tarball, hasher), MaxTarballBytes)
+		if rerr != nil {
+			return nil, rerr
+		}
+		buf = b
+		openSource = func() (io.Reader, error) { return bytes.NewReader(buf), nil }
+	} else {
+		open, cleanup, serr := streamSource(req.Tarball, hasher, MaxTarballBytes)
+		if serr != nil {
+			return nil, serr
+		}
+		defer cleanup()
+		openSource = open
 	}
 
 	// Enrich the audit events for this deploy with the tenant and a hash of the
@@ -198,7 +221,11 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	lane := req.LaneOverride
 	template := req.TemplateOverride
 	if lane == "" || template == "" {
-		dec, cerr := s.Classifier.Classify(ctx, bytes.NewReader(buf))
+		src, oerr := openSource()
+		if oerr != nil {
+			return nil, oerr
+		}
+		dec, cerr := s.Classifier.Classify(ctx, src)
 		if cerr != nil {
 			return nil, fmt.Errorf("classify source: %w", cerr)
 		}
@@ -259,6 +286,16 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 			Env:          req.Env,
 			IsNew:        isNew,
 			Source:       buf,
+			// SourceOpener lets gates stream the source instead of holding
+			// Source; here it opens over the same buffer, so migrating gates
+			// see identical bytes either way.
+			SourceOpener: func(context.Context) (io.ReadCloser, error) {
+				src, oerr := openSource()
+				if oerr != nil {
+					return nil, oerr
+				}
+				return io.NopCloser(src), nil
+			},
 		}); perr != nil {
 			_ = s.record(ctx, "deploy", req.Name, "denied", perr.Error())
 			return nil, perr
@@ -310,8 +347,15 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 	version := nextVersion(history)
 	tarballKey := versionKey(req.Name, version)
 
-	// Store the tarball so the agent can pull it.
-	refURL, err := s.Store.Put(ctx, tarballKey, bytes.NewReader(buf))
+	// Store the tarball so the agent can pull it. On the streaming path this
+	// re-reads the caller's seekable reader or the spool file; the spool is an
+	// *os.File, which the served store can hard-link instead of re-copying.
+	src, oerr := openSource()
+	if oerr != nil {
+		_ = s.record(ctx, "deploy", req.Name, "error", oerr.Error())
+		return nil, fmt.Errorf("store source: %w", oerr)
+	}
+	refURL, err := s.Store.Put(ctx, tarballKey, src)
 	if err != nil {
 		_ = s.record(ctx, "deploy", req.Name, "error", err.Error())
 		return nil, fmt.Errorf("store source: %w", err)
@@ -560,11 +604,97 @@ func readCapped(r io.Reader, max int64) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read source: %w", err)
 	}
-	if int64(len(buf)) > max {
-		return nil, fmt.Errorf("source exceeds %d MB limit", max/(1024*1024))
-	}
-	if len(buf) == 0 {
-		return nil, fmt.Errorf("source is empty")
+	if err := checkSize(int64(len(buf)), max); err != nil {
+		return nil, err
 	}
 	return buf, nil
+}
+
+// checkSize is the post-read size contract shared by readCapped (buffered
+// path) and streamSource (streaming path), so both fail with byte-identical
+// errors.
+func checkSize(n, max int64) error {
+	if n > max {
+		return fmt.Errorf("source exceeds %d MB limit", max/(1024*1024))
+	}
+	if n == 0 {
+		return fmt.Errorf("source is empty")
+	}
+	return nil
+}
+
+// streamSource prepares the request tarball for the nil-policy deploy path
+// without buffering the payload: it hashes the full stream into hasher in one
+// pass, enforcing max exactly like readCapped, and returns an open function
+// that re-reads the same bytes from the start on every call — by rewinding the
+// caller's reader when it is seekable (both multipart shapes are: the >8MB
+// disk spill and the in-memory section), else from a spool file written during
+// the hashing pass. cleanup removes the spool (a no-op for seekable input) and
+// must be called once the source is no longer needed; on error streamSource
+// has already cleaned up after itself.
+func streamSource(r io.Reader, hasher hash.Hash, max int64) (open func() (io.Reader, error), cleanup func(), err error) {
+	if rs, ok := r.(io.ReadSeeker); ok {
+		if start, serr := rs.Seek(0, io.SeekCurrent); serr == nil {
+			n, cerr := io.Copy(hasher, io.LimitReader(rs, max+1))
+			if cerr != nil {
+				return nil, nil, fmt.Errorf("read source: %w", cerr)
+			}
+			if err := checkSize(n, max); err != nil {
+				return nil, nil, err
+			}
+			open = func() (io.Reader, error) {
+				if _, serr := rs.Seek(start, io.SeekStart); serr != nil {
+					return nil, fmt.Errorf("rewind source: %w", serr)
+				}
+				return rs, nil
+			}
+			return open, func() {}, nil
+		}
+		// A ReadSeeker whose Seek fails (e.g. an *os.File over a pipe) spools
+		// like any non-seekable reader.
+	}
+
+	tmp, terr := os.CreateTemp("", "vibed-deploy-*.tar.gz")
+	if terr != nil {
+		return nil, nil, fmt.Errorf("spool source: %w", terr)
+	}
+	cleanup = func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+	src := &taggedReader{r: io.LimitReader(r, max+1)}
+	n, cerr := io.Copy(tmp, io.TeeReader(src, hasher))
+	if cerr != nil {
+		cleanup()
+		if cerr == src.err { // the request body failed, not the spool write
+			return nil, nil, fmt.Errorf("read source: %w", cerr)
+		}
+		return nil, nil, fmt.Errorf("spool source: %w", cerr)
+	}
+	if err := checkSize(n, max); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	open = func() (io.Reader, error) {
+		if _, serr := tmp.Seek(0, io.SeekStart); serr != nil {
+			return nil, fmt.Errorf("rewind source: %w", serr)
+		}
+		return tmp, nil
+	}
+	return open, cleanup, nil
+}
+
+// taggedReader remembers the error its inner reader returned, so a failed
+// io.Copy through it can be attributed to the read side vs the write side.
+type taggedReader struct {
+	r   io.Reader
+	err error
+}
+
+func (t *taggedReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if err != nil && err != io.EOF {
+		t.err = err
+	}
+	return n, err
 }

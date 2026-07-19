@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vibed-project/vibeD/internal/config"
 )
@@ -44,6 +45,19 @@ func (s *servedStore) Put(_ context.Context, id string, r io.Reader) (string, er
 		return "", fmt.Errorf("tarball served: id is empty")
 	}
 	dest := filepath.Join(s.basePath, objectName(id))
+
+	// Fast path: when the caller hands us an *os.File (e.g. the deploy spool),
+	// hard-link its inode into the store instead of copying the payload a
+	// second time. The caller's file is only ever linked — never moved or
+	// renamed — and the caller must treat the file's contents as immutable
+	// once Put returns, since the stored blob may share its inode. Any failure
+	// (cross-device link, unnamed file, nonzero read offset, exists races)
+	// falls through to the byte-copy path below, which also preserves the
+	// atomic-rename guarantee the fast path keeps.
+	if f, ok := r.(*os.File); ok && s.linkInto(f, dest) {
+		return s.publicBaseURL + BlobPathPrefix + objectName(id), nil
+	}
+
 	// Write to a temp file then rename so a reader never sees a partial blob.
 	tmp, err := os.CreateTemp(s.basePath, ".put-*")
 	if err != nil {
@@ -63,6 +77,35 @@ func (s *servedStore) Put(_ context.Context, id string, r io.Reader) (string, er
 		return "", fmt.Errorf("tarball served: rename: %w", err)
 	}
 	return s.publicBaseURL + BlobPathPrefix + objectName(id), nil
+}
+
+// linkInto hard-links f's inode to a temp name next to dest and renames it
+// into place, reporting whether it succeeded. False means "use the copy path":
+// the file has no usable name, sits on another filesystem, or its read offset
+// is not at the start — Put's contract is to store what the reader would yield
+// (offset → EOF), and a link always captures the whole file, so the two only
+// agree at offset 0. On the false return f's offset is untouched, so the
+// caller can still io.Copy from it.
+func (s *servedStore) linkInto(f *os.File, dest string) bool {
+	name := f.Name()
+	if name == "" {
+		return false
+	}
+	if off, err := f.Seek(0, io.SeekCurrent); err != nil || off != 0 {
+		return false
+	}
+	// Link to a temp name first, then rename over dest: link(2) fails if the
+	// target exists, while rename atomically replaces it — same overwrite +
+	// no-partial-blob semantics as the copy path.
+	tmp := fmt.Sprintf("%s.lnk-%d-%d", dest, os.Getpid(), time.Now().UnixNano())
+	if err := os.Link(name, tmp); err != nil {
+		return false
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		os.Remove(tmp)
+		return false
+	}
+	return true
 }
 
 func (s *servedStore) Delete(_ context.Context, id string) error {

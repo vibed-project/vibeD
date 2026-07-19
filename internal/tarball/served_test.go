@@ -68,6 +68,139 @@ func TestServedStoreOverwriteOnRedeploy(t *testing.T) {
 	}
 }
 
+// An *os.File positioned at the start is stored by hard-linking its inode
+// (no second payload copy); the blob survives the caller deleting its file,
+// exactly what the deploy spool does after Put.
+func TestServedStorePutHardLinksFileReaders(t *testing.T) {
+	dir := t.TempDir()
+	s, err := newServedStore(config.ServedTarballConfig{BasePath: dir, PublicBaseURL: "http://x"})
+	if err != nil {
+		t.Fatalf("newServedStore: %v", err)
+	}
+
+	// The spool lives on the same filesystem as the store, so link(2) is
+	// expected to succeed here; the cross-device case exercises the copy
+	// fallback in production, not in this test.
+	spool, err := os.CreateTemp(dir, "spool-*")
+	if err != nil {
+		t.Fatalf("spool: %v", err)
+	}
+	content := []byte("gzip-tarball-bytes-linked")
+	if _, err := spool.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+
+	url, err := s.Put(context.Background(), "linked", spool)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if want := "http://x" + BlobPathPrefix + "linked.tar.gz"; url != want {
+		t.Errorf("url = %q, want %q", url, want)
+	}
+
+	dest := filepath.Join(dir, "linked.tar.gz")
+	got, err := os.ReadFile(dest)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("blob = %q (err %v), want %q", got, err, content)
+	}
+
+	// Same inode: the fast path linked rather than copied.
+	si, err1 := os.Stat(spool.Name())
+	di, err2 := os.Stat(dest)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("stat: %v / %v", err1, err2)
+	}
+	if !os.SameFile(si, di) {
+		t.Error("blob and spool should share an inode (hard-link fast path)")
+	}
+
+	// Deleting the spool (as deploy does) must not disturb the stored blob.
+	spool.Close()
+	if err := os.Remove(spool.Name()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = os.ReadFile(dest)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Errorf("blob after spool removal = %q (err %v), want %q", got, err, content)
+	}
+
+	// No .lnk-* temp names left behind by the link+rename.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".lnk-") {
+			t.Errorf("leftover link temp %q", e.Name())
+		}
+	}
+}
+
+// A file mid-read must NOT be linked: Put's contract is "store what the
+// reader yields" (offset → EOF), and a link would capture the whole file. The
+// copy fallback preserves the reader semantics.
+func TestServedStorePutFileMidOffsetFallsBackToCopy(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := newServedStore(config.ServedTarballConfig{BasePath: dir, PublicBaseURL: "http://x"})
+
+	f, err := os.CreateTemp(dir, "spool-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("skip-this-part-rest"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(int64(len("skip-this-part-")), io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Put(context.Background(), "partial", f); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "partial.tar.gz"))
+	if err != nil || string(got) != "rest" {
+		t.Fatalf("blob = %q (err %v), want %q", got, err, "rest")
+	}
+	si, _ := os.Stat(f.Name())
+	di, _ := os.Stat(filepath.Join(dir, "partial.tar.gz"))
+	if os.SameFile(si, di) {
+		t.Error("a mid-offset file must be copied, not linked")
+	}
+}
+
+// The link fast path keeps redeploy overwrite semantics: renaming the linked
+// temp over an existing blob replaces it atomically.
+func TestServedStorePutLinkOverwritesOnRedeploy(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := newServedStore(config.ServedTarballConfig{BasePath: dir, PublicBaseURL: "http://x"})
+
+	putFile := func(content string) {
+		t.Helper()
+		f, err := os.CreateTemp(dir, "spool-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(content); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Put(context.Background(), "app", f); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	putFile("v1")
+	putFile("v2-longer")
+
+	got, _ := os.ReadFile(filepath.Join(dir, "app.tar.gz"))
+	if string(got) != "v2-longer" {
+		t.Errorf("redeploy via link did not overwrite: got %q", got)
+	}
+}
+
 func TestServedStoreDeleteIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := newServedStore(config.ServedTarballConfig{BasePath: dir, PublicBaseURL: "http://x"})
