@@ -14,6 +14,8 @@ MCP clients do not trust unsecured tool servers. Without authentication:
 - Built artifacts and source code could be exposed
 - There is no audit trail of who deployed what
 
+With auth disabled, **every request is treated as admin**. To stop that being exposed by accident, vibeD **refuses to start** when auth is disabled *and* the server binds a non-loopback address, unless you explicitly acknowledge it with `auth.devInsecure: true`. Use that only for local dev or a network-isolated in-cluster listener; the Helm chart's no-auth path sets it for you. The right move for anything reachable by others is to enable auth.
+
 ## Quick Start
 
 The fastest way to enable auth is via a single environment variable:

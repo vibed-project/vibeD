@@ -22,9 +22,9 @@ CI builds and pushes all component images to GHCR: `vibed`, `vibed-controller`, 
 ## 2. Production values
 
 ```yaml
-image: { repository: ghcr.io/vibed-project/vibed, tag: "v0.5.0", pullPolicy: IfNotPresent }
-controller: { image: { tag: "v0.5.0" }, domain: apps.example.com }
-router:     { image: { tag: "v0.5.0" } }
+image: { repository: ghcr.io/vibed-project/vibed, tag: "v0.5.2", pullPolicy: IfNotPresent }
+controller: { image: { tag: "v0.5.2" }, domain: apps.example.com }
+router:     { image: { tag: "v0.5.2" } }
 
 # Sandbox isolation
 runtime:
