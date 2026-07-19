@@ -47,11 +47,12 @@ type ServiceManager interface {
 }
 
 // K8sServiceManager ensures one ClusterIP Service per general-lane VibedApp,
-// selecting the bound Sandbox pod via the label selector agent-sandbox
-// publishes on the claim's status.sandbox.selector. The Service gives the
-// router a stable upstream (its cluster-DNS name) that survives Sandbox pod
-// restarts — a raw pod IP goes stale when the pod is recreated with a new IP,
-// leaving Caddy pointed at a dead address (502).
+// selecting the bound Sandbox pod by the agents.x-k8s.io/sandbox-name-hash
+// label agent-sandbox stamps on it (reproduced from the claim's
+// status.sandbox.name — see boundPodSelector). The Service gives the router a
+// stable upstream (its cluster-DNS name) that survives Sandbox pod restarts —
+// a raw pod IP goes stale when the pod is recreated with a new IP, leaving
+// Caddy pointed at a dead address (502).
 //
 // agent-sandbox owns the pod label scheme (v0.5+ tracks pods by
 // agents.x-k8s.io/sandbox-name-hash, replacing the older per-claim label), so

@@ -26,7 +26,10 @@ rules:
     resources: ["vibedapps/status"]
     verbs: ["get", "update", "patch"]
   # Services: one per-app ClusterIP Service gives the router a stable upstream
-  # that survives Sandbox pod-IP churn (selects the bound pod by claim-uid).
+  # that survives Sandbox pod-IP churn. It selects the bound pod by the
+  # agents.x-k8s.io/sandbox-name-hash label agent-sandbox v0.5 stamps on it
+  # (the older per-claim agents.x-k8s.io/claim-uid label is filtered off the
+  # adopted warm-pool pod, which caused 502s — see #42).
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
