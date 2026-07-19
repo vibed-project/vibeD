@@ -237,6 +237,10 @@ func (s *Server) runDeploy(w http.ResponseWriter, r *http.Request, owner, forced
 
 	res, err := s.Deploy.Deploy(r.Context(), req)
 	if err != nil {
+		if forbidden(err) {
+			writeJSON(w, http.StatusForbidden, Error{Code: "forbidden", Message: err.Error()})
+			return
+		}
 		var pe interface{ PolicyDenied() bool }
 		if errors.As(err, &pe) {
 			writeJSON(w, http.StatusForbidden, Error{Code: "policy_denied", Message: err.Error()})
@@ -321,6 +325,10 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request, appID AppID) 
 	err := s.Deploy.Delete(r.Context(), owner, appID)
 	if errors.Is(err, deploy.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+		return
+	}
+	if forbidden(err) {
+		writeJSON(w, http.StatusForbidden, Error{Code: "forbidden", Message: err.Error()})
 		return
 	}
 	if err != nil {
@@ -415,6 +423,10 @@ func (s *Server) setSuspended(w http.ResponseWriter, r *http.Request, appID AppI
 	if err != nil {
 		if errors.Is(err, deploy.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		if forbidden(err) {
+			writeJSON(w, http.StatusForbidden, Error{Code: "forbidden", Message: err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, Error{Code: "suspend_failed", Message: err.Error()})
@@ -576,6 +588,14 @@ func notImplemented(w http.ResponseWriter, code, message string) {
 		Code:    code + "_not_implemented",
 		Message: message,
 	})
+}
+
+// forbidden reports whether err is (or wraps) an authorization denial — any
+// error whose Forbidden() method returns true (e.g. authz.DeniedError) — so the
+// handler can map it to HTTP 403.
+func forbidden(err error) bool {
+	var fe interface{ Forbidden() bool }
+	return errors.As(err, &fe) && fe.Forbidden()
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

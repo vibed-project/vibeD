@@ -26,6 +26,7 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/audit"
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/authz"
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
@@ -35,6 +36,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/frontend"
 	"github.com/vibed-project/vibeD/internal/gc"
 	"github.com/vibed-project/vibeD/internal/health"
+	"github.com/vibed-project/vibeD/internal/httproutes"
 	"github.com/vibed-project/vibeD/internal/k8s"
 	mcppkg "github.com/vibed-project/vibeD/internal/mcp"
 	"github.com/vibed-project/vibeD/internal/meter"
@@ -292,6 +294,19 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 
 	orch := orchestrator.NewOrchestrator(cfg, detector, factory, stg, st, userStore, m, k8sClients.Clientset, bus, shareLinkStore, logger)
 
+	// Per-action authorizer (none by default → built-in owner/admin checks). An
+	// out-of-tree module may register RBAC; it applies to both the orchestrator
+	// (legacy /api/artifacts) and the deploy service (/v1) paths.
+	authorizer, aerr := authz.Build(authz.Deps{})
+	if aerr != nil {
+		logger.Error("failed to build authorizer", "error", aerr)
+		os.Exit(1)
+	}
+	orch.SetAuthorizer(authorizer)
+	if authorizer != nil {
+		logger.Info("per-action authorizer enabled")
+	}
+
 	// Lifecycle context shared by GC and orchestrator's async goroutines so
 	// SIGTERM cancels in-flight builds and the GC loop together.
 	lifeCtx, lifeCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -353,6 +368,9 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 			os.Exit(1)
 		}
 		deploySvc.Policy = gate
+
+		// Same authorizer instance that gates the orchestrator path (built above).
+		deploySvc.Authz = authorizer
 
 		sink, merr := meter.Build(meter.Deps{})
 		if merr != nil {
@@ -457,6 +475,19 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	// surface, so it's mounted directly; SkipAuthPaths still authenticates
 	// /v1/* and the handler enforces the admin role.
 	mux.HandleFunc("GET /v1/audit", auditHandler(auditRec, logger))
+
+	// Additional routes contributed by out-of-tree modules (e.g. an enterprise
+	// role-management API). Mounted on the mux, so they run behind the auth+role
+	// middleware; each handler enforces its own RBAC. The core registers none.
+	if extraRoutes, rerr := httproutes.Build(httproutes.Deps{}); rerr != nil {
+		logger.Error("failed to build module HTTP routes", "error", rerr)
+		os.Exit(1)
+	} else {
+		for _, rt := range extraRoutes {
+			mux.Handle(rt.Pattern, rt.Handler)
+			logger.Info("mounted module route", "pattern", rt.Pattern)
+		}
+	}
 
 	// MCP HTTP endpoint
 	mcpHandler := mcp.NewStreamableHTTPHandler(
