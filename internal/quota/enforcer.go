@@ -104,7 +104,7 @@ func (e *Enforcer) Authorize(ctx context.Context, t tenant.Tenant, owner string,
 	}
 
 	if max := e.cfg.MaxAppsPerOwner; max > 0 {
-		n, cerr := e.count(ctx, ns, vibedv1.LabelOwner, vibedv1.SanitizeLabel(owner))
+		n, cerr := e.countByOwner(ctx, ns, owner)
 		if cerr != nil {
 			return department, cerr
 		}
@@ -136,6 +136,31 @@ func (e *Enforcer) deptCeiling(dept string) int {
 		return v
 	}
 	return e.cfg.MaxAppsPerDepartment
+}
+
+// countByOwner counts live VibedApps in namespace owned by exactly `owner`.
+//
+// The vibed.dev/owner label is a sanitized, ≤63-char (lossy) mirror of
+// spec.owner, so distinct identities can collide onto one label value — e.g.
+// "alice@corp" and "alice_corp", or two OIDC subjects sharing a 63-char prefix.
+// Counting by the label alone would let colliding owners share a quota bucket
+// (a cross-account DoS plus a partial quota bypass, issue #66). We therefore use
+// the label only as a coarse server-side pre-filter — a collision can only add
+// extra candidates, never drop a genuine match — and then count the apps whose
+// exact spec.owner equals owner, which is the authoritative identity.
+func (e *Enforcer) countByOwner(ctx context.Context, namespace, owner string) (int, error) {
+	var list vibedv1.VibedAppList
+	if err := e.client.List(ctx, &list, client.InNamespace(namespace),
+		client.MatchingLabels{vibedv1.LabelOwner: vibedv1.SanitizeLabel(owner)}); err != nil {
+		return 0, fmt.Errorf("count apps by owner %q: %w", owner, err)
+	}
+	n := 0
+	for i := range list.Items {
+		if list.Items[i].Spec.Owner == owner {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // count returns the number of live VibedApps in namespace carrying the given
