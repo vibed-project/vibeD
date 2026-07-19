@@ -90,6 +90,14 @@ type AuthConfig struct {
 	// direct client cannot spoof a user by setting the header. Ignored by the
 	// apikey/oidc modes.
 	TrustedProxies []string `yaml:"trustedProxies,omitempty"`
+
+	// DevInsecure must be set to true to run with auth disabled
+	// (enabled=false) on a non-loopback bind. Without it the server refuses to
+	// start in that configuration, because auth-disabled mode treats every
+	// request as admin and a non-loopback bind would expose the full admin API
+	// unauthenticated to the network. Intended only for trusted/network-isolated
+	// environments (local dev, or an in-cluster bind fronted by NetworkPolicy).
+	DevInsecure bool `yaml:"devInsecure,omitempty"`
 	// Options is a generic bag read by out-of-tree auth providers. Core providers
 	// (apikey/oauth/oidc) ignore it, so a new mode needs no field added to this
 	// struct.

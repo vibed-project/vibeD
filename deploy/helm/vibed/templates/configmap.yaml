@@ -43,6 +43,15 @@ data:
         certFile: "/etc/vibed/tls/tls.crt"
         keyFile: "/etc/vibed/tls/tls.key"
       {{- end }}
+    {{- else }}
+    auth:
+      # Auth is disabled: every request is treated as admin. The server binds a
+      # non-loopback address (:8080) in-cluster, so it refuses to start in this
+      # mode unless devInsecure explicitly acknowledges it. The listener is
+      # expected to be fronted by NetworkPolicy — set auth.enabled=true for any
+      # shared or production cluster.
+      enabled: false
+      devInsecure: true
     {{- end }}
     deployment:
       preferredTarget: {{ .Values.config.deployment.preferredTarget | quote }}

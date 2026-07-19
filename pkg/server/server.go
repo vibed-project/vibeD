@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -127,6 +128,20 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 		"auth", cfg.Auth.Enabled,
 		"tls", cfg.Auth.TLS.Enabled,
 	)
+
+	// Fail fast on the auth-disabled-on-a-public-bind misconfiguration (#55):
+	// no-auth mode treats every request as admin, so a non-loopback bind would
+	// expose the full admin API unauthenticated. Requires an explicit
+	// auth.devInsecure opt-in to proceed.
+	if err := checkNoAuthBindSafety(cfg); err != nil {
+		logger.Error("insecure configuration", "error", err)
+		os.Exit(1)
+	}
+	if !cfg.Auth.Enabled && !isLoopbackBind(cfg.Server.HTTPAddr) {
+		// Reached only with auth.devInsecure=true; make the posture loud on every boot.
+		logger.Warn("SECURITY: auth is disabled on a non-loopback bind (auth.devInsecure=true) — every request is treated as admin; ensure this listener is network-isolated (NetworkPolicy/loopback) and never reachable by untrusted clients",
+			"httpAddr", cfg.Server.HTTPAddr)
+	}
 
 	// Initialize metrics and health checker
 	m := metrics.New()
@@ -533,6 +548,43 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 			os.Exit(1)
 		}
 	}
+}
+
+// checkNoAuthBindSafety returns a non-nil error when the server is configured
+// with authentication disabled on a non-loopback bind and the operator has not
+// explicitly opted in via auth.devInsecure. In that configuration every request
+// is treated as admin (NoAuthAdminMiddleware), so a network-reachable bind would
+// expose the full admin API unauthenticated (#55).
+func checkNoAuthBindSafety(cfg *config.Config) error {
+	if cfg.Auth.Enabled || cfg.Auth.DevInsecure {
+		return nil
+	}
+	if isLoopbackBind(cfg.Server.HTTPAddr) {
+		return nil
+	}
+	return fmt.Errorf("auth is disabled (auth.enabled=false) but the server binds a non-loopback address %q, which exposes the full admin API unauthenticated to the network; enable auth (auth.enabled=true), bind a loopback address (e.g. 127.0.0.1:8080), or set auth.devInsecure=true to override for a trusted/network-isolated environment", cfg.Server.HTTPAddr)
+}
+
+// isLoopbackBind reports whether addr (a host:port as accepted by
+// http.Server.Addr) binds only the loopback interface. An empty host (":8080")
+// or a wildcard (0.0.0.0, ::) binds all interfaces and is NOT loopback. A
+// non-IP, non-"localhost" hostname can't be proven loopback, so it returns false
+// (fail safe — the caller then requires the explicit opt-in).
+func isLoopbackBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr // maybe a bare host with no port
+	}
+	switch host {
+	case "":
+		return false
+	case "localhost":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // bootstrapAPIKeyUsers seeds the user store with users from configured API keys.
