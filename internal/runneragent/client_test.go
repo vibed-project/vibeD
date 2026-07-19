@@ -3,9 +3,11 @@ package runneragent
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -144,6 +146,51 @@ func TestClientHonorsCallerContextDeadline(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("deadline failure took %v, want ~150ms", elapsed)
+	}
+}
+
+// TestClientReusesConnections verifies do() drains response bodies so
+// net/http can return the connection to the idle pool. Without the drain,
+// every probe during an app's Starting phase opens a fresh TCP connection
+// to the agent.
+func TestClientReusesConnections(t *testing.T) {
+	a := New(Config{Workdir: t.TempDir(), Token: "tok", AppPort: 8080, StopGrace: time.Second})
+
+	// Count fresh TCP connections; reuse must keep this at one. ConnState
+	// fires on the server's accept goroutine, hence the atomic.
+	var newConns atomic.Int32
+	srv := httptest.NewUnstartedServer(a.handler())
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, "tok")
+	ctx := context.Background()
+
+	// Healthz takes the out == nil path in do(); the agent answers with a
+	// small "ok\n" body that must be drained for the connection to be reused.
+	for i := 0; i < 5; i++ {
+		if err := c.Healthz(ctx); err != nil {
+			t.Fatalf("Healthz #%d: %v", i+1, err)
+		}
+	}
+	if got := newConns.Load(); got != 1 {
+		t.Errorf("after 5 Healthz calls: %d new connections, want 1 (body not drained?)", got)
+	}
+
+	// Status takes the Decode path; the agent's JSON encoder appends a
+	// trailing newline that Decode leaves unread.
+	for i := 0; i < 5; i++ {
+		if _, err := c.Status(ctx); err != nil {
+			t.Fatalf("Status #%d: %v", i+1, err)
+		}
+	}
+	if got := newConns.Load(); got != 1 {
+		t.Errorf("after Status calls: %d new connections total, want 1 (trailing bytes not drained?)", got)
 	}
 }
 

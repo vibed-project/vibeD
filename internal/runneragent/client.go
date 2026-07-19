@@ -153,10 +153,16 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 
 	if out == nil {
+		// Drain so the underlying connection can be reused. Bounded: a
+		// well-behaved agent sends at most a short acknowledgement here.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("decoding runner agent response: %w", err)
 	}
+	// The decoder stops at the end of the JSON value; drain any trailing
+	// bytes (e.g. a final newline) so the connection can be reused.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return nil
 }
