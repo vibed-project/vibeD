@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -485,7 +486,12 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	} else {
 		for _, rt := range extraRoutes {
 			mux.Handle(rt.Pattern, rt.Handler)
-			logger.Info("mounted module route", "pattern", rt.Pattern)
+			// A Public route authenticates itself; exempt its path from the core
+			// user-auth middleware. Strip any leading "METHOD " from the pattern.
+			if rt.Public {
+				vibedauth.RegisterPublicPrefix(routePath(rt.Pattern))
+			}
+			logger.Info("mounted module route", "pattern", rt.Pattern, "public", rt.Public)
 		}
 	}
 
@@ -749,6 +755,15 @@ func auditHandler(rec *audit.Recorder, logger *slog.Logger) http.HandlerFunc {
 }
 
 // securityHeadersMiddleware adds standard security headers to all responses.
+// routePath extracts the path from a net/http mux pattern, dropping any leading
+// "METHOD " (e.g. "POST /scim/v2/Users" → "/scim/v2/Users", "/scim/v2/" → same).
+func routePath(pattern string) string {
+	if i := strings.LastIndex(pattern, " "); i >= 0 {
+		return pattern[i+1:]
+	}
+	return pattern
+}
+
 func securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Frame-Options", "DENY")
