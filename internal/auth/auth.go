@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -106,8 +107,40 @@ func NoAuthAdminMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
+// publicPrefixes holds path prefixes a module registered as exempt from the
+// user-auth middleware (it authenticates them itself, e.g. a SCIM token). Guarded
+// because RegisterPublicPrefix runs at wiring time from the server goroutine.
+var (
+	publicMu       sync.Mutex
+	publicPrefixes []string
+)
+
+// RegisterPublicPrefix marks a path prefix as exempt from the core user-auth
+// middleware. The server calls it when mounting a module's Public route; the
+// module's handler then enforces its own authentication.
+func RegisterPublicPrefix(prefix string) {
+	if prefix == "" {
+		return
+	}
+	publicMu.Lock()
+	defer publicMu.Unlock()
+	publicPrefixes = append(publicPrefixes, prefix)
+}
+
+func isRegisteredPublic(path string) bool {
+	publicMu.Lock()
+	defer publicMu.Unlock()
+	for _, p := range publicPrefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // SkipAuthPaths wraps an auth middleware to skip authentication for certain paths
-// (health checks, metrics, static frontend assets).
+// (health checks, metrics, static frontend assets, and module-registered public
+// prefixes).
 func SkipAuthPaths(authMiddleware func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		authed := authMiddleware(next)
@@ -118,6 +151,13 @@ func SkipAuthPaths(authMiddleware func(http.Handler) http.Handler) func(http.Han
 				strings.HasPrefix(path, "/api/docs") ||
 				strings.HasPrefix(path, "/api/share/") ||
 				strings.HasPrefix(path, "/.well-known/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Module-registered public prefixes (e.g. /scim/v2/) — checked before
+			// the protected block so a module can self-authenticate a route that
+			// would otherwise fall under a protected prefix.
+			if isRegisteredPublic(path) {
 				next.ServeHTTP(w, r)
 				return
 			}
