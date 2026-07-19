@@ -157,16 +157,21 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("resolve tenant: %w", err)
 	}
 
-	// Read + cap the tarball once; we feed the same bytes to the classifier
-	// and the store.
-	buf, err := readCapped(req.Tarball, MaxTarballBytes)
+	// Read + cap the tarball once, hashing it in the same pass via a TeeReader
+	// instead of walking the full (up-to-50MB) buffer a second time with
+	// sha256.Sum256 — this is the latency-sensitive deploy hot path (#73). The
+	// buffer is still needed in memory because the policy engine evaluates over
+	// the full source bytes; the remaining passes (classify, store upload) are
+	// inherent to those operations.
+	hasher := sha256.New()
+	buf, err := readCapped(io.TeeReader(req.Tarball, hasher), MaxTarballBytes)
 	if err != nil {
 		return nil, err
 	}
 
 	// Enrich the audit events for this deploy with the tenant and a hash of the
 	// exact source (provenance). The context flows through every s.record call.
-	sum := sha256.Sum256(buf)
+	sum := hasher.Sum(nil)
 	ctx = audit.WithFields(ctx, audit.Fields{TenantID: t.ID, SourceHash: hex.EncodeToString(sum[:])})
 
 	// Classify (unless both lane + template are overridden).

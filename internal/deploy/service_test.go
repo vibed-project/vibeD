@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -585,10 +587,16 @@ func TestDeployEnrichesAuditWithTenantAndSourceHash(t *testing.T) {
 	svc.Tenants = tenant.Single(tenant.Tenant{ID: "acme", Namespace: "tenant-acme"})
 	markReady(c, "app1", "tenant-acme", 20*time.Millisecond)
 
+	// Capture the exact source bytes so we can assert the deploy path hashes the
+	// whole tarball correctly — the hash is now computed in the read pass via a
+	// TeeReader (#73), so a truncated or double-counted read would show here.
+	tarball := gzTarball(t, map[string]string{"index.html": "x"})
+	wantHash := fmt.Sprintf("%x", sha256.Sum256(tarball))
+
 	if _, err := svc.Deploy(context.Background(), Request{
 		Name:    "app1",
 		Owner:   "alice",
-		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "x"})),
+		Tarball: bytes.NewReader(tarball),
 	}); err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
@@ -611,8 +619,8 @@ func TestDeployEnrichesAuditWithTenantAndSourceHash(t *testing.T) {
 	if dep.Action != "deploy" || dep.TenantID != "acme" {
 		t.Errorf("deploy event = %+v, want tenant acme", dep)
 	}
-	if dep.SourceHash == "" {
-		t.Error("deploy event should carry a non-empty SourceHash")
+	if dep.SourceHash != wantHash {
+		t.Errorf("deploy event SourceHash = %q, want sha256 of the tarball %q", dep.SourceHash, wantHash)
 	}
 	// Delete has no source, so no hash.
 	if del.SourceHash != "" {
