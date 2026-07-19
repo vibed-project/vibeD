@@ -9,10 +9,17 @@ import (
 // io.Writer so it can be wired directly into a process's stdout/stderr, and
 // keeps only the most recent `capacity` complete lines. It is safe for
 // concurrent use.
+//
+// Storage is a true circular buffer: `buf` is a fixed slice of len==capacity,
+// `start` indexes the oldest line and `count` the number of live lines. This
+// makes eviction O(1) (overwrite one slot, advance start) instead of the O(n)
+// shift a growing slice would need per line on a high-volume stream.
 type ringBuffer struct {
 	mu       sync.Mutex
 	capacity int
-	lines    []string // most recent at the end
+	buf      []string // circular; len == capacity, oldest at start
+	start    int      // index of the oldest live line
+	count    int      // number of live lines (0..capacity)
 	partial  []byte   // bytes since the last newline
 }
 
@@ -20,7 +27,7 @@ func newRingBuffer(capacity int) *ringBuffer {
 	if capacity < 1 {
 		capacity = 1
 	}
-	return &ringBuffer{capacity: capacity}
+	return &ringBuffer{capacity: capacity, buf: make([]string, capacity)}
 }
 
 // Write splits incoming bytes on newlines, appending complete lines to the
@@ -46,28 +53,56 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// appendLine adds a line, evicting the oldest if at capacity. Caller holds mu.
+// appendLine adds a line, evicting the oldest in O(1) when at capacity. Caller
+// holds mu.
 func (r *ringBuffer) appendLine(line string) {
-	if len(r.lines) >= r.capacity {
-		// Drop the oldest. Copy to keep the backing array bounded.
-		r.lines = append(r.lines[:0], r.lines[1:]...)
+	end := (r.start + r.count) % r.capacity
+	r.buf[end] = line
+	if r.count < r.capacity {
+		r.count++
+		return
 	}
-	r.lines = append(r.lines, line)
+	// Full: the write above landed on the oldest slot (end == start), so that
+	// slot is now the newest line; advance start to the next-oldest.
+	r.start = (r.start + 1) % r.capacity
 }
 
 // snapshot returns up to the last n captured lines (all of them when n <= 0),
-// including any trailing partial line.
+// including any trailing partial line. It copies only the tail it returns, not
+// the whole buffer.
 func (r *ringBuffer) snapshot(n int) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	out := make([]string, len(r.lines))
-	copy(out, r.lines)
-	if len(r.partial) > 0 {
-		out = append(out, string(r.partial))
+	hasPartial := len(r.partial) > 0
+	total := r.count
+	if hasPartial {
+		total++
 	}
-	if n > 0 && len(out) > n {
-		out = out[len(out)-n:]
+	take := total
+	if n > 0 && n < take {
+		take = n
+	}
+	if take <= 0 {
+		return []string{}
+	}
+
+	// The logical order is [oldest line ... newest line, partial?]; we return
+	// the last `take` of that sequence. When a partial is present it is the very
+	// last element, so it consumes one slot and the rest come from committed
+	// lines.
+	commitTake := take
+	if hasPartial {
+		commitTake = take - 1
+	}
+	skip := r.count - commitTake // number of oldest committed lines to drop
+
+	out := make([]string, 0, take)
+	for i := 0; i < commitTake; i++ {
+		out = append(out, r.buf[(r.start+skip+i)%r.capacity])
+	}
+	if hasPartial {
+		out = append(out, string(r.partial))
 	}
 	return out
 }
@@ -76,6 +111,12 @@ func (r *ringBuffer) snapshot(n int) []string {
 func (r *ringBuffer) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lines = r.lines[:0]
+	// Drop references so evicted log lines can be GC'd rather than pinned by the
+	// backing array until overwritten.
+	for i := range r.buf {
+		r.buf[i] = ""
+	}
+	r.start = 0
+	r.count = 0
 	r.partial = r.partial[:0]
 }
