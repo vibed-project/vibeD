@@ -49,6 +49,12 @@ POST /api/artifacts/{id}/share-link
 Body: {"password": "...", "expires_in": "24h"}
 ```
 
+:::caution Deprecated endpoint
+This route is part of the legacy `/api/artifacts*` surface, which is deprecated
+(responses carry a `Deprecation: true` header). Create share links through the
+MCP tool above; the public share URL `GET /api/share/{token}` is unaffected.
+:::
+
 ## Security
 
 - Tokens are 256-bit cryptographically random (not guessable)

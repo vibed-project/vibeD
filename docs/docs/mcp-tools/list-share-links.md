@@ -43,3 +43,9 @@ Requires [authentication](/docs/configuration/authentication) and the SQLite sto
 ```
 GET /api/artifacts/{id}/share-links
 ```
+
+:::caution Deprecated endpoint
+This route is part of the legacy `/api/artifacts*` surface, which is deprecated
+(responses carry a `Deprecation: true` header). List share links through the MCP
+tool above.
+:::
