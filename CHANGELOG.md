@@ -4,6 +4,85 @@ All notable changes to vibeD are recorded here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); each release is also a signed
 git tag, and the Helm chart's `appVersion` tracks the release.
 
+## Unreleased
+
+_(targeting v0.6.0)_
+
+A platform performance and API-consolidation pass. It trims per-request work
+across the hot paths — auth, controller, deploy, router, egress, and the state
+stores — brings the live `/v1` deploy path to parity with the legacy path by
+completing its lifecycle events and MCP tooling, and firms up a stable,
+observable `/v1` surface with pagination and deploy-latency metrics.
+
+### Added
+- **`/v1/apps` pagination**: `GET /v1/apps` accepts optional `?limit=` and
+  `?offset=` and returns `{items, total}`; with no params it returns all apps
+  unchanged (`total` is the post-authorization-filter count).
+- **Deploy-latency metric**: a Prometheus histogram
+  `vibed_deploy_duration_seconds`, recorded on the live (`/v1`) deploy path with
+  `{status, target}` labels (`target` = template name; buckets 1/2/5/10/30/60s).
+- **SSE lifecycle events for live deploys**: `/v1` deploys now publish
+  `artifact.status_changed` / `artifact.deleted` onto the dashboard event bus,
+  so the UI no longer has to poll for status.
+- **`auth.identityCacheTTL`** (Go duration, default `30s`, `0` disables): caps
+  how long a resolved user identity (role / status / department) is cached.
+- **Additive extension points**: optional `authz.ListScoper` and
+  `authz.BatchAuthorizer` interfaces (the `Authorizer` seam itself is unchanged)
+  and a streaming `policy.Input.SourceOpener` accessor (the `Source []byte`
+  field is retained).
+
+### Changed
+- **Static API keys are resolved once at startup** (`file:` / `env:` secrets):
+  rotating a key file or env var now requires a restart, rather than being
+  re-read on every request.
+- **Request identity is resolved once per request**, bounded by
+  `auth.identityCacheTTL`: per-request user-store queries drop from 2–5 to ~1,
+  and a suspension or role change propagates within the TTL on a warm cache
+  (`0` = immediate, as before).
+- **MCP lifecycle tools now act on live apps**: `list_versions`,
+  `rollback_artifact`, `get_artifact_logs`, and the share-link tools operate on
+  warm-pool (live) apps. (`list_deployment_targets` and the user-grant
+  share/unshare tools are unchanged.)
+- **SQLite state store**: the connection pool is now bounded and per-connection
+  pragmas (including `busy_timeout`) are applied via the DSN, so they take on
+  every pooled connection.
+- **Controller**: the informer cache is scoped to vibeD-managed objects,
+  injection runs asynchronously so reconcile workers are never parked, and
+  readiness is detected via a watch instead of polling every 250ms.
+- **Deploy path**: streams the source end-to-end at constant memory when no
+  policy gate is registered, and in-sandbox source adoption is now a rename
+  rather than a copy.
+- **Router** skips Caddy updates when no routing-relevant field changed.
+- **Egress authz** uses an indexed pod-IP lookup for the per-request check.
+
+### Deprecated
+- The legacy **`/api/artifacts*`** REST endpoints. Responses now carry a
+  `Deprecation: true` header and `X-Deprecated-Use: /v1/apps`, and a one-time
+  warning is logged at startup; use the `/v1` API instead. **Not** deprecated:
+  `/api/share/`, `/api/events` (SSE), and the admin `/api/users`,
+  `/api/departments`, `/api/whoami`, and `/api/targets` routes. Removal is
+  planned for a future release.
+
+### Fixed
+- **MCP tools were broken for warm-pool apps**: `list_versions`,
+  `rollback_artifact`, `get_artifact_logs`, and the share-link tools only saw
+  legacy-orchestrator artifacts and missed live apps.
+- **Live deploys emitted no SSE events**, so the dashboard could only track
+  their status by polling.
+- **Runner agent**: caller context deadlines now govern agent calls (no
+  truncated timeouts), and response bodies are drained so connections are
+  reused rather than discarded.
+- **SQLite per-connection pragmas** were previously applied to only one pooled
+  connection; they now apply to every connection via the DSN.
+- **API-key user provisioning** retries until it durably succeeds, instead of
+  failing to persist and leaving the API-key user missing.
+- **Event bridge** reconciles its state on reconnect and publishes display
+  status, so status is not lost across a dropped connection.
+
+### Notes
+- Removal of the legacy orchestrator / `/api/artifacts` path is planned for a
+  later release; this section is a scaffold to extend as that work lands.
+
 ## v0.5.2 — 2026-07-19
 
 A hardening and team-visibility release. It closes the entire sev-labeled issue
