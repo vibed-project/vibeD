@@ -6,6 +6,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/pkg/api"
+	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -50,7 +51,7 @@ func registerListTool(server *mcp.Server, orch *orchestrator.Orchestrator, deplo
 		summaries := make([]api.ArtifactSummary, 0, len(apps))
 		for i := range apps {
 			if input.Status != "" && input.Status != "all" &&
-				string(phaseToStatus(apps[i].Status.Phase)) != input.Status {
+				string(vibedv1.StatusFromPhase(apps[i].Status.Phase)) != input.Status {
 				continue
 			}
 			summaries = append(summaries, appToSummary(&apps[i]))

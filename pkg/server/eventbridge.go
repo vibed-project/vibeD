@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,8 +22,13 @@ const (
 )
 
 // bridgeState is the last-published status per VibedApp, keyed by UID so a
-// delete + recreate under the same name still counts as a fresh app.
+// delete + recreate under the same name still counts as a fresh app. name and
+// owner are retained so the bridge can synthesize an ArtifactDeleted for an
+// app that vanished while it was disconnected (its Deleted event was never
+// observed, so the CR — and its Name/Owner — is already gone by reconcile).
 type bridgeState struct {
+	name  string
+	owner string
 	phase string
 	url   string
 }
@@ -84,12 +90,26 @@ func (b *eventBridge) Run(ctx context.Context) {
 	}
 }
 
-// watchOnce establishes a single watch session and consumes events until the
+// watchOnce runs one list-then-watch session and consumes events until the
 // watch closes, errors, or ctx is cancelled. established reports whether the
 // watch was set up at all, so Run can reset its backoff.
+//
+// It lists first, reconciles b.last against that snapshot (see sync), then
+// anchors the watch at the list's ResourceVersion. Anchoring closes the gap
+// between list and watch — the apiserver replays everything since that RV, not
+// existing objects as synthetic ADDED — which is what lets sync, rather than a
+// replayed ADDED per app, drive the reconcile after a reconnect.
 func (b *eventBridge) watchOnce(ctx context.Context) (established bool, err error) {
 	var list vibedv1.VibedAppList
-	w, err := b.client.Watch(ctx, &list, ctrlclient.InNamespace(b.namespace))
+	if err := b.client.List(ctx, &list, ctrlclient.InNamespace(b.namespace)); err != nil {
+		return false, err
+	}
+	b.sync(list.Items)
+
+	w, err := b.client.Watch(ctx, &vibedv1.VibedAppList{},
+		ctrlclient.InNamespace(b.namespace),
+		&ctrlclient.ListOptions{Raw: &metav1.ListOptions{ResourceVersion: list.ResourceVersion}},
+	)
 	if err != nil {
 		return false, err
 	}
@@ -113,6 +133,30 @@ func (b *eventBridge) watchOnce(ctx context.Context) (established bool, err erro
 	}
 }
 
+// sync reconciles the last-published state against an authoritative list taken
+// at the start of a watch session. Any app still in b.last but absent from the
+// list was deleted while the bridge was disconnected — its Deleted event was
+// never observed — so it is reaped with a synthetic ArtifactDeleted and dropped
+// from b.last (otherwise the entry, and the dashboard's stale card, would
+// linger for the process lifetime and the map would grow unbounded). Surviving
+// apps run through the same transition logic as a Modified event, so a status
+// that changed during the gap is republished exactly once.
+func (b *eventBridge) sync(items []vibedv1.VibedApp) {
+	present := make(map[types.UID]struct{}, len(items))
+	for i := range items {
+		present[items[i].UID] = struct{}{}
+	}
+	for uid, prev := range b.last {
+		if _, ok := present[uid]; !ok {
+			delete(b.last, uid)
+			b.publishDelete(prev.name, prev.owner)
+		}
+	}
+	for i := range items {
+		b.publishStatus(&items[i])
+	}
+}
+
 // handle maps a single watch event onto the bus, suppressing status writes
 // that don't change Phase or URL.
 func (b *eventBridge) handle(ev watch.Event) {
@@ -125,32 +169,51 @@ func (b *eventBridge) handle(ev watch.Event) {
 	switch ev.Type {
 	case watch.Deleted:
 		delete(b.last, app.UID)
-		b.bus.Publish(events.Event{
-			Type:       events.ArtifactDeleted,
-			ArtifactID: app.Name, // the /v1 dashboard uses app_id (= CR name) as its artifact id
-			OwnerID:    app.Spec.Owner,
-			Timestamp:  time.Now(),
-		})
-
+		b.publishDelete(app.Name, app.Spec.Owner)
 	case watch.Added, watch.Modified:
-		cur := bridgeState{phase: string(app.Status.Phase), url: app.Status.URL}
-		if prev, seen := b.last[app.UID]; seen && prev == cur {
-			return // status write with same Phase/URL — not a genuine transition
-		}
-		b.last[app.UID] = cur
-		b.bus.Publish(events.Event{
-			Type:       events.ArtifactStatusChanged,
-			ArtifactID: app.Name,
-			Name:       app.Name,
-			OwnerID:    app.Spec.Owner,
-			// The dashboard maps phases to display statuses client-side
-			// (web phaseToStatus); there is no server-side mapping, so
-			// Status carries the raw phase string.
-			Status:    cur.phase,
-			Phase:     cur.phase,
-			URL:       cur.url,
-			Template:  app.Spec.Runtime.Template,
-			Timestamp: time.Now(),
-		})
+		b.publishStatus(app)
 	}
+}
+
+// publishStatus records app's current Phase/URL and publishes an
+// ArtifactStatusChanged only when they genuinely changed from the
+// last-published state (status writes touch other fields constantly). Shared by
+// live Added/Modified events and the reconnect reconcile so both dedup
+// identically.
+func (b *eventBridge) publishStatus(app *vibedv1.VibedApp) {
+	cur := bridgeState{
+		name:  app.Name,
+		owner: app.Spec.Owner,
+		phase: string(app.Status.Phase),
+		url:   app.Status.URL,
+	}
+	if prev, seen := b.last[app.UID]; seen && prev == cur {
+		return // status write with same Phase/URL — not a genuine transition
+	}
+	b.last[app.UID] = cur
+	b.bus.Publish(events.Event{
+		Type:       events.ArtifactStatusChanged,
+		ArtifactID: app.Name, // the /v1 dashboard uses app_id (= CR name) as its artifact id
+		Name:       app.Name,
+		OwnerID:    app.Spec.Owner,
+		// Status carries the display enum every other producer (and the
+		// OpenAPI contract) speaks; Phase carries the raw CR phase for
+		// clients that map it themselves.
+		Status:    string(vibedv1.StatusFromPhase(app.Status.Phase)),
+		Phase:     cur.phase,
+		URL:       cur.url,
+		Template:  app.Spec.Runtime.Template,
+		Timestamp: time.Now(),
+	})
+}
+
+// publishDelete emits an ArtifactDeleted for an app that is gone, from either a
+// live Deleted event or the reconnect reconcile.
+func (b *eventBridge) publishDelete(id, owner string) {
+	b.bus.Publish(events.Event{
+		Type:       events.ArtifactDeleted,
+		ArtifactID: id, // the /v1 dashboard uses app_id (= CR name) as its artifact id
+		OwnerID:    owner,
+		Timestamp:  time.Now(),
+	})
 }

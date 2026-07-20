@@ -108,8 +108,11 @@ func TestEventBridgePublishesTransitions(t *testing.T) {
 		t.Fatalf("update to Ready: %v", err)
 	}
 	ev = nextBusEvent(t, sub)
-	if ev.Phase != "Ready" || ev.Status != "Ready" || ev.URL != "https://demo.example.com" {
-		t.Fatalf("unexpected transition event: %+v", ev)
+	// Status carries the /v1 display enum (Ready → "running"), not the raw
+	// phase; Phase carries the raw phase.
+	wantStatus := string(vibedv1.StatusFromPhase(vibedv1.PhaseReady))
+	if ev.Phase != "Ready" || ev.Status != wantStatus || ev.URL != "https://demo.example.com" {
+		t.Fatalf("unexpected transition event (want status %q): %+v", wantStatus, ev)
 	}
 	if ev.Name != "demo" || ev.Template != "node-24" {
 		t.Fatalf("expected name/template on transition event, got %+v", ev)
@@ -160,5 +163,122 @@ func TestEventBridgeStopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not stop on context cancel")
+	}
+}
+
+// newTestBridge builds a bridge with no client, for driving the reconcile
+// (sync) directly with hand-built list results.
+func newTestBridge(bus *events.EventBus) *eventBridge {
+	return &eventBridge{
+		bus:    bus,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		last:   make(map[types.UID]bridgeState),
+	}
+}
+
+// appFixture builds a VibedApp the way a List would return it.
+func appFixture(name, uid, owner string, phase vibedv1.Phase, url string) vibedv1.VibedApp {
+	return vibedv1.VibedApp{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "vibed-apps", UID: types.UID(uid)},
+		Spec: vibedv1.VibedAppSpec{
+			Owner:   owner,
+			Runtime: vibedv1.Runtime{Lane: vibedv1.LaneGeneral, Template: "node-24"},
+		},
+		Status: vibedv1.VibedAppStatus{Phase: phase, URL: url},
+	}
+}
+
+// expectNoBusEvent asserts nothing more lands on the bus within the window —
+// used to prove sync doesn't republish an unchanged app.
+func expectNoBusEvent(t *testing.T, ch <-chan events.Event, within time.Duration) {
+	t.Helper()
+	select {
+	case ev := <-ch:
+		t.Fatalf("expected no further event, got %+v", ev)
+	case <-time.After(within):
+	}
+}
+
+// TestEventBridgeSyncReconcilesState drives the reconnect reconcile directly:
+// an app that vanished from the namespace while the bridge was disconnected
+// (so its Deleted event was never observed) is reaped with a synthetic
+// artifact.deleted and dropped from last, while an app that survived unchanged
+// is re-evaluated without republishing.
+func TestEventBridgeSyncReconcilesState(t *testing.T) {
+	bus := events.NewEventBus()
+	b := newTestBridge(bus)
+
+	// A survives the next list unchanged; B was deleted during the disconnect.
+	b.last[types.UID("uid-a")] = bridgeState{name: "app-a", owner: "alice", phase: "Ready", url: "https://a.example.com"}
+	b.last[types.UID("uid-b")] = bridgeState{name: "app-b", owner: "bob", phase: "Ready", url: "https://b.example.com"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, unsub := bus.Subscribe(ctx)
+	defer unsub()
+
+	b.sync([]vibedv1.VibedApp{appFixture("app-a", "uid-a", "alice", vibedv1.PhaseReady, "https://a.example.com")})
+
+	// B is reaped with a synthetic delete carrying its retained name/owner.
+	ev := nextBusEvent(t, sub)
+	if ev.Type != events.ArtifactDeleted || ev.ArtifactID != "app-b" || ev.OwnerID != "bob" {
+		t.Fatalf("expected synthetic delete for app-b, got %+v", ev)
+	}
+	// A is unchanged, so nothing else is published.
+	expectNoBusEvent(t, sub, 200*time.Millisecond)
+
+	if _, ok := b.last[types.UID("uid-b")]; ok {
+		t.Fatal("deleted app-b should have been pruned from last")
+	}
+	if _, ok := b.last[types.UID("uid-a")]; !ok {
+		t.Fatal("surviving app-a should remain in last")
+	}
+}
+
+// TestEventBridgeSyncRepublishesGapTransition asserts that a status change an
+// app made while the bridge was disconnected is republished exactly once by
+// the reconcile.
+func TestEventBridgeSyncRepublishesGapTransition(t *testing.T) {
+	bus := events.NewEventBus()
+	b := newTestBridge(bus)
+	b.last[types.UID("uid-a")] = bridgeState{name: "app-a", owner: "alice", phase: "Starting"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, unsub := bus.Subscribe(ctx)
+	defer unsub()
+
+	b.sync([]vibedv1.VibedApp{appFixture("app-a", "uid-a", "alice", vibedv1.PhaseReady, "https://a.example.com")})
+
+	ev := nextBusEvent(t, sub)
+	if ev.Type != events.ArtifactStatusChanged || ev.Phase != "Ready" || ev.URL != "https://a.example.com" {
+		t.Fatalf("expected republished Ready transition, got %+v", ev)
+	}
+	expectNoBusEvent(t, sub, 200*time.Millisecond)
+}
+
+// TestEventBridgePublishesDisplayStatus asserts the enriched status_changed
+// event carries the /v1 display enum in Status and the raw CR phase in Phase.
+func TestEventBridgePublishesDisplayStatus(t *testing.T) {
+	bus := events.NewEventBus()
+	b := newTestBridge(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, unsub := bus.Subscribe(ctx)
+	defer unsub()
+
+	b.sync([]vibedv1.VibedApp{appFixture("demo", "uid-demo", "alice", vibedv1.PhaseReady, "https://demo.example.com")})
+
+	ev := nextBusEvent(t, sub)
+	want := string(vibedv1.StatusFromPhase(vibedv1.PhaseReady))
+	if want != "running" {
+		t.Fatalf("guard: /v1 display mapping for Ready changed to %q", want)
+	}
+	if ev.Status != want {
+		t.Fatalf("Status should be the display enum %q, got %q", want, ev.Status)
+	}
+	if ev.Phase != "Ready" {
+		t.Fatalf("Phase should be the raw CR phase \"Ready\", got %q", ev.Phase)
 	}
 }

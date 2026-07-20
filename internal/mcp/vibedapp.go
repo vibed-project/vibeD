@@ -64,25 +64,6 @@ func tarballFromFiles(files map[string]string) (io.Reader, error) {
 	return &buf, nil
 }
 
-// phaseToStatus maps a VibedApp lifecycle phase onto the artifact-status
-// vocabulary MCP clients already understand.
-func phaseToStatus(p vibedv1.Phase) api.ArtifactStatus {
-	switch p {
-	case vibedv1.PhasePending, vibedv1.PhaseClaiming:
-		return api.StatusPending
-	case vibedv1.PhaseStarting:
-		return api.StatusDeploying
-	case vibedv1.PhaseReady:
-		return api.StatusRunning
-	case vibedv1.PhaseSuspended:
-		return api.StatusRunning
-	case vibedv1.PhaseFailed:
-		return api.StatusFailed
-	default:
-		return api.StatusPending
-	}
-}
-
 // appToArtifact maps a VibedApp CR to the api.Artifact shape MCP returns for
 // get_artifact_status.
 func appToArtifact(app *vibedv1.VibedApp) *api.Artifact {
@@ -90,7 +71,7 @@ func appToArtifact(app *vibedv1.VibedApp) *api.Artifact {
 		ID:       app.Name,
 		Name:     app.Name,
 		OwnerID:  app.Spec.Owner,
-		Status:   phaseToStatus(app.Status.Phase),
+		Status:   vibedv1.StatusFromPhase(app.Status.Phase),
 		Target:   api.TargetSandbox,
 		URL:      app.Status.URL,
 		Language: app.Spec.Runtime.Template,
@@ -132,7 +113,7 @@ func appToSummary(app *vibedv1.VibedApp) api.ArtifactSummary {
 		Name:      app.Name,
 		OwnerID:   app.Spec.Owner,
 		Namespace: app.Namespace,
-		Status:    phaseToStatus(app.Status.Phase),
+		Status:    vibedv1.StatusFromPhase(app.Status.Phase),
 		Target:    api.TargetSandbox,
 		URL:       app.Status.URL,
 	}
