@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -207,15 +208,18 @@ func apiKeyUserID(name string) string {
 // or environment access on the hot path.
 // If userStore is non-nil, it auto-provisions users on first authentication.
 func apiKeyVerifier(keys []resolvedAPIKey, userStore store.UserStore, logger *slog.Logger) mcpauth.TokenVerifier {
-	// Auto-provision runs at most once per key per process: the record's
-	// existence never regresses (the user store has no delete), so re-checking
-	// it on every request only cost an extra GetUser round-trip. First
-	// authentication still performs the full existence check + create, so a
-	// record that already exists (e.g. after a restart) is never re-created.
-	provisionOnce := make(map[string]*sync.Once, len(keys))
+	// Auto-provision runs at most once per key per process, but the latch only
+	// trips on DURABLE success: a failed first attempt (a transient store error,
+	// or a client that disconnected mid-provision and cancelled the request ctx)
+	// leaves it open so the next request retries — restoring the pre-optimization
+	// self-healing that a sync.Once broke by latching on the attempt whether or
+	// not the record was created. Once a record exists (created here, or found
+	// after a restart) the hot path is a single lock-free bool read, so there is
+	// still no per-request GetUser.
+	provision := make(map[string]*provisionLatch, len(keys))
 	for _, key := range keys {
 		if key.conf.Name != "" {
-			provisionOnce[key.conf.Name] = &sync.Once{}
+			provision[key.conf.Name] = &provisionLatch{}
 		}
 	}
 	return func(ctx context.Context, token string, req *http.Request) (*mcpauth.TokenInfo, error) {
@@ -226,10 +230,11 @@ func apiKeyVerifier(keys []resolvedAPIKey, userStore store.UserStore, logger *sl
 					"path", req.URL.Path,
 				)
 
-				// Auto-provision user on first authentication
+				// Auto-provision user on first authentication, retrying until it
+				// durably succeeds.
 				if userStore != nil && key.conf.Name != "" {
-					if once := provisionOnce[key.conf.Name]; once != nil {
-						once.Do(func() { autoProvisionAPIKeyUser(ctx, userStore, key.conf, logger) })
+					if latch := provision[key.conf.Name]; latch != nil {
+						latch.provision(ctx, userStore, key.conf, logger)
 					}
 				}
 
@@ -263,11 +268,48 @@ func apiKeyVerifier(keys []resolvedAPIKey, userStore store.UserStore, logger *sl
 	}
 }
 
-// autoProvisionAPIKeyUser creates a user record on first API key authentication.
-func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key config.APIKeyConf, logger *slog.Logger) {
+// provisionLatch guards a named API key's one-time user auto-provisioning.
+// Unlike a sync.Once it only latches on DURABLE success: a failed attempt
+// leaves done unset so the next request retries. done is atomic so the hot
+// path (already provisioned) is a lock-free read; mu serializes the racing
+// first attempts so only one runs the create at a time.
+type provisionLatch struct {
+	mu   sync.Mutex
+	done atomic.Bool
+}
+
+// provision runs autoProvisionAPIKeyUser until it reports durable success,
+// latching on the first success. Concurrent first-attempts serialize on mu (a
+// bounded cost — only until the first success), and after any failure the
+// latch stays open so the next request retries. Once latched, the fast path is
+// a single atomic bool read.
+func (l *provisionLatch) provision(ctx context.Context, userStore store.UserStore, key config.APIKeyConf, logger *slog.Logger) {
+	if l.done.Load() {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.done.Load() {
+		return
+	}
+	if autoProvisionAPIKeyUser(ctx, userStore, key, logger) {
+		l.done.Store(true)
+	}
+}
+
+// autoProvisionAPIKeyUser ensures a user record exists for the named API key,
+// reporting whether the record is now DURABLY present. It returns true when the
+// user already exists (a GetUser hit — e.g. after a restart) or CreateUser
+// succeeds; a CreateUser error is treated as success iff a follow-up GetUser
+// finds the record (the store has no typed AlreadyExists for users, so a lost
+// create race is indistinguishable from a real conflict and both mean the row
+// now exists). It returns false only when the record is still absent — a
+// transient store error, or a configured department that could not be
+// resolved — so the caller's latch stays open and the next request retries.
+func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key config.APIKeyConf, logger *slog.Logger) bool {
 	userID := apiKeyUserID(key.Name)
 	if _, err := userStore.GetUser(ctx, userID); err == nil {
-		return // user already exists
+		return true // user already exists
 	}
 
 	role := key.Role
@@ -293,9 +335,13 @@ func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key
 				dept, _ = userStore.GetDepartmentByName(ctx, key.Department)
 			}
 		}
-		if dept != nil {
-			deptID = dept.ID
+		if dept == nil {
+			// Configured department is unresolved: don't provision a half-
+			// configured user or latch — retry on the next request.
+			logger.Debug("auto-provision deferred: department unresolved", "name", key.Name, "department", key.Department)
+			return false
 		}
+		deptID = dept.ID
 	}
 
 	now := time.Now()
@@ -310,10 +356,17 @@ func autoProvisionAPIKeyUser(ctx context.Context, userStore store.UserStore, key
 		UpdatedAt:    now,
 	}
 	if err := userStore.CreateUser(ctx, user); err != nil {
-		logger.Debug("auto-provision user skipped (may already exist)", "name", key.Name, "error", err)
-		return
+		// The create may have lost a race with a concurrent provision; the row
+		// existing now is success. Only a still-absent record is a transient
+		// failure worth retrying.
+		if _, getErr := userStore.GetUser(ctx, userID); getErr == nil {
+			return true
+		}
+		logger.Debug("auto-provision user failed; will retry on next request", "name", key.Name, "error", err)
+		return false
 	}
 	logger.Info("auto-provisioned API key user", "name", key.Name, "role", role, "department", key.Department)
+	return true
 }
 
 // oauthPassthroughVerifier accepts a Bearer token that must match an API key

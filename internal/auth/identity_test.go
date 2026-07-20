@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
+
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -20,10 +22,11 @@ import (
 // countingUserStore is a thread-safe store.UserStore that counts store calls,
 // so tests can assert exactly how many lookups an authenticated request costs.
 type countingUserStore struct {
-	mu         sync.Mutex
-	users      map[string]*api.User
-	byHash     map[string]string // runtime API key hash -> user ID
-	failUpdate bool
+	mu          sync.Mutex
+	users       map[string]*api.User
+	byHash      map[string]string // runtime API key hash -> user ID
+	failUpdate  bool
+	failCreateN int // fail the next N CreateUser calls with a transient error
 
 	getUserCalls    int
 	createUserCalls int
@@ -49,6 +52,10 @@ func (s *countingUserStore) CreateUser(_ context.Context, u *api.User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.createUserCalls++
+	if s.failCreateN > 0 {
+		s.failCreateN-- // transient error: leaves no record so provisioning must retry
+		return fmt.Errorf("transient store error")
+	}
 	if _, ok := s.users[u.ID]; ok {
 		return fmt.Errorf("exists")
 	}
@@ -395,6 +402,133 @@ func TestAPIKeyAutoProvision_ExactlyOnce(t *testing.T) {
 	u := st.snapshot("apikey-svc")
 	if u == nil || u.Status != "active" || u.Provider != "local" {
 		t.Errorf("provisioned user = %+v", u)
+	}
+}
+
+// staticKeyVerifier builds an apiKeyVerifier for a single static key, isolating
+// the provisioning path from the HTTP identity resolver (which also calls
+// GetUser) so the provisioning-path store calls can be counted directly.
+func staticKeyVerifier(st store.UserStore) mcpauth.TokenVerifier {
+	return apiKeyVerifier(
+		[]resolvedAPIKey{{conf: config.APIKeyConf{Name: "svc"}, secret: "static-secret"}},
+		st, discardLogger())
+}
+
+// TestAPIKeyAutoProvision_RetriesAfterTransientFailure: a first CreateUser that
+// fails transiently must NOT latch — request 1 authenticates but leaves no
+// record, and request 2 retries and provisions successfully. This is the
+// regression the sync.Once introduced (a failed attempt latched forever).
+func TestAPIKeyAutoProvision_RetriesAfterTransientFailure(t *testing.T) {
+	st := newCountingUserStore()
+	st.failCreateN = 1 // first CreateUser fails transiently, then succeeds
+	srv := newIdentityTestServer(t, apikeyCfg(0), st)
+	defer srv.Close()
+
+	// Request 1 authenticates, but provisioning failed so no record persists.
+	if code, _ := getWithToken(t, srv.URL, "static-secret"); code != http.StatusOK {
+		t.Fatalf("request 1: got %d, want 200", code)
+	}
+	if u := st.snapshot("apikey-svc"); u != nil {
+		t.Fatalf("request 1 must leave no record after a failed create, got %+v", u)
+	}
+
+	// Request 2: the latch never tripped, so provisioning retries and succeeds.
+	if code, _ := getWithToken(t, srv.URL, "static-secret"); code != http.StatusOK {
+		t.Fatalf("request 2: got %d, want 200", code)
+	}
+	if u := st.snapshot("apikey-svc"); u == nil || u.Status != "active" || u.Provider != "local" {
+		t.Fatalf("request 2 must provision the record, got %+v", u)
+	}
+}
+
+// TestAPIKeyAutoProvision_DurableSuccessShortCircuits: once provisioned, further
+// authentications cost 0 CreateUser AND 0 GetUser on the provisioning path — the
+// latch short-circuits before touching the store. Exercised through the verifier
+// directly so the HTTP identity resolver's own GetUser doesn't mask the count.
+func TestAPIKeyAutoProvision_DurableSuccessShortCircuits(t *testing.T) {
+	st := newCountingUserStore()
+	verifier := staticKeyVerifier(st)
+	req := httptest.NewRequest(http.MethodGet, "/api/apps", nil)
+	ctx := context.Background()
+
+	if _, err := verifier(ctx, "static-secret", req); err != nil {
+		t.Fatalf("first auth: %v", err)
+	}
+	if get, create, _ := st.counts(); get != 1 || create != 1 {
+		t.Fatalf("first auth: GetUser=%d CreateUser=%d, want 1 and 1", get, create)
+	}
+	st.resetCounts()
+
+	for i := 0; i < 5; i++ {
+		if _, err := verifier(ctx, "static-secret", req); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	get, create, _ := st.counts()
+	if create != 0 {
+		t.Errorf("after provisioning: CreateUser = %d, want 0", create)
+	}
+	if get != 0 {
+		t.Errorf("after provisioning: GetUser on the provisioning path = %d, want 0 (latch short-circuits)", get)
+	}
+}
+
+// TestAPIKeyAutoProvision_ExistingRecordNeverRecreated is the restart path: a
+// record that already exists is found by GetUser on the first attempt and
+// latches, so CreateUser is never called.
+func TestAPIKeyAutoProvision_ExistingRecordNeverRecreated(t *testing.T) {
+	st := newCountingUserStore()
+	st.mutate(func(users map[string]*api.User) {
+		users["apikey-svc"] = &api.User{ID: "apikey-svc", Name: "svc", Role: "user", Status: "active", Provider: "local"}
+	})
+	verifier := staticKeyVerifier(st)
+	req := httptest.NewRequest(http.MethodGet, "/api/apps", nil)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		if _, err := verifier(ctx, "static-secret", req); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	get, create, _ := st.counts()
+	if create != 0 {
+		t.Errorf("CreateUser = %d, want 0 (record pre-existed)", create)
+	}
+	if get != 1 {
+		t.Errorf("GetUser = %d, want 1 (found on the first attempt, then latched)", get)
+	}
+}
+
+// TestAPIKeyAutoProvision_ConcurrentFirstAuth: many goroutines hitting the same
+// key concurrently on first auth provision the record exactly once, with no
+// panic (run under -race).
+func TestAPIKeyAutoProvision_ConcurrentFirstAuth(t *testing.T) {
+	st := newCountingUserStore()
+	verifier := staticKeyVerifier(st)
+	ctx := context.Background()
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/api/apps", nil)
+			<-start // release all goroutines together to maximize contention
+			if _, err := verifier(ctx, "static-secret", req); err != nil {
+				t.Errorf("concurrent auth: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if _, create, _ := st.counts(); create != 1 {
+		t.Errorf("CreateUser calls = %d, want exactly 1 under concurrency", create)
+	}
+	if u := st.snapshot("apikey-svc"); u == nil {
+		t.Error("record not provisioned under concurrency")
 	}
 }
 
