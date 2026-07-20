@@ -156,9 +156,9 @@ const sqlitePoolSize = 4
 // a plain Exec would only configure whichever connection the pool handed
 // out. journal_mode=WAL is persistent in the DB file but harmless to
 // (re)apply per connection.
-const sqliteDSNPragmas = "?_pragma=journal_mode(WAL)" +
+const sqliteDSNPragmas = "?_pragma=busy_timeout(5000)" + // first, so lock waits apply while the rest are set
+	"&_pragma=journal_mode(WAL)" +
 	"&_pragma=synchronous(NORMAL)" +
-	"&_pragma=busy_timeout(5000)" +
 	"&_pragma=foreign_keys(ON)" +
 	"&_pragma=cache_size(-64000)" + // 64 MB page cache per connection
 	"&_pragma=temp_store(MEMORY)" +
