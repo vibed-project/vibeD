@@ -27,7 +27,7 @@ Most Prometheus installations with annotation-based discovery will scrape vibeD 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `vibed_deploys_total` | Counter | `status`, `target` | Total deployments |
-| `vibed_deploy_duration_seconds` | Histogram | `status`, `target` | Deploy duration (buckets: 1s, 2s, 5s, 10s, 30s, 60s) |
+| `vibed_deploy_duration_seconds` | Histogram | `status`, `target` | Live (`/v1`) deploy latency; here `target` is the **template name** (e.g. `node-24`). Buckets: 1s, 2s, 5s, 10s, 30s, 60s |
 
 ### Artifact Metrics
 
@@ -113,7 +113,7 @@ These are served on the main server's `/metrics` (:8080). The bring-your-own bas
 |-------|----------------|
 | `status` | `success`, `error` |
 | `language` | `nodejs`, `python`, `go`, `static` |
-| `target` | `sandbox`, `kubernetes` |
+| `target` | `sandbox`, `kubernetes` (for `vibed_deploys_total` / `vibed_artifacts_active`); the template name, e.g. `node-24`, `python-313`, `static-nginx` (for `vibed_deploy_duration_seconds`) |
 | `tool` | `deploy_artifact`, `update_artifact`, `list_artifacts`, `get_artifact_status`, `get_artifact_logs`, `delete_artifact`, `list_deployment_targets` |
 
 ## Scraping with Prometheus

@@ -56,7 +56,11 @@ auth:
 - Each key has a human-readable `name`; the owning user identity (UserID) is `apikey-<name>`, and a user record is auto-provisioned under that ID on first authentication
 - Optional `scopes` restrict what the key can do (empty = unrestricted)
 - Constant-time comparison prevents timing attacks
-- **Suspension is enforced:** setting a key's user record `status: suspended` immediately revokes access on the next request (401)
+- **Suspension is enforced:** setting a key's user record `status: suspended` revokes access (401). The change propagates within at most [`auth.identityCacheTTL`](config-reference.md#auth) (default 30s) on a warm cache, or immediately when the TTL is `0`. A role change is reflected on the same bound.
+
+:::note Static keys are resolved once at startup
+Static API-key secrets — literal values, `env:VAR`, and `file:/path` — are read **once at startup**. Rotating a key file or environment variable therefore takes effect only after a `vibed` restart. (The API-key user record still self-heals: provisioning is retried until it durably succeeds.)
+:::
 
 :::caution Upgrading to v0.4.4
 The canonical user ID for a static API key is now `apikey-<name>` everywhere — request identity, the provisioned user record, the role map, and **artifact ownership**. Before v0.4.4 the raw `name` was used for ownership, so artifacts deployed by a static-key user on an older version are owned under the bare `name` and won't match after upgrade. If you rely on static-key owner-scoping with pre-existing artifacts, re-key their ownership or redeploy. OIDC and no-auth users are unaffected.

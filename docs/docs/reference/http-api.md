@@ -113,10 +113,20 @@ The `metadata` field is a JSON object:
 
 ### `GET /v1/apps`
 
-List apps owned by the authenticated user.
+List apps owned by the authenticated user. Optional query parameters page the result:
+
+| Param    | Type | Default | Description                                                          |
+| -------- | ---- | ------- | -------------------------------------------------------------------- |
+| `limit`  | int  | —       | Max number of apps to return. Omitted (or `0`) returns **all** apps. |
+| `offset` | int  | `0`     | Number of apps to skip before collecting the page.                   |
 
 ```bash
+# all apps (default — no params)
 curl -H "Authorization: Bearer $VIBED_TOKEN" http://localhost:8080/v1/apps
+
+# a page of 20, starting at the 40th
+curl -H "Authorization: Bearer $VIBED_TOKEN" \
+  "http://localhost:8080/v1/apps?limit=20&offset=40"
 ```
 
 ```json
@@ -131,11 +141,12 @@ curl -H "Authorization: Bearer $VIBED_TOKEN" http://localhost:8080/v1/apps
       "runtime": { "lane": "general", "template": "node-24" },
       "last_deployed_at": "2026-07-03T10:12:00Z"
     }
-  ]
+  ],
+  "total": 1
 }
 ```
 
-`phase` is one of `Pending`, `Claiming`, `Starting`, `Ready`, `Suspended`, `Failed` (see [App Lifecycle](../concepts/app-lifecycle.md)). Returns `401` without a token.
+`items` is the requested page; `total` is the number of apps the caller can see **after** owner/authorization filtering — the full count, not the page size — so a client can tell whether more pages remain. With no `limit`/`offset` the whole list is returned and `total` equals the length of `items`. `phase` is one of `Pending`, `Claiming`, `Starting`, `Ready`, `Suspended`, `Failed` (see [App Lifecycle](../concepts/app-lifecycle.md)). Returns `401` without a token.
 
 ### `GET /v1/apps/{id}`
 
@@ -260,6 +271,16 @@ Whether events persist depends on the store backend — see [Audit Trail](../con
 The source blob that the in-sandbox agent (`vibed-agent`) pulls on startup. This route is served **only** when the tarball store uses the `served` backend (dev). Requests must be `GET`/`HEAD` for a path ending in `.tar.gz`; anything else is `404` or `405`. There are no directory listings.
 
 It sits behind the same auth middleware as `/v1`, so only the shared agent token can pull. In production the `served` backend is not used: sandboxes have no cluster DNS or cluster-internal egress under the restrictive NetworkPolicy, so the agent instead pulls from a pre-signed **S3** URL and vibeD serves nothing here. See [Storage](../configuration/storage.md) for `served` vs `s3`.
+
+## Legacy `/api` endpoints
+
+The original REST surface under **`/api/artifacts*`** predates the `/v1` API documented above and exposes the same deploy/list/status/logs operations.
+
+:::caution `/api/artifacts*` is deprecated
+The legacy `/api/artifacts*` endpoints are **deprecated** in favor of the `/v1` API on this page. Their responses now carry a `Deprecation: true` header and an `X-Deprecated-Use: /v1/apps` hint, and `vibed` logs a one-time warning at startup the first time one is served. They still work today, but migrate to `/v1`; removal is planned for a future release.
+
+**Not deprecated** — these have no `/v1` equivalent, so keep using them: `/api/share/` (public share links), `/api/events` (dashboard SSE stream), and the admin routes `/api/users`, `/api/departments`, `/api/whoami`, and `/api/targets`.
+:::
 
 ## MCP endpoint
 

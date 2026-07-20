@@ -36,6 +36,7 @@ auth:
   enabled: false               # enable before exposing the API
   devInsecure: false           # required to run auth-disabled on a non-loopback bind
   mode: "apikey"               # apikey | oauth | oidc
+  identityCacheTTL: "30s"      # cap on how long a resolved identity is cached (0 disables)
   apiKeys: []                  # see auth section below
   # oidc: { issuer, audience, usernameClaim, roleClaim, adminRole, ... }
   # tls:  { enabled, certFile, keyFile, autoTLS }
@@ -138,6 +139,7 @@ Governs authentication and TLS termination. When `enabled` is `false` the API is
 | `enabled` | bool              | `false` | Turn authentication on.                                                                  |
 | `devInsecure` | bool          | `false` | Acknowledge running with auth disabled on a non-loopback bind. Required to start in that config (otherwise vibeD refuses); intended for local dev or a network-isolated in-cluster listener. The Helm chart's no-auth path sets it automatically. |
 | `mode`    | string            | `""`    | `apikey`, `oauth`, or `oidc`. Out-of-tree providers may register additional modes.      |
+| `identityCacheTTL` | duration | `30s` | Caps how long a resolved user identity (role, status, department) is cached before the user store is re-consulted. This is the propagation bound for account changes: a suspension or role edit takes effect within at most this TTL on a warm cache. `0` (or negative) disables caching, so such changes take effect immediately (as before this key existed), at the cost of an extra per-request user-store lookup. Since v0.6.0. |
 | `apiKeys` | list              | `[]`    | Configured API keys (see below). At least one is required when `mode` is `apikey`/`oauth`/empty. |
 | `oidc`    | object            | —       | OIDC settings (see below).                                                              |
 | `tls`     | object            | —       | TLS termination (see below).                                                            |
