@@ -75,11 +75,12 @@ The garbage collector now keys off `VibedApp` custom resources. Live-path
 resources are owner-referenced by their `VibedApp` and are cascade-deleted by
 Kubernetes when the app is deleted, so the GC no longer drives their removal.
 
-A `gc.legacySweeps` flag (default `true`) reaps pre-v0.7 orchestrator/deployer
+A `gc.legacySweeps` flag (default `true`) reaped pre-v0.7 orchestrator/deployer
 debris — the labelled jobs, configmaps, and deployments left by `<= v0.6`
-installs. Leave it on while upgrading from an older release; it can be set to
-`false` once no legacy resources remain, and it will be removed in a future
-release. See [Configuration Reference](./configuration/config-reference.md#gc).
+installs. It existed only for the v0.7 upgrade window and is **removed in
+v0.8** along with those sweeps; once you have upgraded through v0.7 there is
+nothing more to clean. In v0.8 the GC is a `SandboxClaim`-orphan backstop only.
+See [Configuration Reference](./configuration/config-reference.md#gc).
 
 ## Note for policy authors
 

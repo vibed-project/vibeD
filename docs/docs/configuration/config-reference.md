@@ -98,7 +98,6 @@ gc:
   interval: "1h"
   maxAge: "24h"
   dryRun: false
-  legacySweeps: true           # reap pre-v0.7 orchestrator/deployer debris
 
 tracing:
   enabled: false
@@ -271,7 +270,7 @@ Caps how many concurrent apps an owner or department may hold. Disabled by defau
 
 ## `gc`
 
-The resource garbage collector. It keys off `VibedApp` custom resources; live-path resources are owner-referenced and cascade-deleted by Kubernetes, so the GC's remaining job is reaping orphans and legacy debris.
+The resource garbage collector. It keys off `VibedApp` custom resources; live-path resources are owner-referenced and cascade-deleted by Kubernetes, so the GC's sole job is a backstop: reaping a `SandboxClaim` whose owning `VibedApp` is gone but whose owner-ref cascade did not fire (past `maxAge`), releasing the stranded warm-pool pod.
 
 | Key            | Type     | Default | Description                                                       |
 | -------------- | -------- | ------- | ---------------------------------------------------------------- |
@@ -279,7 +278,6 @@ The resource garbage collector. It keys off `VibedApp` custom resources; live-pa
 | `interval`     | duration | `1h`    | GC cycle interval. Must be a valid Go duration when `enabled`.   |
 | `maxAge`       | duration | `24h`   | Age threshold for orphaned resources. Must be a valid duration.  |
 | `dryRun`       | bool     | `false` | Log candidates without deleting.                                 |
-| `legacySweeps` | bool     | `true`  | Reap pre-v0.7 orchestrator/deployer resources (labelled jobs, configmaps, deployments) left by `<= v0.6` installs. Safe to disable once no legacy resources remain; slated for removal in a future release. |
 
 ## `tracing`
 
@@ -334,7 +332,6 @@ OpenTelemetry distributed tracing.
 | `VIBED_GC_INTERVAL`                  | `gc.interval`                        |
 | `VIBED_GC_MAX_AGE`                   | `gc.maxAge`                          |
 | `VIBED_GC_DRY_RUN`                   | `gc.dryRun`                          |
-| `VIBED_GC_LEGACY_SWEEPS`             | `gc.legacySweeps`                    |
 | `VIBED_TRACING_ENABLED`             | `tracing.enabled`                    |
 | `VIBED_TRACING_ENDPOINT`             | `tracing.endpoint`                   |
 | `VIBED_TRACING_SAMPLE_RATE`          | `tracing.sampleRate`                 |

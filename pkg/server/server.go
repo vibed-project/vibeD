@@ -295,9 +295,9 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 			logger.Warn("garbage collector disabled: the /v1 deploy service (and its VibedApp client) is unavailable")
 		} else {
 			collector, err := gc.NewGarbageCollector(
-				k8sClients.Clientset, k8sClients.DynamicClient,
+				k8sClients.DynamicClient,
 				deploySvc.Client,
-				cfg.Deployment.Namespace, deploySvc.Namespace,
+				deploySvc.Namespace,
 				cfg.GC, m, logger,
 			)
 			if err != nil {

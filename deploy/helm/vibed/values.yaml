@@ -367,21 +367,16 @@ config:
     # -- Sampling rate 0.0–1.0 (default: 1.0 = sample all).
     sampleRate: 1.0
 
-  # -- Garbage collector for orphaned K8s resources (Jobs, ConfigMaps,
-  #     Deployments, Sandboxes) whose artifact is gone.
+  # -- Garbage collector: backstops the owner-reference cascade for the live
+  #     /v1 path by reaping orphaned SandboxClaims whose VibedApp is gone.
   gc:
     enabled: true
     # -- How often the GC sweep runs (Go duration string).
     interval: "5m"
-    # -- Resources younger than this are kept even if their artifact is gone.
+    # -- Claims younger than this are kept even if their VibedApp is gone.
     maxAge: "1h"
     # -- When true, log what would be deleted but don't delete.
     dryRun: false
-    # -- Reap pre-v0.7 orchestrator/deployer resources (labelled
-    #     vibed.dev/artifact-id). Default on for one release so a cluster
-    #     upgrading from <=v0.6 sheds legacy debris; removed in a future
-    #     release once no legacy resources remain.
-    legacySweeps: true
 
 persistence:
   enabled: true

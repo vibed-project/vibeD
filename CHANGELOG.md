@@ -4,6 +4,28 @@ All notable changes to vibeD are recorded here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); each release is also a signed
 git tag, and the Helm chart's `appVersion` tracks the release.
 
+## v0.8.0 — unreleased
+
+Trailing cleanup after the v0.7 orchestrator removal: the one-release legacy GC
+machinery kept for upgrading clusters is dropped, leaving the garbage collector
+a small, CR-keyed backstop.
+
+### Changed
+- **Garbage collection is now a `VibedApp`-CR-keyed `SandboxClaim`-orphan
+  backstop only.** Live resources are owner-referenced to their `VibedApp` and
+  cascade-deleted by Kubernetes, so in the normal case there is nothing to
+  collect. The GC only reaps a `SandboxClaim` whose owning `VibedApp` is gone
+  and whose owner-ref cascade did not fire, once the claim is older than
+  `gc.maxAge` — releasing the stranded warm-pool pod back to the pool.
+
+### Removed
+- **The `gc.legacySweeps` flag and the legacy pre-v0.7 orphan sweeps** (the
+  build Jobs, ConfigMaps, and Deployments keyed on `vibed.dev/artifact-id`).
+  The flag existed only for the v0.7 upgrade window so a cluster migrating from
+  `<= v0.6` could shed legacy debris; no live path creates those resources, so
+  the machinery is gone. `gc.enabled`, `gc.interval`, `gc.maxAge`, and
+  `gc.dryRun` are unchanged.
+
 ## v0.7.0 — unreleased
 
 Retires the legacy orchestrator now that the `/v1` deploy path fully covers the
