@@ -4,17 +4,50 @@ All notable changes to vibeD are recorded here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); each release is also a signed
 git tag, and the Helm chart's `appVersion` tracks the release.
 
-## Unreleased
+## v0.7.0 — unreleased
 
-_(targeting v0.7.0)_
+Retires the legacy orchestrator now that the `/v1` deploy path fully covers the
+artifact lifecycle. **Breaking**: the `/api/artifacts*` surface (deprecated in
+v0.6.0) and a few legacy-only capabilities are removed, and ~4k lines of legacy
+code (the orchestrator plus the deployer, environment, and source-storage
+packages) are deleted. Ship **v0.6.0 first** so consumers get a full deprecation
+cycle before these removals land.
 
-A platform performance and API-consolidation pass that also retires the legacy
-orchestrator. It trims per-request work across the hot paths — auth, controller,
-deploy, router, egress, and the state stores — brings the live `/v1` deploy path
-to parity with the legacy path by completing its lifecycle events and MCP
-tooling, firms up a stable, observable `/v1` surface with pagination and
-deploy-latency metrics, and removes the deprecated `/api/artifacts*` surface now
-that `/v1/apps` covers it.
+### Added
+- **`/v1` share links**: `POST /v1/apps/{id}/share-links` (create) and
+  `GET /v1/apps/{id}/share-links` (list) move public share-link management onto
+  the `/v1` surface. The public resolve (`GET /api/share/{token}`) and revoke
+  (`DELETE /api/share-links/{token}`) routes are unchanged.
+
+### Changed
+- **Garbage collection keys off `VibedApp` CRs**: live-path resources are
+  owner-referenced and cascade-deleted by Kubernetes, so the GC no longer drives
+  their removal. Pre-v0.7 orchestrator/deployer debris (labelled jobs,
+  configmaps, deployments, sandboxes) is reaped behind a new `gc.legacySweeps`
+  flag (default `true`; slated for removal in a future release once no legacy
+  resources remain).
+
+### Removed
+- **The legacy orchestrator and its `/api/artifacts*` REST surface** (deprecated
+  in v0.6.0). The artifact lifecycle now lives entirely under `/v1/apps`; the
+  v0.7 migration guide (`docs/docs/migrating-to-v0.7.md`) maps every removed
+  route to its `/v1` equivalent. Still current: `/api/share/`, `/api/events`
+  (SSE), and the admin `/api/users`, `/api/departments`, `/api/whoami` routes.
+- **`/api/targets` and the `list_deployment_targets` MCP tool.** The
+  deployment-target/backend model they exposed is superseded by lanes and
+  templates.
+- **User-grant sharing**: the `share_artifact` / `unshare_artifact` MCP tools and
+  the `/api/artifacts/{id}/share` and `/api/artifacts/{id}/unshare` endpoints.
+  Public share links (create/list on `/v1/apps/{id}/share-links`) replace it.
+
+## v0.6.0 — unreleased
+
+A platform performance and API-consolidation pass. It trims per-request work
+across the hot paths — auth, controller, deploy, router, egress, and the state
+stores — brings the live `/v1` deploy path to parity with the legacy path by
+completing its lifecycle events and MCP tooling, and firms up a stable,
+observable `/v1` surface with pagination and deploy-latency metrics. It also
+deprecates the `/api/artifacts*` surface (removed in v0.7.0).
 
 ### Added
 - **`/v1/apps` pagination**: `GET /v1/apps` accepts optional `?limit=` and
@@ -32,10 +65,6 @@ that `/v1/apps` covers it.
   `authz.BatchAuthorizer` interfaces (the `Authorizer` seam itself is unchanged)
   and a streaming `policy.Input.SourceOpener` accessor (the `Source []byte`
   field is retained).
-- **`/v1` share links**: `POST /v1/apps/{id}/share-links` (create) and
-  `GET /v1/apps/{id}/share-links` (list) move public share-link management onto
-  the `/v1` surface. The public resolve (`GET /api/share/{token}`) and revoke
-  (`DELETE /api/share-links/{token}`) routes are unchanged.
 
 ### Changed
 - **Static API keys are resolved once at startup** (`file:` / `env:` secrets):
@@ -48,12 +77,6 @@ that `/v1/apps` covers it.
 - **MCP lifecycle tools now act on live apps**: `list_versions`,
   `rollback_artifact`, `get_artifact_logs`, and the share-link tools operate on
   warm-pool (live) apps.
-- **Garbage collection keys off `VibedApp` CRs**: live-path resources are
-  owner-referenced and cascade-deleted by Kubernetes, so the GC no longer drives
-  their removal. Pre-v0.7 orchestrator/deployer debris (labelled jobs,
-  configmaps, deployments) is reaped behind a new `gc.legacySweeps` flag
-  (default `true`; slated for removal in a future release once no legacy
-  resources remain).
 - **SQLite state store**: the connection pool is now bounded and per-connection
   pragmas (including `busy_timeout`) are applied via the DSN, so they take on
   every pooled connection.
@@ -67,23 +90,11 @@ that `/v1/apps` covers it.
 - **Egress authz** uses an indexed pod-IP lookup for the per-request check.
 
 ### Deprecated
-- The legacy **`/api/artifacts*`** REST endpoints were deprecated in favor of
-  the `/v1` API (responses carried a `Deprecation: true` header and
-  `X-Deprecated-Use: /v1/apps`, with a one-time startup warning). They have since
-  been **removed** — see Removed below. Still current: `/api/share/`,
-  `/api/events` (SSE), and the admin `/api/users`, `/api/departments`, and
-  `/api/whoami` routes.
-
-### Removed
-- **The legacy orchestrator and its `/api/artifacts*` REST surface** (deprecated
-  in the v0.6 cycle). The artifact lifecycle now lives entirely under `/v1/apps`;
-  the v0.7 migration guide maps every removed route to its `/v1` equivalent.
-- **`/api/targets` and the `list_deployment_targets` MCP tool.** The
-  deployment-target/backend model they exposed is superseded by lanes and
-  templates.
-- **User-grant sharing**: the `share_artifact` / `unshare_artifact` MCP tools and
-  the `/api/artifacts/{id}/share` and `/api/artifacts/{id}/unshare` endpoints.
-  Public share links (create/list on `/v1/apps/{id}/share-links`) replace it.
+- The legacy **`/api/artifacts*`** REST endpoints are deprecated in favor of the
+  `/v1` API (responses carry a `Deprecation: true` header and
+  `X-Deprecated-Use: /v1/apps`, with a one-time startup warning). Still current:
+  `/api/share/`, `/api/events` (SSE), and the admin `/api/users`,
+  `/api/departments`, and `/api/whoami` routes. (Removed in v0.7.0.)
 
 ### Fixed
 - **MCP tools were broken for warm-pool apps**: `list_versions`,
@@ -100,11 +111,6 @@ that `/v1/apps` covers it.
   failing to persist and leaving the API-key user missing.
 - **Event bridge** reconciles its state on reconnect and publishes display
   status, so status is not lost across a dropped connection.
-
-### Notes
-- Upgrading from `<= v0.6`: see the v0.7 migration guide
-  (`docs/docs/migrating-to-v0.7.md`) for the `/api/artifacts*` → `/v1/apps`
-  endpoint mapping and the `gc.legacySweeps` flag.
 
 ## v0.5.2 — 2026-07-19
 
