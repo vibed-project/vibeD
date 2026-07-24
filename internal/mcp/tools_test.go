@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"reflect"
 	"sort"
 	"strings"
@@ -19,9 +18,6 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
-	"github.com/vibed-project/vibeD/internal/deployer"
-	"github.com/vibed-project/vibeD/internal/metrics"
-	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tarball"
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -31,17 +27,15 @@ import (
 )
 
 // The tests drive each tool end-to-end through an in-memory MCP client/server
-// session, so both the routing decision (live deploy.Service vs legacy
-// orchestrator) and the exact wire-level JSON shape are exercised.
+// session, so both the deploy.Service routing and the exact wire-level JSON
+// shape are exercised.
 
 // newSession registers the vibeD tools on a fresh MCP server and returns a
-// connected in-memory client session. Live-path tests pass a nil orch, which
-// proves those tools never touch the orchestrator; fallback tests pass a nil
-// deploySvc.
-func newSession(t *testing.T, orch *orchestrator.Orchestrator, deploySvc *deploy.Service) *mcp.ClientSession {
+// connected in-memory client session.
+func newSession(t *testing.T, deploySvc *deploy.Service) *mcp.ClientSession {
 	t.Helper()
 	server := mcp.NewServer(&mcp.Implementation{Name: "vibed-test", Version: "0.0.0"}, nil)
-	RegisterTools(server, orch, deploySvc, config.LimitsConfig{}, nil, nil)
+	RegisterTools(server, deploySvc, config.LimitsConfig{}, nil)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(context.Background(), serverTransport, nil)
@@ -162,13 +156,6 @@ func liveService(t *testing.T, apps ...*vibedv1.VibedApp) *deploy.Service {
 	}
 }
 
-// fallbackOrch builds a minimal orchestrator over the legacy in-memory
-// ArtifactStore — just enough backend for the deploySvc==nil fallback paths.
-func fallbackOrch(st store.ArtifactStore, sls store.ShareLinkStore, factory *deployer.Factory) *orchestrator.Orchestrator {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return orchestrator.NewOrchestrator(&config.Config{}, nil, factory, nil, st, nil, metrics.New(), nil, nil, sls, logger)
-}
-
 // fakeTarballStore is an in-memory tarball.Store; the tools under test only
 // delete evicted version blobs, so no bytes need to be retained.
 type fakeTarballStore struct{}
@@ -240,24 +227,25 @@ func (f *fakeShareLinkStore) RevokeShareLink(_ context.Context, token string) er
 
 var _ store.ShareLinkStore = (*fakeShareLinkStore)(nil)
 
-// fakeDeployer serves canned logs so the legacy orchestrator fallback path is
-// observable end-to-end.
-type fakeDeployer struct{ logs []string }
-
-func (f *fakeDeployer) Deploy(context.Context, *api.Artifact) (*deployer.DeployResult, error) {
-	return nil, nil
+// TestToolsWithoutDeployService verifies that when the deploy service is nil
+// (its prerequisites weren't configured), the artifact-lifecycle tools return a
+// clear "not configured" error instead of panicking.
+func TestToolsWithoutDeployService(t *testing.T) {
+	cs := newSession(t, nil)
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"deploy_artifact", map[string]any{"name": "x", "files": map[string]any{"index.html": "hi"}}},
+		{"list_artifacts", map[string]any{}},
+		{"get_artifact_status", map[string]any{"artifact_id": "x"}},
+		{"delete_artifact", map[string]any{"artifact_id": "x"}},
+		{"list_versions", map[string]any{"artifact_id": "x"}},
+		{"create_share_link", map[string]any{"artifact_id": "x"}},
+	} {
+		msg := callToolExpectError(t, cs, tc.tool, tc.args)
+		if !strings.Contains(msg, "deploy service not configured") {
+			t.Errorf("%s error = %q, want 'deploy service not configured'", tc.tool, msg)
+		}
+	}
 }
-
-func (f *fakeDeployer) Update(context.Context, *api.Artifact) (*deployer.DeployResult, error) {
-	return nil, nil
-}
-
-func (f *fakeDeployer) Delete(context.Context, *api.Artifact) error { return nil }
-
-func (f *fakeDeployer) GetURL(context.Context, *api.Artifact) (string, error) { return "", nil }
-
-func (f *fakeDeployer) GetLogs(context.Context, *api.Artifact, int) ([]string, error) {
-	return f.logs, nil
-}
-
-var _ deployer.Deployer = (*fakeDeployer)(nil)

@@ -68,16 +68,6 @@ func normalizePath(path string) string {
 	switch {
 	case path == "/healthz" || path == "/readyz" || path == "/metrics":
 		return path
-	case path == "/api/targets":
-		return "/api/targets"
-	case path == "/api/artifacts":
-		return "/api/artifacts"
-	case len(path) > len("/api/artifacts/") && path[:len("/api/artifacts/")] == "/api/artifacts/":
-		// Normalize /api/artifacts/{id} and /api/artifacts/{id}/logs
-		if len(path) > 5 && path[len(path)-5:] == "/logs" {
-			return "/api/artifacts/:id/logs"
-		}
-		return "/api/artifacts/:id"
 	case len(path) > len("/mcp") && path[:len("/mcp")] == "/mcp":
 		return "/mcp"
 	default:

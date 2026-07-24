@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/vibed-project/vibeD/internal/deploy"
-	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/pkg/api"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 
@@ -24,22 +23,13 @@ type listArtifactsOutput struct {
 	Limit     int                   `json:"limit"`
 }
 
-func registerListTool(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service) {
+func registerListTool(server *mcp.Server, deploySvc *deploy.Service) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_artifacts",
 		Description: "List all deployed artifacts with their status and access URLs.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input listArtifactsInput) (*mcp.CallToolResult, *listArtifactsOutput, error) {
 		if deploySvc == nil {
-			result, err := orch.List(ctx, input.Status, input.Offset, input.Limit)
-			if err != nil {
-				return nil, nil, err
-			}
-			return nil, &listArtifactsOutput{
-				Artifacts: result.Artifacts,
-				Total:     result.Total,
-				Offset:    input.Offset,
-				Limit:     clampLimit(input.Limit),
-			}, nil
+			return nil, nil, errDeployServiceNotConfigured
 		}
 
 		// Fetch everything (limit 0 = all): the status filter below must apply

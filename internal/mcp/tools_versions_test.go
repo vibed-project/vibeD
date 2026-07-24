@@ -8,9 +8,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/vibed-project/vibeD/internal/deploy"
-	"github.com/vibed-project/vibeD/internal/deployer"
-	"github.com/vibed-project/vibeD/internal/store"
-	"github.com/vibed-project/vibeD/pkg/api"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -24,7 +21,7 @@ func historyRecords() []deploy.VersionRecord {
 
 func TestListVersionsLive(t *testing.T) {
 	svc := liveService(t, liveApp("app1", localOwner, "https://app1.vibed.test", vibedv1.PhaseReady, historyRecords()))
-	cs := newSession(t, nil, svc) // nil orch: the live path must never touch it
+	cs := newSession(t, svc)
 
 	out := callTool(t, cs, "list_versions", map[string]any{"artifact_id": "app1"})
 	assertKeys(t, out, "artifact_id", "versions")
@@ -64,36 +61,14 @@ func TestListVersionsLive(t *testing.T) {
 func TestListVersionsLiveOwnership(t *testing.T) {
 	// The MCP stdio identity is "local"; bob's app must be invisible.
 	svc := liveService(t, liveApp("bobapp", "bob", "", vibedv1.PhaseReady, historyRecords()))
-	cs := newSession(t, nil, svc)
+	cs := newSession(t, svc)
 
 	callToolExpectError(t, cs, "list_versions", map[string]any{"artifact_id": "bobapp"})
 }
 
-func TestListVersionsFallback(t *testing.T) {
-	ctx := context.Background()
-	st := store.NewMemoryStore()
-	if err := st.Create(ctx, &api.Artifact{ID: "legacy1", Name: "legacy1", Status: api.StatusRunning, Target: api.TargetKubernetes}); err != nil {
-		t.Fatalf("seed artifact: %v", err)
-	}
-	if err := st.CreateVersion(ctx, &api.ArtifactVersion{VersionID: "vid-1", ArtifactID: "legacy1", Version: 1, ImageRef: "registry.test/legacy1:v1", Status: api.StatusRunning, CreatedBy: "alice"}); err != nil {
-		t.Fatalf("seed version: %v", err)
-	}
-	cs := newSession(t, fallbackOrch(st, nil, deployer.NewFactory()), nil)
-
-	out := callTool(t, cs, "list_versions", map[string]any{"artifact_id": "legacy1"})
-	assertKeys(t, out, "artifact_id", "versions")
-	versions, ok := out["versions"].([]any)
-	if !ok || len(versions) != 1 {
-		t.Fatalf("versions = %#v, want 1 entry", out["versions"])
-	}
-	if v := versions[0].(map[string]any); v["image_ref"] != "registry.test/legacy1:v1" {
-		t.Errorf("fallback did not read the legacy ArtifactStore: image_ref = %v", v["image_ref"])
-	}
-}
-
 func TestRollbackLive(t *testing.T) {
 	svc := liveService(t, liveApp("app1", localOwner, "https://app1.vibed.test", vibedv1.PhaseReady, historyRecords()))
-	cs := newSession(t, nil, svc)
+	cs := newSession(t, svc)
 
 	out := callTool(t, cs, "rollback_artifact", map[string]any{"artifact_id": "app1", "version": 1})
 	assertKeys(t, out, "artifact_id", "name", "url", "target", "status", "image_ref", "new_version", "message")
@@ -126,7 +101,7 @@ func TestRollbackLive(t *testing.T) {
 
 func TestRollbackLiveMissingVersion(t *testing.T) {
 	svc := liveService(t, liveApp("app1", localOwner, "https://app1.vibed.test", vibedv1.PhaseReady, historyRecords()))
-	cs := newSession(t, nil, svc)
+	cs := newSession(t, svc)
 
 	msg := callToolExpectError(t, cs, "rollback_artifact", map[string]any{"artifact_id": "app1", "version": 9})
 	if !strings.Contains(msg, "not available for rollback") {

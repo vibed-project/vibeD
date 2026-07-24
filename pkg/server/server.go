@@ -1,6 +1,6 @@
 // Package server wires and runs the vibeD control-plane process: tracing,
-// metrics, Kubernetes clients, storage, the artifact store, the orchestrator,
-// the deploy service, the MCP server, authentication, and the HTTP server.
+// metrics, Kubernetes clients, the artifact store, the deploy service, the MCP
+// server, authentication, and the HTTP server.
 //
 // It is the reusable entry point shared by cmd/vibed and any out-of-tree binary:
 // those import this package, register their providers via the internal/auth and
@@ -31,8 +31,6 @@ import (
 	"github.com/vibed-project/vibeD/internal/classifier"
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
-	"github.com/vibed-project/vibeD/internal/deployer"
-	"github.com/vibed-project/vibeD/internal/environment"
 	"github.com/vibed-project/vibeD/internal/events"
 	"github.com/vibed-project/vibeD/internal/frontend"
 	"github.com/vibed-project/vibeD/internal/gc"
@@ -43,10 +41,8 @@ import (
 	"github.com/vibed-project/vibeD/internal/meter"
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/middleware"
-	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/policy"
 	"github.com/vibed-project/vibeD/internal/quota"
-	"github.com/vibed-project/vibeD/internal/storage"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/internal/tarball"
 	"github.com/vibed-project/vibeD/internal/tenant"
@@ -159,65 +155,6 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	}
 	checker.SetReady("kubernetes")
 
-	// Initialize subsystems
-	detector := environment.NewDetector(k8sClients, logger)
-
-	// Initialize storage
-	checker.SetNotReady("storage", "initializing")
-	var stg storage.Storage
-	switch cfg.Storage.Backend {
-	case "local":
-		stg, err = storage.NewLocalStorage(cfg.Storage.Local.BasePath)
-		if err != nil {
-			logger.Error("failed to create local storage", "error", err)
-			os.Exit(1)
-		}
-	case "github":
-		token, err := config.ResolveSecret(cfg.Storage.GitHub.TokenFile)
-		if err != nil {
-			logger.Error("failed to resolve GitHub token", "error", err)
-			os.Exit(1)
-		}
-		stg, err = storage.NewGitHubStorage(
-			cfg.Storage.GitHub.Owner,
-			cfg.Storage.GitHub.Repo,
-			cfg.Storage.GitHub.Branch,
-			token,
-			cfg.Storage.Local.BasePath, // Local cache dir
-		)
-		if err != nil {
-			logger.Error("failed to create GitHub storage", "error", err)
-			os.Exit(1)
-		}
-	case "gitlab":
-		token, err := config.ResolveSecret(cfg.Storage.GitLab.Token)
-		if err != nil {
-			logger.Error("failed to resolve GitLab token", "error", err)
-			os.Exit(1)
-		}
-		stg, err = storage.NewGitLabStorage(
-			cfg.Storage.GitLab.URL,
-			cfg.Storage.GitLab.ProjectID,
-			cfg.Storage.GitLab.Branch,
-			token,
-			cfg.Storage.Local.BasePath, // Local cache dir
-		)
-		if err != nil {
-			logger.Error("failed to create GitLab storage", "error", err)
-			os.Exit(1)
-		}
-	default:
-		logger.Error("unsupported storage backend", "backend", cfg.Storage.Backend)
-		os.Exit(1)
-	}
-
-	// Wrap storage with per-user routing if any API key has per-user storage configured
-	if cfg.Auth.Enabled && storage.HasPerUserConfigs(cfg.Auth.APIKeys) {
-		stg = storage.NewUserStorageRouter(cfg.Auth.APIKeys, stg, cfg.Storage.Local.BasePath)
-		logger.Info("per-user storage routing enabled")
-	}
-	checker.SetReady("storage")
-
 	// Initialize artifact store
 	checker.SetNotReady("store", "initializing")
 	st, err := store.New(store.Deps{
@@ -265,26 +202,7 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 		bootstrapAPIKeyUsers(cfg.Auth.APIKeys, userStore, logger)
 	}
 
-	// Initialize deployers. Knative was removed in v0.3.1 (refactor.md §1.4
-	// "Not a Knative replacement"); the Sandbox + Kubernetes deployers cover
-	// every supported target.
-
-	factory := deployer.NewFactory()
-
-	// Register Sandbox deployer
-	sbDeployer := deployer.NewSandboxDeployer(k8sClients.DynamicClient, k8sClients.Clientset, logger)
-	factory.Register(api.TargetSandbox, sbDeployer)
-
-	// Register Kubernetes deployer
-	k8sDeployer := deployer.NewKubernetesDeployer(k8sClients.Clientset, cfg.Deployment.ReadyTimeout, logger)
-	factory.Register(api.TargetKubernetes, k8sDeployer)
-
-	// The legacy in-process "Instant Preview" warm pool was removed in
-	// v0.3.1. Warm-pool management is now the job of vibed-controller +
-	// agent-sandbox (SandboxWarmPool / SandboxClaim); see internal/controller.
-
-	// Create orchestrator
-	// Create event bus for SSE streaming
+	// Event bus for SSE streaming.
 	bus := events.NewEventBus()
 
 	// ShareLinkStore is only available with SQLite backend
@@ -293,26 +211,22 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 		shareLinkStore = sls
 	}
 
-	orch := orchestrator.NewOrchestrator(cfg, detector, factory, stg, st, userStore, m, k8sClients.Clientset, bus, shareLinkStore, logger)
-
 	// Per-action authorizer (none by default → built-in owner/admin checks). An
-	// out-of-tree module may register RBAC; it applies to both the orchestrator
-	// (legacy /api/artifacts) and the deploy service (/v1) paths.
+	// out-of-tree module may register RBAC; it applies to the deploy service
+	// (/v1) path via deploySvc.Authz below.
 	authorizer, aerr := authz.Build(authz.Deps{})
 	if aerr != nil {
 		logger.Error("failed to build authorizer", "error", aerr)
 		os.Exit(1)
 	}
-	orch.SetAuthorizer(authorizer)
 	if authorizer != nil {
 		logger.Info("per-action authorizer enabled")
 	}
 
-	// Lifecycle context shared by GC and orchestrator's async goroutines so
-	// SIGTERM cancels in-flight builds and the GC loop together.
+	// Lifecycle context shared by GC (and the deploy service's async work) so
+	// SIGTERM cancels the GC loop and in-flight deploys together.
 	lifeCtx, lifeCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer lifeCancel()
-	orch.SetLifecycleContext(lifeCtx)
 
 	// Start garbage collector.
 	if cfg.GC.Enabled {
@@ -329,12 +243,14 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	}
 
 	// Build the VibedApp deploy service (POST /v1/deploy + the MCP core
-	// lifecycle). When prerequisites aren't configured (no K8s/tarball
-	// store) this is nil and both the HTTP endpoints and the MCP tools fall
-	// back: HTTP returns 501, MCP uses the orchestrator build path.
+	// lifecycle). This is the only deploy path. When prerequisites aren't
+	// configured (no K8s/tarball store) this is nil and the /v1 deploy path is
+	// unavailable: the HTTP endpoints return 501 and the MCP lifecycle tools
+	// return a "deploy service not configured" error. The rest of vibeD (ops
+	// endpoints, user/department management) still boots.
 	deploySvc, derr := buildDeployService(cfg, k8sClients, logger)
 	if derr != nil {
-		logger.Warn("VibedApp deploy path disabled; falling back to orchestrator", "error", derr)
+		logger.Warn("the /v1 deploy path is unavailable (endpoints return 501, MCP deploy tools error); check the tarball store configuration (storage.tarball)", "error", derr)
 		deploySvc = nil
 	}
 	if deploySvc != nil {
@@ -385,7 +301,7 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	}
 
 	// Create MCP server
-	mcpServer := mcppkg.NewServer(orch, deploySvc, cfg.Limits, userStore, auditRec)
+	mcpServer := mcppkg.NewServer(deploySvc, cfg.Limits, userStore)
 
 	// Initialize authentication middleware and any public login routes the
 	// selected provider contributes (e.g. a SAML SP's /saml/metadata + /saml/acs).
@@ -426,9 +342,9 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 		}
 
 	case "http":
-		runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, auditRec, m, checker, bus, authMiddleware, authRoutes, tlsConfig, userStore, k8sClients, logger)
+		runHTTPServer(ctx, cfg, mcpServer, deploySvc, auditRec, m, checker, bus, authMiddleware, authRoutes, tlsConfig, userStore, k8sClients, logger)
 	case "both":
-		go runHTTPServer(ctx, cfg, mcpServer, orch, deploySvc, auditRec, m, checker, bus, authMiddleware, authRoutes, tlsConfig, userStore, k8sClients, logger)
+		go runHTTPServer(ctx, cfg, mcpServer, deploySvc, auditRec, m, checker, bus, authMiddleware, authRoutes, tlsConfig, userStore, k8sClients, logger)
 		logger.Info("starting MCP server on stdio")
 		if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			logger.Error("stdio server error", "error", err)
@@ -441,7 +357,7 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	}
 }
 
-func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, auditRec *audit.Recorder, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, authRoutes []vibedauth.Route, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
+func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Server, deploySvc *deploy.Service, auditRec *audit.Recorder, m *metrics.Metrics, checker *health.Checker, bus *events.EventBus, authMiddleware func(http.Handler) http.Handler, authRoutes []vibedauth.Route, tlsConfig *tls.Config, userStore store.UserStore, k8sClients *k8s.Clients, logger *slog.Logger) {
 	mux := http.NewServeMux()
 
 	// Mount the auth provider's public login routes (e.g. a SAML SP's
@@ -525,7 +441,7 @@ func runHTTPServer(ctx context.Context, cfg *config.Config, mcpServer *mcp.Serve
 	// app, so there's no longer a per-process proxy living here.)
 
 	// Frontend + API
-	frontendHandler := frontend.NewHandler(orch, deploySvc, cfg, bus, m, userStore, k8sClients)
+	frontendHandler := frontend.NewHandler(deploySvc, cfg, bus, m, userStore, k8sClients)
 	mux.Handle("/", frontendHandler)
 
 	// Build handler chain: role → auth (selective) → metrics → mux

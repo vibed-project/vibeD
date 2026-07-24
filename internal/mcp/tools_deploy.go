@@ -5,14 +5,12 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
-	"github.com/vibed-project/vibeD/internal/orchestrator"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// deployArtifactOutput is the unified MCP deploy response across both the
-// VibedApp path and the legacy orchestrator path.
+// deployArtifactOutput is the MCP deploy response for the VibedApp path.
 type deployArtifactOutput struct {
 	ArtifactID string `json:"artifact_id"`
 	Name       string `json:"name"`
@@ -31,39 +29,18 @@ type deployArtifactInput struct {
 	AllowedHosts []string          `json:"allowed_hosts,omitempty" jsonschema:"Outbound hostnames the app may reach (egress allow-list), e.g. [\"api.openai.com\",\"*.example.com\"]. Default-deny: omit for no external egress."`
 }
 
-func registerDeployTool(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, limits config.LimitsConfig) {
+func registerDeployTool(server *mcp.Server, deploySvc *deploy.Service, limits config.LimitsConfig) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "deploy_artifact",
 		Description: "Deploy a web artifact (website, web app) to the cluster. Provide source files and vibeD classifies the runtime, claims a warm sandbox, and injects the source — no per-deploy container build. " +
 			"Returns an artifact_id and, once ready, a public URL; if it isn't ready within the deploy budget, poll get_artifact_status. " +
 			"The runtime (and template) are auto-detected from the source; set target only to override.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input deployArtifactInput) (*mcp.CallToolResult, *deployArtifactOutput, error) {
+		if deploySvc == nil {
+			return nil, nil, errDeployServiceNotConfigured
+		}
 		if err := validateFileLimits(input.Files, limits); err != nil {
 			return nil, nil, err
-		}
-
-		// Legacy fallback: no VibedApp deploy service configured (e.g. no
-		// K8s/tarball store) — use the orchestrator build-and-deploy path so
-		// the lifecycle tools stay consistent with each other.
-		if deploySvc == nil {
-			result, err := orch.AsyncDeploy(ctx, orchestrator.DeployRequest{
-				Name:       input.Name,
-				Files:      input.Files,
-				Language:   input.Language,
-				Target:     input.Target,
-				EnvVars:    input.EnvVars,
-				SecretRefs: input.SecretRefs,
-				Port:       input.Port,
-			})
-			if err != nil {
-				return nil, nil, err
-			}
-			return nil, &deployArtifactOutput{
-				ArtifactID: result.ArtifactID,
-				Name:       result.Name,
-				URL:        result.URL,
-				Status:     result.Status,
-			}, nil
 		}
 
 		// VibedApp path: pack the file map into a tarball and hand it to the

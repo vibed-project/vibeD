@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/vibed-project/vibeD/internal/deploy"
-	"github.com/vibed-project/vibeD/internal/deployer"
-	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/pkg/api"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
@@ -23,7 +21,7 @@ func shareService(t *testing.T, apps ...*vibedv1.VibedApp) (*deploy.Service, *fa
 
 func TestCreateShareLinkLive(t *testing.T) {
 	svc, sls := shareService(t, liveApp("app1", localOwner, "https://app1.vibed.test", vibedv1.PhaseReady, nil))
-	cs := newSession(t, nil, svc) // nil orch: the live path must never touch it
+	cs := newSession(t, svc)
 
 	out := callTool(t, cs, "create_share_link", map[string]any{"artifact_id": "app1", "password": "s3cret", "expires_in": "24h"})
 	assertKeys(t, out, "token", "artifact_id", "created_by", "has_password", "expires_at", "created_at", "revoked", "url")
@@ -41,7 +39,7 @@ func TestCreateShareLinkLive(t *testing.T) {
 
 func TestCreateShareLinkLiveOwnership(t *testing.T) {
 	svc, _ := shareService(t, liveApp("bobapp", "bob", "", vibedv1.PhaseReady, nil))
-	cs := newSession(t, nil, svc)
+	cs := newSession(t, svc)
 
 	callToolExpectError(t, cs, "create_share_link", map[string]any{"artifact_id": "bobapp"})
 }
@@ -54,7 +52,7 @@ func TestListShareLinksLive(t *testing.T) {
 			t.Fatalf("CreateShareLink: %v", err)
 		}
 	}
-	cs := newSession(t, nil, svc)
+	cs := newSession(t, svc)
 
 	out := callTool(t, cs, "list_share_links", map[string]any{"artifact_id": "app1"})
 	assertKeys(t, out, "links")
@@ -68,7 +66,7 @@ func TestListShareLinksLive(t *testing.T) {
 
 func TestListShareLinksLiveEmpty(t *testing.T) {
 	svc, _ := shareService(t, liveApp("app1", localOwner, "", vibedv1.PhaseReady, nil))
-	cs := newSession(t, nil, svc)
+	cs := newSession(t, svc)
 
 	out := callTool(t, cs, "list_share_links", map[string]any{"artifact_id": "app1"})
 	if links, ok := out["links"].([]any); !ok || len(links) != 0 {
@@ -82,7 +80,7 @@ func TestRevokeShareLinkLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateShareLink: %v", err)
 	}
-	cs := newSession(t, nil, svc)
+	cs := newSession(t, svc)
 
 	out := callTool(t, cs, "revoke_share_link", map[string]any{"token": link.Token})
 	assertKeys(t, out, "status")
@@ -100,32 +98,10 @@ func TestRevokeShareLinkLiveOwnership(t *testing.T) {
 	if err := sls.CreateShareLink(context.Background(), &api.ShareLink{Token: "tok-bob", ArtifactID: "bobapp", CreatedBy: "bob"}, ""); err != nil {
 		t.Fatalf("seed link: %v", err)
 	}
-	cs := newSession(t, nil, svc)
+	cs := newSession(t, svc)
 
 	callToolExpectError(t, cs, "revoke_share_link", map[string]any{"token": "tok-bob"})
 	if l, _, _ := sls.GetShareLink(context.Background(), "tok-bob"); l == nil || l.Revoked {
 		t.Errorf("cross-owner revoke must not flip the link")
-	}
-}
-
-func TestCreateShareLinkFallback(t *testing.T) {
-	ctx := context.Background()
-	st := store.NewMemoryStore()
-	if err := st.Create(ctx, &api.Artifact{ID: "legacy1", Name: "legacy1", Status: api.StatusRunning, Target: api.TargetKubernetes}); err != nil {
-		t.Fatalf("seed artifact: %v", err)
-	}
-	sls := newFakeShareLinkStore()
-	cs := newSession(t, fallbackOrch(st, sls, deployer.NewFactory()), nil)
-
-	out := callTool(t, cs, "create_share_link", map[string]any{"artifact_id": "legacy1"})
-	// No BaseURL on the legacy test config → no url key; no expiry → no
-	// expires_at key. Same schema either way (both are omitempty).
-	assertKeys(t, out, "token", "artifact_id", "created_by", "has_password", "created_at", "revoked")
-	if out["artifact_id"] != "legacy1" {
-		t.Errorf("artifact_id = %v, want legacy1", out["artifact_id"])
-	}
-	token, _ := out["token"].(string)
-	if _, _, err := sls.GetShareLink(ctx, token); err != nil {
-		t.Errorf("fallback did not write the orchestrator's share-link store: %v", err)
 	}
 }
