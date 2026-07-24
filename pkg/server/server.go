@@ -228,20 +228,6 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	lifeCtx, lifeCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer lifeCancel()
 
-	// Start garbage collector.
-	if cfg.GC.Enabled {
-		collector, err := gc.NewGarbageCollector(
-			k8sClients.Clientset, k8sClients.DynamicClient,
-			st, cfg.Deployment.Namespace,
-			cfg.GC, m, logger,
-		)
-		if err != nil {
-			logger.Error("failed to create garbage collector", "error", err)
-			os.Exit(1)
-		}
-		go collector.Run(lifeCtx)
-	}
-
 	// Build the VibedApp deploy service (POST /v1/deploy + the MCP core
 	// lifecycle). This is the only deploy path. When prerequisites aren't
 	// configured (no K8s/tarball store) this is nil and the /v1 deploy path is
@@ -297,6 +283,28 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 		deploySvc.Meter = sink
 		if gate != nil {
 			logger.Info("deploy policy gate enabled")
+		}
+	}
+
+	// Start garbage collector. It keys off the live VibedApp CR set, read via
+	// the deploy service's controller-runtime client (appsNamespace). Without
+	// the deploy service there's no VibedApp client — and thus no authoritative
+	// live set — so the GC is skipped rather than run blind.
+	if cfg.GC.Enabled {
+		if deploySvc == nil {
+			logger.Warn("garbage collector disabled: the /v1 deploy service (and its VibedApp client) is unavailable")
+		} else {
+			collector, err := gc.NewGarbageCollector(
+				k8sClients.Clientset, k8sClients.DynamicClient,
+				deploySvc.Client,
+				cfg.Deployment.Namespace, deploySvc.Namespace,
+				cfg.GC, m, logger,
+			)
+			if err != nil {
+				logger.Error("failed to create garbage collector", "error", err)
+				os.Exit(1)
+			}
+			go collector.Run(lifeCtx)
 		}
 	}
 

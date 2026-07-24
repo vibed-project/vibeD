@@ -122,4 +122,7 @@ data:
       interval: {{ .interval | default "5m" | quote }}
       maxAge: {{ .maxAge | default "1h" | quote }}
       dryRun: {{ .dryRun | default false }}
+      # dig (not `| default`) so an explicit `false` is honored — a future
+      # release turns this off, and `false | default true` would ignore it.
+      legacySweeps: {{ dig "legacySweeps" true . }}
     {{- end }}

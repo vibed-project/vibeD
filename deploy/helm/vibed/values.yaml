@@ -380,6 +380,11 @@ config:
     maxAge: "1h"
     # -- When true, log what would be deleted but don't delete.
     dryRun: false
+    # -- Reap pre-v0.7 orchestrator/deployer resources (labelled
+    #     vibed.dev/artifact-id). Default on for one release so a cluster
+    #     upgrading from <=v0.6 sheds legacy debris; removed in a future
+    #     release once no legacy resources remain.
+    legacySweeps: true
 
 persistence:
   enabled: true

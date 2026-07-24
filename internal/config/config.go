@@ -299,6 +299,11 @@ type GCConfig struct {
 	Interval string `yaml:"interval"` // GC cycle interval (default: "1h")
 	MaxAge   string `yaml:"maxAge"`   // Age threshold for orphaned resources (default: "24h")
 	DryRun   bool   `yaml:"dryRun"`   // Log without deleting (default: false)
+	// LegacySweeps reaps pre-v0.7 orchestrator/deployer resources (labelled
+	// vibed.dev/artifact-id). Default on for one release so a cluster upgrading
+	// from <=v0.6 sheds legacy debris; removed in a future release once no
+	// legacy resources remain.
+	LegacySweeps bool `yaml:"legacySweeps"`
 }
 
 // Default returns a Config with sensible defaults.
@@ -368,10 +373,11 @@ func Default() *Config {
 			MaxConcurrentLogStreamsGlobal:  100,
 		},
 		GC: GCConfig{
-			Enabled:  true,
-			Interval: "1h",
-			MaxAge:   "24h",
-			DryRun:   false,
+			Enabled:      true,
+			Interval:     "1h",
+			MaxAge:       "24h",
+			DryRun:       false,
+			LegacySweeps: true,
 		},
 		Tracing: TracingConfig{
 			SampleRate: 1.0,
@@ -539,6 +545,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("VIBED_GC_DRY_RUN"); v != "" {
 		cfg.GC.DryRun, _ = strconv.ParseBool(v)
+	}
+	if v := os.Getenv("VIBED_GC_LEGACY_SWEEPS"); v != "" {
+		cfg.GC.LegacySweeps, _ = strconv.ParseBool(v)
 	}
 
 	// Tracing overrides (standard OTel env var takes precedence)

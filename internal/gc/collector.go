@@ -16,11 +16,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/metrics"
-	"github.com/vibed-project/vibeD/internal/store"
-	"github.com/vibed-project/vibeD/pkg/api"
+	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
 const (
@@ -66,7 +66,9 @@ func (d *deleteRunner) wait() { _ = d.g.Wait() }
 const (
 	// labelManagedBy is used to identify vibeD-managed resources.
 	labelManagedBy = "app.kubernetes.io/managed-by=vibed"
-	// labelArtifactID is used to cross-reference resources against the store.
+	// labelArtifactID cross-references a legacy resource against the live
+	// VibedApp CR set: pre-v0.7 orchestrator/deployer resources carry it, and a
+	// resource whose value is not a live VibedApp CR name is an orphan.
 	labelArtifactID = "vibed.dev/artifact-id"
 	// labelComponent identifies the resource type (e.g. "build").
 	labelComponent = "vibed.dev/component"
@@ -75,26 +77,37 @@ const (
 )
 
 // GarbageCollector periodically scans for orphaned K8s resources and removes them.
+//
+// The authoritative live set is the VibedApp CRs (read via ctrlClient): a
+// resource is an orphan when its vibed.dev/artifact-id is not a live VibedApp
+// CR name. Since the /v1 path never stamps that label — live apps own
+// SandboxClaims/Services that Kubernetes cascade-deletes — every artifact-id
+// sweep here targets pre-v0.7 orchestrator/deployer debris and is gated behind
+// GCConfig.LegacySweeps.
 type GarbageCollector struct {
 	clientset     kubernetes.Interface
 	dynamicClient dynamic.Interface // optional; nil if not provided
-	store         store.ArtifactStore
-	namespace     string
+	ctrlClient    ctrlclient.Client // reads VibedApp CRs to build the live set
+	namespace     string            // where legacy orchestrator/deployer resources live
+	appsNamespace string            // where /v1 creates VibedApp CRs
 	interval      time.Duration
 	maxAge        time.Duration
 	dryRun        bool
+	legacySweeps  bool
 	metrics       *metrics.Metrics
 	logger        *slog.Logger
 }
 
 // NewGarbageCollector creates a new GarbageCollector from the given config.
 // dynamicClient is optional — pass nil to skip the Sandbox sweep (cluster
-// doesn't have agent-sandbox installed).
+// doesn't have agent-sandbox installed). ctrlClient reads VibedApp CRs to build
+// the authoritative live set; appsNamespace is where those CRs live.
 func NewGarbageCollector(
 	clientset kubernetes.Interface,
 	dynamicClient dynamic.Interface,
-	st store.ArtifactStore,
+	ctrlClient ctrlclient.Client,
 	namespace string,
+	appsNamespace string,
 	cfg config.GCConfig,
 	m *metrics.Metrics,
 	logger *slog.Logger,
@@ -107,15 +120,20 @@ func NewGarbageCollector(
 	if err != nil {
 		return nil, fmt.Errorf("parsing gc maxAge %q: %w", cfg.MaxAge, err)
 	}
+	if appsNamespace == "" {
+		appsNamespace = namespace
+	}
 
 	return &GarbageCollector{
 		clientset:     clientset,
 		dynamicClient: dynamicClient,
-		store:         st,
+		ctrlClient:    ctrlClient,
 		namespace:     namespace,
+		appsNamespace: appsNamespace,
 		interval:      interval,
 		maxAge:        maxAge,
 		dryRun:        cfg.DryRun,
+		legacySweeps:  cfg.LegacySweeps,
 		metrics:       m,
 		logger:        logger.With("component", "gc"),
 	}, nil
@@ -128,6 +146,7 @@ func (gc *GarbageCollector) Run(ctx context.Context) {
 		"interval", gc.interval,
 		"maxAge", gc.maxAge,
 		"dryRun", gc.dryRun,
+		"legacySweeps", gc.legacySweeps,
 	)
 	ticker := time.NewTicker(gc.interval)
 	defer ticker.Stop()
@@ -144,32 +163,86 @@ func (gc *GarbageCollector) Run(ctx context.Context) {
 }
 
 // collect runs a single GC cycle, cleaning up orphaned resources.
+//
+// It first builds the authoritative live set from VibedApp CRs. If that list
+// fails, the cycle is skipped entirely (fail-safe: no deletions) — deleting on
+// a partial/empty view could reap live resources. The legacy sweeps then reap
+// pre-v0.7 orchestrator/deployer debris and are gated behind LegacySweeps.
 func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.logger.Info("starting GC cycle")
 
-	res, err := gc.store.List(ctx, store.ListOptions{AdminView: true, Limit: 0})
+	active, err := gc.listActiveApps(ctx)
 	if err != nil {
-		gc.logger.Error("failed to list artifacts for GC, skipping cycle", "error", err)
+		gc.logger.Error("failed to list VibedApp CRs for GC, skipping cycle (fail-safe: no deletions)", "error", err)
 		return
 	}
 
-	activeArtifacts := make(map[string]bool, len(res.Artifacts))
-	for _, a := range res.Artifacts {
-		activeArtifacts[a.ID] = true
+	if !gc.legacySweeps {
+		gc.logger.Info("legacy sweeps disabled; skipping pre-v0.7 orphan cleanup", "activeApps", len(active))
+		gc.logger.Info("GC cycle complete")
+		return
 	}
 
-	gc.cleanOrphanedJobs(ctx, activeArtifacts)
-	gc.cleanOrphanedConfigMaps(ctx, activeArtifacts)
-	gc.cleanOrphanedDeployments(ctx, activeArtifacts)
-	gc.cleanOrphanedSandboxes(ctx, activeArtifacts)
+	// The four artifact-id sweeps target purely-legacy resources: with the
+	// orchestrator gone nothing stamps vibed.dev/artifact-id, so any labelled
+	// resource is legacy debris, reaped once past MaxAge. The sandbox sweep is
+	// grouped here too — the /v1 path uses SandboxClaims (owner-referenced to
+	// their VibedApp, cascade-deleted by Kubernetes), so the managed-by=vibed +
+	// artifact-id Sandbox CRs it targets are exclusively the legacy deployer's.
+	nJobs := gc.cleanOrphanedJobs(ctx, active)
+	nCMs := gc.cleanOrphanedConfigMaps(ctx, active)
+	nDeps := gc.cleanOrphanedDeployments(ctx, active)
+	nSbx := gc.cleanOrphanedSandboxes(ctx, active)
+	gc.logger.Info("legacy sweeps complete",
+		"activeApps", len(active),
+		"jobs", nJobs,
+		"configmaps", nCMs,
+		"deployments", nDeps,
+		"sandboxes", nSbx,
+		"dryRun", gc.dryRun,
+	)
 	gc.logger.Info("GC cycle complete")
 }
 
-// cleanOrphanedSandboxes deletes Sandbox CRs whose artifact no longer exists
-// in the store. Skipped silently when the agent-sandbox CRD isn't installed.
-func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeArtifacts map[string]bool) {
+// listActiveApps builds the authoritative live set — VibedApp CR names in the
+// apps namespace — paged so a large fleet is streamed rather than loaded whole.
+// Keyed by CR Name, which the /v1 path (and the event bridge) uses as the
+// artifact id. An error is returned so the caller can fail safe.
+func (gc *GarbageCollector) listActiveApps(ctx context.Context) (map[string]bool, error) {
+	active := make(map[string]bool)
+	var cont string
+	for {
+		var list vibedv1.VibedAppList
+		opts := []ctrlclient.ListOption{
+			ctrlclient.InNamespace(gc.appsNamespace),
+			ctrlclient.Limit(gcListPageSize),
+		}
+		if cont != "" {
+			opts = append(opts, ctrlclient.Continue(cont))
+		}
+		if err := gc.ctrlClient.List(ctx, &list, opts...); err != nil {
+			return nil, err
+		}
+		for i := range list.Items {
+			active[list.Items[i].Name] = true
+		}
+		cont = list.Continue
+		if cont == "" {
+			break
+		}
+	}
+	return active, nil
+}
+
+// cleanOrphanedSandboxes deletes legacy Sandbox CRs (managed-by=vibed +
+// artifact-id, created by the pre-v0.7 deployer) whose artifact-id is not a
+// live VibedApp CR name and that are older than maxAge. Skipped silently when
+// the agent-sandbox CRD isn't installed. Returns the number reaped (or, in
+// dry-run, the number that would be). Live /v1 sandboxes are SandboxClaims
+// owner-referenced to their VibedApp, so they aren't touched here.
+func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, active map[string]bool) int {
 	if gc.dynamicClient == nil {
-		return
+		return 0
 	}
 	sandboxGVR := schema.GroupVersionResource{
 		Group:    "agents.x-k8s.io",
@@ -177,6 +250,7 @@ func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeAr
 		Resource: "sandboxes",
 	}
 
+	reaped := 0
 	runner := newDeleteRunner(ctx)
 	opts := metav1.ListOptions{LabelSelector: labelManagedBy, Limit: gcListPageSize}
 	for {
@@ -184,7 +258,7 @@ func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeAr
 		if err != nil {
 			// agent-sandbox CRD not installed in this cluster: silent skip.
 			if k8serrors.IsNotFound(err) {
-				return
+				return reaped
 			}
 			gc.logger.Warn("failed to list sandboxes for GC", "error", err)
 			break
@@ -192,13 +266,20 @@ func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeAr
 
 		for _, sb := range list.Items {
 			artifactID := sb.GetLabels()[labelArtifactID]
-			if artifactID == "" || activeArtifacts[artifactID] {
+			if artifactID == "" || active[artifactID] {
+				continue
+			}
+			// MaxAge guard: never reap a freshly-created resource, even if
+			// orphaned — a delete racing an in-flight create would be wrong.
+			if age := time.Since(sb.GetCreationTimestamp().Time); age < gc.maxAge {
 				continue
 			}
 			if gc.dryRun {
 				gc.logger.Info("dry-run: would delete orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
+				reaped++
 				continue
 			}
+			reaped++
 			name := sb.GetName()
 			runner.run(func(ctx context.Context) {
 				if err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
@@ -219,12 +300,15 @@ func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeAr
 		opts.Continue = list.GetContinue()
 	}
 	runner.wait()
+	return reaped
 }
 
-// cleanOrphanedJobs deletes completed/failed build Jobs whose artifact
-// no longer exists in the store, or that are older than maxAge.
-func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context, activeArtifacts map[string]bool) {
+// cleanOrphanedJobs deletes completed/failed legacy build Jobs whose
+// artifact-id is not a live VibedApp CR name, or that are older than maxAge.
+// Returns the number reaped (or, in dry-run, the number that would be).
+func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context, active map[string]bool) int {
 	selector := labelManagedBy + "," + labelComponent + "=build"
+	reaped := 0
 	runner := newDeleteRunner(ctx)
 	opts := metav1.ListOptions{LabelSelector: selector, Limit: gcListPageSize}
 	for {
@@ -255,9 +339,11 @@ func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context, activeArtifac
 
 			if gc.dryRun {
 				gc.logger.Info("dry-run: would delete orphaned job", "job", job.Name, "artifactID", artifactID, "age", age)
+				reaped++
 				continue
 			}
 
+			reaped++
 			name := job.Name
 			runner.run(func(ctx context.Context) {
 				propagation := metav1.DeletePropagationBackground
@@ -278,11 +364,14 @@ func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context, activeArtifac
 		opts.Continue = jobs.Continue
 	}
 	runner.wait()
+	return reaped
 }
 
-// cleanOrphanedConfigMaps deletes ConfigMaps whose artifact no longer exists.
-func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context, activeArtifacts map[string]bool) {
+// cleanOrphanedConfigMaps deletes legacy ConfigMaps whose artifact-id is not a
+// live VibedApp CR name. Returns the number reaped (or, in dry-run, would be).
+func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context, active map[string]bool) int {
 	selector := labelManagedBy + "," + labelArtifactID
+	reaped := 0
 	runner := newDeleteRunner(ctx)
 	opts := metav1.ListOptions{LabelSelector: selector, Limit: gcListPageSize}
 	for {
@@ -299,15 +388,21 @@ func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context, activeA
 			}
 
 			artifactID := cm.Labels[labelArtifactID]
-			if artifactID == "" || activeArtifacts[artifactID] {
+			if artifactID == "" || active[artifactID] {
+				continue
+			}
+			// MaxAge guard: spare a freshly-created ConfigMap even if orphaned.
+			if age := time.Since(cm.CreationTimestamp.Time); age < gc.maxAge {
 				continue
 			}
 
 			if gc.dryRun {
 				gc.logger.Info("dry-run: would delete orphaned configmap", "configmap", cm.Name, "artifactID", artifactID)
+				reaped++
 				continue
 			}
 
+			reaped++
 			name := cm.Name
 			runner.run(func(ctx context.Context) {
 				if err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
@@ -325,11 +420,14 @@ func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context, activeA
 		opts.Continue = cms.Continue
 	}
 	runner.wait()
+	return reaped
 }
 
-// cleanOrphanedDeployments deletes Deployments (and their matching Services)
-// whose artifact no longer exists in the store.
-func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context, activeArtifacts map[string]bool) {
+// cleanOrphanedDeployments deletes legacy Deployments (and their matching
+// Services) whose artifact-id is not a live VibedApp CR name. Returns the
+// number of Deployments reaped (or, in dry-run, would be).
+func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context, active map[string]bool) int {
+	reaped := 0
 	runner := newDeleteRunner(ctx)
 	opts := metav1.ListOptions{LabelSelector: labelManagedBy, Limit: gcListPageSize}
 	for {
@@ -341,15 +439,21 @@ func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context, active
 
 		for _, deploy := range deployments.Items {
 			artifactID := deploy.Labels[labelArtifactID]
-			if artifactID == "" || activeArtifacts[artifactID] {
+			if artifactID == "" || active[artifactID] {
+				continue
+			}
+			// MaxAge guard: spare a freshly-created Deployment even if orphaned.
+			if age := time.Since(deploy.CreationTimestamp.Time); age < gc.maxAge {
 				continue
 			}
 
 			if gc.dryRun {
 				gc.logger.Info("dry-run: would delete orphaned deployment", "deployment", deploy.Name, "artifactID", artifactID)
+				reaped++
 				continue
 			}
 
+			reaped++
 			name := deploy.Name
 			runner.run(func(ctx context.Context) {
 				// Delete the Deployment.
@@ -376,6 +480,7 @@ func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context, active
 		opts.Continue = deployments.Continue
 	}
 	runner.wait()
+	return reaped
 }
 
 // isJobFinished returns true if the Job has completed or failed.
@@ -386,13 +491,4 @@ func isJobFinished(job *batchv1.Job) bool {
 		}
 	}
 	return false
-}
-
-// isNotFound returns true if the error is an api.ErrNotFound.
-func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	_, ok := err.(*api.ErrNotFound)
-	return ok
 }

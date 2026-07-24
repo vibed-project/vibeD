@@ -3,6 +3,7 @@ package gc
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -14,30 +15,106 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/metrics"
-	"github.com/vibed-project/vibeD/internal/store"
-	"github.com/vibed-project/vibeD/pkg/api"
+	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 	"log/slog"
 	"os"
 )
 
-const testNamespace = "default"
+const (
+	testNamespace     = "default"
+	testAppsNamespace = "vibed-apps"
+)
 
 // Shared metrics instance to avoid duplicate registration panics.
 var testMetrics = metrics.New()
 
-func newTestGC(t *testing.T, clientset *fake.Clientset, st store.ArtifactStore, dryRun bool) *GarbageCollector {
+// vibedScheme is a runtime.Scheme with the VibedApp CRD types registered.
+func vibedScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, vibedv1.AddToScheme(scheme))
+	return scheme
+}
+
+// ctrlClientWithApps builds a fake controller-runtime client seeded with the
+// given VibedApp CRs (in the apps namespace).
+func ctrlClientWithApps(t *testing.T, names ...string) ctrlclient.Client {
+	t.Helper()
+	b := ctrlfake.NewClientBuilder().WithScheme(vibedScheme(t))
+	for _, n := range names {
+		b = b.WithObjects(vibedApp(n))
+	}
+	return b.Build()
+}
+
+func vibedApp(name string) *vibedv1.VibedApp {
+	return &vibedv1.VibedApp{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: testAppsNamespace,
+		},
+	}
+}
+
+// pagedAppClient is a minimal client.Client that serves a fixed VibedApp set
+// with real Limit/Continue paging (the controller-runtime fake client ignores
+// Limit), so the collector's Continue loop is genuinely exercised. It uses a
+// small fixed page size regardless of the requested Limit and counts List
+// calls; listErr forces the fail-safe path.
+type pagedAppClient struct {
+	ctrlclient.Client // embedded for the methods we never call
+	apps              []string
+	pageSize          int
+	listErr           error
+	listCalls         int
+}
+
+func (p *pagedAppClient) List(_ context.Context, list ctrlclient.ObjectList, opts ...ctrlclient.ListOption) error {
+	p.listCalls++
+	if p.listErr != nil {
+		return p.listErr
+	}
+	appList, ok := list.(*vibedv1.VibedAppList)
+	if !ok {
+		return fmt.Errorf("pagedAppClient: unexpected list type %T", list)
+	}
+	lo := ctrlclient.ListOptions{}
+	lo.ApplyOptions(opts)
+
+	start := 0
+	if lo.Continue != "" {
+		start, _ = strconv.Atoi(lo.Continue)
+	}
+	end := len(p.apps)
+	cont := ""
+	if p.pageSize > 0 && start+p.pageSize < len(p.apps) {
+		end = start + p.pageSize
+		cont = strconv.Itoa(end)
+	}
+	appList.Items = nil
+	for _, n := range p.apps[start:end] {
+		appList.Items = append(appList.Items, *vibedApp(n))
+	}
+	appList.Continue = cont
+	return nil
+}
+
+func newTestGC(t *testing.T, clientset *fake.Clientset, ctrlClient ctrlclient.Client, legacy, dryRun bool) *GarbageCollector {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	gc, err := NewGarbageCollector(
-		clientset, nil, st, testNamespace,
+		clientset, nil, ctrlClient, testNamespace, testAppsNamespace,
 		config.GCConfig{
-			Enabled:  true,
-			Interval: "1h",
-			MaxAge:   "1s", // Short maxAge so tests don't need to wait
-			DryRun:   dryRun,
+			Enabled:      true,
+			Interval:     "1h",
+			MaxAge:       "1s", // Short maxAge so tests don't need to wait
+			DryRun:       dryRun,
+			LegacySweeps: legacy,
 		},
 		testMetrics, logger,
 	)
@@ -80,6 +157,13 @@ func runningJob(name, artifactID string) *batchv1.Job {
 }
 
 func testConfigMap(name, artifactID string, labels map[string]string) *corev1.ConfigMap {
+	return testConfigMapAt(name, artifactID, time.Time{}, labels)
+}
+
+// testConfigMapAt builds a legacy-labelled ConfigMap with an explicit creation
+// time so the MaxAge guard can be exercised. A zero createdAt is far in the
+// past (older than any maxAge), matching the earlier no-timestamp fixtures.
+func testConfigMapAt(name, artifactID string, createdAt time.Time, labels map[string]string) *corev1.ConfigMap {
 	l := map[string]string{
 		"app.kubernetes.io/managed-by": "vibed",
 		"vibed.dev/artifact-id":        artifactID,
@@ -89,9 +173,10 @@ func testConfigMap(name, artifactID string, labels map[string]string) *corev1.Co
 	}
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: testNamespace,
-			Labels:    l,
+			Name:              name,
+			Namespace:         testNamespace,
+			CreationTimestamp: metav1.NewTime(createdAt),
+			Labels:            l,
 		},
 	}
 }
@@ -118,15 +203,25 @@ func testService(name string) *corev1.Service {
 	}
 }
 
-func createArtifact(t *testing.T, st store.ArtifactStore, id, name string) {
-	t.Helper()
-	require.NoError(t, st.Create(context.Background(), &api.Artifact{
-		ID:        id,
-		Name:      name,
-		Status:    api.StatusRunning,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}))
+func TestGC_ListActiveApps_BuildsSetFromCRNamesAndPages(t *testing.T) {
+	ctx := context.Background()
+	names := []string{"app-a", "app-b", "app-c", "app-d", "app-e"}
+	client := &pagedAppClient{apps: names, pageSize: 2}
+
+	gc := newTestGC(t, fake.NewSimpleClientset(), client, true, false)
+	active, err := gc.listActiveApps(ctx)
+	require.NoError(t, err)
+
+	// Active set is keyed by CR name.
+	require.Len(t, active, len(names))
+	for _, n := range names {
+		assert.True(t, active[n], "expected %q in active set", n)
+	}
+	assert.False(t, active["not-an-app"])
+
+	// 5 apps at page size 2 => pages [2,2,1] => 3 List calls; the Continue loop
+	// must have followed the token twice.
+	assert.Equal(t, 3, client.listCalls, "expected the Continue loop to page through all apps")
 }
 
 func TestGC_CleansOrphanedJobs(t *testing.T) {
@@ -134,10 +229,8 @@ func TestGC_CleansOrphanedJobs(t *testing.T) {
 	clientset := fake.NewSimpleClientset(
 		completedJob("vibed-build-x1", "artifact-x", time.Now().Add(-2*time.Hour)),
 	)
-	st := store.NewMemoryStore()
-	// Don't create artifact "artifact-x" → it's orphaned.
-
-	gc := newTestGC(t, clientset, st, false)
+	// No VibedApp CR named "artifact-x" → it's orphaned.
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, false)
 	// Wait for maxAge to pass.
 	time.Sleep(2 * time.Millisecond)
 	gc.collect(ctx)
@@ -152,9 +245,7 @@ func TestGC_SkipsActiveJobs(t *testing.T) {
 	clientset := fake.NewSimpleClientset(
 		runningJob("vibed-build-y1", "artifact-y"),
 	)
-	st := store.NewMemoryStore()
-
-	gc := newTestGC(t, clientset, st, false)
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, false)
 	gc.collect(ctx)
 
 	jobs, err := clientset.BatchV1().Jobs(testNamespace).List(ctx, metav1.ListOptions{})
@@ -168,9 +259,7 @@ func TestGC_SkipsJobsWithinMaxAge(t *testing.T) {
 	clientset := fake.NewSimpleClientset(
 		completedJob("vibed-build-z1", "artifact-z", time.Now()),
 	)
-	st := store.NewMemoryStore()
-
-	gc := newTestGC(t, clientset, st, false)
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, false)
 	gc.collect(ctx)
 
 	jobs, err := clientset.BatchV1().Jobs(testNamespace).List(ctx, metav1.ListOptions{})
@@ -183,9 +272,7 @@ func TestGC_CleansOrphanedConfigMaps(t *testing.T) {
 	clientset := fake.NewSimpleClientset(
 		testConfigMap("vibed-cm-x1", "artifact-x", nil),
 	)
-	st := store.NewMemoryStore()
-
-	gc := newTestGC(t, clientset, st, false)
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, false)
 	gc.collect(ctx)
 
 	cms, err := clientset.CoreV1().ConfigMaps(testNamespace).List(ctx, metav1.ListOptions{})
@@ -205,9 +292,7 @@ func TestGC_CleansManyOrphansConcurrently(t *testing.T) {
 		objs = append(objs, testConfigMap(fmt.Sprintf("vibed-cm-%d", i), fmt.Sprintf("gone-%d", i), nil))
 	}
 	clientset := fake.NewSimpleClientset(objs...)
-	st := store.NewMemoryStore() // no active artifacts → all orphaned
-
-	gc := newTestGC(t, clientset, st, false)
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, false) // no active apps → all orphaned
 	gc.collect(ctx)
 
 	cms, err := clientset.CoreV1().ConfigMaps(testNamespace).List(ctx, metav1.ListOptions{})
@@ -222,9 +307,7 @@ func TestGC_SkipsStoreConfigMaps(t *testing.T) {
 			"app.kubernetes.io/component": "artifact-store",
 		}),
 	)
-	st := store.NewMemoryStore()
-
-	gc := newTestGC(t, clientset, st, false)
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, false)
 	gc.collect(ctx)
 
 	cms, err := clientset.CoreV1().ConfigMaps(testNamespace).List(ctx, metav1.ListOptions{})
@@ -238,9 +321,7 @@ func TestGC_CleansOrphanedDeployments(t *testing.T) {
 		testDeployment("my-app", "artifact-x"),
 		testService("my-app"),
 	)
-	st := store.NewMemoryStore()
-
-	gc := newTestGC(t, clientset, st, false)
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, false)
 	gc.collect(ctx)
 
 	deploys, err := clientset.AppsV1().Deployments(testNamespace).List(ctx, metav1.ListOptions{})
@@ -259,9 +340,7 @@ func TestGC_DryRunDoesNotDelete(t *testing.T) {
 		testConfigMap("vibed-cm-x1", "artifact-x", nil),
 		testDeployment("my-app", "artifact-x"),
 	)
-	st := store.NewMemoryStore()
-
-	gc := newTestGC(t, clientset, st, true) // dryRun=true
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, true) // dryRun=true
 	time.Sleep(2 * time.Millisecond)
 	gc.collect(ctx)
 
@@ -275,17 +354,75 @@ func TestGC_DryRunDoesNotDelete(t *testing.T) {
 	assert.Len(t, deploys.Items, 1, "dry-run should NOT delete deployments")
 }
 
+// TestGC_LegacySweepsDisabledSkips asserts that with LegacySweeps=false, no
+// legacy-labelled resource is touched even when it's a clear orphan past maxAge.
+func TestGC_LegacySweepsDisabledSkips(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(
+		completedJob("vibed-build-x1", "artifact-x", time.Now().Add(-2*time.Hour)),
+		testConfigMap("vibed-cm-x1", "artifact-x", nil),
+		testDeployment("my-app", "artifact-x"),
+	)
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), false, false) // legacy=false
+	time.Sleep(2 * time.Millisecond)
+	gc.collect(ctx)
+
+	jobs, _ := clientset.BatchV1().Jobs(testNamespace).List(ctx, metav1.ListOptions{})
+	assert.Len(t, jobs.Items, 1, "legacy sweeps disabled: job should NOT be deleted")
+	cms, _ := clientset.CoreV1().ConfigMaps(testNamespace).List(ctx, metav1.ListOptions{})
+	assert.Len(t, cms.Items, 1, "legacy sweeps disabled: configmap should NOT be deleted")
+	deploys, _ := clientset.AppsV1().Deployments(testNamespace).List(ctx, metav1.ListOptions{})
+	assert.Len(t, deploys.Items, 1, "legacy sweeps disabled: deployment should NOT be deleted")
+}
+
+// TestGC_ReapsOldSparesYoungOrphan asserts the MaxAge guard on the legacy
+// sweeps: an orphan (artifact-id absent from the live CR set) older than maxAge
+// is reaped, but one younger than maxAge is spared.
+func TestGC_ReapsOldSparesYoungOrphan(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(
+		testConfigMapAt("cm-old", "gone", time.Now().Add(-2*time.Hour), nil),
+		testConfigMapAt("cm-young", "gone", time.Now(), nil),
+	)
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t), true, false) // no live CRs
+	time.Sleep(2 * time.Millisecond)
+	gc.collect(ctx)
+
+	cms, err := clientset.CoreV1().ConfigMaps(testNamespace).List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, cms.Items, 1, "only the young orphan should survive")
+	assert.Equal(t, "cm-young", cms.Items[0].Name, "young orphan should be spared, old one reaped")
+}
+
+// TestGC_ListErrorFailsSafe asserts that when the VibedApp list fails, the GC
+// cycle makes no deletions (fail-safe) rather than treating the live set as
+// empty and reaping everything.
+func TestGC_ListErrorFailsSafe(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(
+		completedJob("vibed-build-x1", "artifact-x", time.Now().Add(-2*time.Hour)),
+	)
+	client := &pagedAppClient{listErr: fmt.Errorf("apiserver unavailable")}
+	gc := newTestGC(t, clientset, client, true, false)
+	time.Sleep(2 * time.Millisecond)
+	gc.collect(ctx)
+
+	jobs, err := clientset.BatchV1().Jobs(testNamespace).List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Len(t, jobs.Items, 1, "list error must fail safe: no deletions")
+}
+
 func TestGC_StopsOnContextCancel(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
-	st := store.NewMemoryStore()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	collector, err := NewGarbageCollector(
-		clientset, nil, st, testNamespace,
+		clientset, nil, ctrlClientWithApps(t), testNamespace, testAppsNamespace,
 		config.GCConfig{
-			Enabled:  true,
-			Interval: "100ms",
-			MaxAge:   "1s",
+			Enabled:      true,
+			Interval:     "100ms",
+			MaxAge:       "1s",
+			LegacySweeps: true,
 		},
 		testMetrics, logger,
 	)
@@ -307,23 +444,24 @@ func TestGC_StopsOnContextCancel(t *testing.T) {
 	}
 }
 
-func TestGC_KeepsResourcesWithActiveArtifact(t *testing.T) {
+// TestGC_KeepsResourcesWithLiveApp asserts a legacy-labelled resource whose
+// artifact-id matches a live VibedApp CR name is spared (the CR set is the
+// authoritative live set).
+func TestGC_KeepsResourcesWithLiveApp(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset(
 		testConfigMap("vibed-cm-a1", "artifact-a", nil),
 		testDeployment("my-app", "artifact-a"),
 	)
-	st := store.NewMemoryStore()
-	createArtifact(t, st, "artifact-a", "my-app")
-
-	gc := newTestGC(t, clientset, st, false)
+	// A VibedApp CR named "artifact-a" exists → its resources are live.
+	gc := newTestGC(t, clientset, ctrlClientWithApps(t, "artifact-a"), true, false)
 	gc.collect(ctx)
 
 	cms, err := clientset.CoreV1().ConfigMaps(testNamespace).List(ctx, metav1.ListOptions{})
 	require.NoError(t, err)
-	assert.Len(t, cms.Items, 1, "configmap with active artifact should NOT be deleted")
+	assert.Len(t, cms.Items, 1, "configmap for a live app should NOT be deleted")
 
 	deploys, err := clientset.AppsV1().Deployments(testNamespace).List(ctx, metav1.ListOptions{})
 	require.NoError(t, err)
-	assert.Len(t, deploys.Items, 1, "deployment with active artifact should NOT be deleted")
+	assert.Len(t, deploys.Items, 1, "deployment for a live app should NOT be deleted")
 }
