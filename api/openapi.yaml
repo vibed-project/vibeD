@@ -301,6 +301,84 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /v1/apps/{app_id}/share-links:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      tags: [apps]
+      operationId: createShareLink
+      summary: Mint a public share link for an app.
+      description: |
+        Creates a public, optionally password-protected link to an app the
+        authenticated user owns. The returned token is the credential.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password:
+                  type: string
+                  description: >-
+                    Optional password gate. Omitted or empty mints a link that
+                    requires no password.
+                expires_in:
+                  type: string
+                  description: >-
+                    Optional lifetime as a Go duration (e.g. "24h"). A "d"
+                    suffix is accepted as days (e.g. "7d"). Omitted or empty
+                    mints a link that never expires.
+      responses:
+        '200':
+          description: Share link created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareLink' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [apps]
+      operationId: listShareLinks
+      summary: List an app's share links.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: >-
+            Maximum number of share links to return. Omitted or <= 0 returns
+            every link (backward compatible with pre-pagination clients).
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: >-
+            Number of share links to skip before the first returned item.
+            Negative values are treated as 0.
+      responses:
+        '200':
+          description: List of share links.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ShareLink' }
+                  total:
+                    type: integer
+                    description: >-
+                      Total number of share links for the app, before
+                      limit/offset slicing.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /v1/templates:
     get:
       tags: [templates]
@@ -444,6 +522,20 @@ components:
         lane:             { type: string }
         source_hash:      { type: string }
         rolled_back_from: { type: integer }
+
+    ShareLink:
+      type: object
+      description: A public, optionally password-protected link to an app.
+      required: [token, artifact_id, created_by, has_password, created_at, revoked]
+      properties:
+        token:        { type: string, description: The credential; a link resolves via this token. }
+        artifact_id:  { type: string, description: The app the link points at. }
+        created_by:   { type: string, description: Owner who minted the link. }
+        has_password: { type: boolean, description: Whether resolving requires a password. }
+        expires_at:   { type: string, format: date-time, description: Expiry instant; absent means it never expires. }
+        created_at:   { type: string, format: date-time }
+        revoked:      { type: boolean }
+        url:          { type: string, format: uri, description: Public share URL; absent when no public origin is configured. }
 
     Phase:
       type: string

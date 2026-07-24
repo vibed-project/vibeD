@@ -446,7 +446,7 @@ export async function createShareLink(
   password?: string,
   expiresIn?: string,
 ): Promise<ShareLink> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${artifactId}/share-link`, {
+  const res = await fetchWithTimeout(`${BASE}/v1/apps/${artifactId}/share-links`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password: password || '', expires_in: expiresIn || '' }),
@@ -456,9 +456,10 @@ export async function createShareLink(
 }
 
 export async function listShareLinks(artifactId: string): Promise<ShareLink[]> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${artifactId}/share-links`);
+  const res = await fetchWithTimeout(`${BASE}/v1/apps/${artifactId}/share-links`);
   if (!res.ok) throw httpError(res, "Failed to list share links");
-  return res.json();
+  const data: { items?: ShareLink[]; total?: number } = await res.json();
+  return data.items ?? [];
 }
 
 export async function revokeShareLink(token: string): Promise<void> {

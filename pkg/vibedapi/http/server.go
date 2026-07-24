@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -27,6 +28,7 @@ import (
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/deploy"
+	"github.com/vibed-project/vibeD/pkg/api"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -581,6 +583,161 @@ func (s *Server) RollbackApp(w http.ResponseWriter, r *http.Request, appID AppID
 	}
 	resp.StatusUrl = strPtr("/v1/apps/" + res.AppID)
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// CreateShareLink mints a public share link for an app the caller owns. The
+// body is optional JSON: {password?, expires_in?}. A non-empty expires_in that
+// fails to parse is a 400 (silently minting a permanent link when the caller
+// asked for a time-limited one would be a fail-open on a security control).
+func (s *Server) CreateShareLink(w http.ResponseWriter, r *http.Request, appID AppID) {
+	if s.Deploy == nil {
+		notImplemented(w, "create_share_link", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+
+	// The body is optional — an empty request mints a passwordless, never-
+	// expiring link — so an EOF (no body) is not an error.
+	var body CreateShareLinkJSONRequestBody
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, Error{Code: "bad_body", Message: "body must be JSON: " + err.Error()})
+			return
+		}
+	}
+	password := ""
+	if body.Password != nil {
+		password = *body.Password
+	}
+	var expiresIn time.Duration
+	if body.ExpiresIn != nil && *body.ExpiresIn != "" {
+		d, err := parseExpiresIn(*body.ExpiresIn)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, Error{Code: "bad_expires_in", Message: err.Error()})
+			return
+		}
+		expiresIn = d
+	}
+
+	link, err := s.Deploy.CreateShareLink(r.Context(), owner, appID, password, expiresIn)
+	if err != nil {
+		// A non-owner (or missing app) surfaces as ErrNotFound to avoid leaking
+		// existence, matching the read/redeploy handlers.
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		if forbidden(err) {
+			writeJSON(w, http.StatusForbidden, Error{Code: "forbidden", Message: err.Error()})
+			return
+		}
+		// e.g. "share links require the sqlite store backend".
+		writeJSON(w, http.StatusBadRequest, Error{Code: "create_share_link_failed", Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIShareLink(link))
+}
+
+// ListShareLinks returns an app's share links (ownership-checked), paged with
+// optional limit/offset that mirror ListApps: total is the full count before
+// slicing so pages report it consistently.
+func (s *Server) ListShareLinks(w http.ResponseWriter, r *http.Request, appID AppID, params ListShareLinksParams) {
+	if s.Deploy == nil {
+		notImplemented(w, "list_share_links", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+
+	// Fetch the full set (ownership-checked) so total is accurate, then slice
+	// in-handler — mirroring how Service.List computes its total. Share links
+	// per app are few, so materializing all of them is cheap.
+	links, err := s.Deploy.ListShareLinks(r.Context(), owner, appID, 0, 0)
+	if err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		if forbidden(err) {
+			writeJSON(w, http.StatusForbidden, Error{Code: "forbidden", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, Error{Code: "list_share_links_failed", Message: err.Error()})
+		return
+	}
+
+	total := len(links)
+	// limit <= 0 (or absent) returns everything from offset; a negative offset
+	// clamps to 0, matching the ListApps contract.
+	offset := 0
+	if params.Offset != nil {
+		offset = *params.Offset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := total
+	if params.Limit != nil && *params.Limit > 0 && offset+*params.Limit < end {
+		end = offset + *params.Limit
+	}
+	page := links[offset:end]
+
+	items := make([]ShareLink, 0, len(page))
+	for i := range page {
+		items = append(items, toAPIShareLink(&page[i]))
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Items []ShareLink `json:"items"`
+		Total int         `json:"total"`
+	}{Items: items, Total: total})
+}
+
+// parseExpiresIn parses a share-link lifetime. It accepts any Go duration
+// (e.g. "24h") plus the "d"-suffixed day shorthand (e.g. "7d") the dashboard
+// emits, which time.ParseDuration itself does not understand.
+func parseExpiresIn(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		d, err := time.ParseDuration(strings.TrimSuffix(s, "d") + "h")
+		if err != nil {
+			return 0, fmt.Errorf("invalid expires_in %q (use e.g. \"24h\" or \"7d\")", s)
+		}
+		return d * 24, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid expires_in %q (use e.g. \"24h\" or \"7d\")", s)
+	}
+	return d, nil
+}
+
+// toAPIShareLink maps the internal api.ShareLink to the generated wire type.
+func toAPIShareLink(l *api.ShareLink) ShareLink {
+	out := ShareLink{
+		Token:       l.Token,
+		ArtifactId:  l.ArtifactID,
+		CreatedBy:   l.CreatedBy,
+		HasPassword: l.HasPassword,
+		CreatedAt:   l.CreatedAt,
+		Revoked:     l.Revoked,
+	}
+	if l.ExpiresAt != nil {
+		t := *l.ExpiresAt
+		out.ExpiresAt = &t
+	}
+	if l.URL != "" {
+		out.Url = strPtr(l.URL)
+	}
+	return out
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
