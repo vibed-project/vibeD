@@ -292,3 +292,25 @@ func TestPackageJSONInSubdirIsIgnored(t *testing.T) {
 		t.Errorf("rule = %d, want %d (Python, because root-level package.json absent)", d.Rule, RulePython)
 	}
 }
+
+func TestMacOSMetadataIgnored(t *testing.T) {
+	// `tar czf x.tgz .` on macOS embeds AppleDouble resource forks (._*),
+	// .DS_Store, and (for zips) a __MACOSX/ tree. Left in, "._." and
+	// "._index.html" become root files whose extensions poison the
+	// static-asset check, misrouting a pure-static app off the fast lane onto
+	// the general-lane fallback. The classifier must ignore this cruft.
+	d := classify(t, map[string]string{
+		"index.html":            "<h1>hi</h1>",
+		"styles.css":            "body{}",
+		"._.":                   "\x00\x05\x16\x07", // AppleDouble for the "." dir
+		"._index.html":          "\x00\x05\x16\x07", // AppleDouble resource fork
+		".DS_Store":             "\x00\x00\x00\x01",
+		"__MACOSX/._index.html": "\x00\x05\x16\x07",
+	})
+	if d.Lane != vibedv1.LaneFast || d.Template != TemplateStaticNginx {
+		t.Errorf("macOS-cruft static site classified as {lane=%s tpl=%s}, want {fast static-nginx}", d.Lane, d.Template)
+	}
+	if d.Rule != RuleStaticOnly {
+		t.Errorf("rule = %d, want %d (static-only); macOS metadata must not invalidate rule 1", d.Rule, RuleStaticOnly)
+	}
+}
