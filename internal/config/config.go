@@ -133,30 +133,6 @@ type APIKeyConf struct {
 	Scopes     []string         `yaml:"scopes"`               // Allowed scopes (empty = all)
 	Role       string           `yaml:"role,omitempty"`       // "admin" or "user" (default: "user")
 	Department string           `yaml:"department,omitempty"` // Auto-assign to this department on provisioning
-	Storage    *UserStorageConf `yaml:"storage,omitempty"`    // Per-user storage override
-}
-
-// UserStorageConf configures per-user artifact storage.
-type UserStorageConf struct {
-	Backend string          `yaml:"backend"` // "github" or "gitlab"
-	GitHub  *UserGitHubConf `yaml:"github,omitempty"`
-	GitLab  *UserGitLabConf `yaml:"gitlab,omitempty"`
-}
-
-// UserGitHubConf is per-user GitHub storage configuration.
-type UserGitHubConf struct {
-	Owner  string `yaml:"owner"`
-	Repo   string `yaml:"repo"`
-	Branch string `yaml:"branch,omitempty"` // defaults "main"
-	Token  string `yaml:"token,omitempty"`  // supports "env:VAR" and "file:PATH"
-}
-
-// UserGitLabConf is per-user GitLab storage configuration.
-type UserGitLabConf struct {
-	URL       string `yaml:"url,omitempty"` // defaults "https://gitlab.com"
-	ProjectID int    `yaml:"projectID"`
-	Branch    string `yaml:"branch,omitempty"` // defaults "main"
-	Token     string `yaml:"token,omitempty"`  // supports "env:VAR" and "file:PATH"
 }
 
 // TLSConf holds TLS certificate configuration.
@@ -201,13 +177,8 @@ type DeploymentConfig struct {
 }
 
 type StorageConfig struct {
-	Backend string             `yaml:"backend"` // "local", "github", or "gitlab"
-	Local   LocalStorageConfig `yaml:"local"`
-	GitHub  GitHubConfig       `yaml:"github"`
-	GitLab  GitLabConfig       `yaml:"gitlab"`
-	// Tarball configures the source-blob store for the /v1/deploy path
-	// (separate from the file-tree Storage above, which serves the legacy
-	// MCP build path).
+	// Tarball configures the source-blob store for the /v1/deploy path — how
+	// the uploaded source tarball is persisted so vibed-agent can pull it.
 	Tarball TarballConfig `yaml:"tarball"`
 }
 
@@ -237,25 +208,6 @@ type S3TarballConfig struct {
 	AccessKey  string `yaml:"accessKey"`
 	SecretKey  string `yaml:"secretKey"`
 	PresignTTL string `yaml:"presignTTL"` // GET URL validity (default "15m")
-}
-
-type LocalStorageConfig struct {
-	BasePath string `yaml:"basePath"`
-}
-
-type GitHubConfig struct {
-	Owner     string `yaml:"owner"`
-	Repo      string `yaml:"repo"`
-	Branch    string `yaml:"branch"`
-	TokenFile string `yaml:"tokenFile"`
-}
-
-// GitLabConfig holds global GitLab storage configuration.
-type GitLabConfig struct {
-	URL       string `yaml:"url"`       // GitLab instance URL (defaults to "https://gitlab.com")
-	ProjectID int    `yaml:"projectID"` // GitLab project ID
-	Branch    string `yaml:"branch"`    // Branch name (defaults to "main")
-	Token     string `yaml:"token"`     // Access token or "env:VAR" / "file:PATH"
 }
 
 type RegistryConfig struct {
@@ -331,17 +283,6 @@ func Default() *Config {
 			ReadyTimeout:    10 * time.Minute, // generous; cold image pulls + Sandbox reconcile can be slow
 		},
 		Storage: StorageConfig{
-			Backend: "local",
-			Local: LocalStorageConfig{
-				BasePath: "/data/vibed/artifacts",
-			},
-			GitHub: GitHubConfig{
-				Branch: "main",
-			},
-			GitLab: GitLabConfig{
-				URL:    "https://gitlab.com",
-				Branch: "main",
-			},
 			Tarball: TarballConfig{
 				Backend: "served",
 				Served: ServedTarballConfig{
@@ -444,18 +385,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("VIBED_DEPLOYMENT_NAMESPACE"); v != "" {
 		cfg.Deployment.Namespace = v
-	}
-	if v := os.Getenv("VIBED_STORAGE_BACKEND"); v != "" {
-		cfg.Storage.Backend = v
-	}
-	if v := os.Getenv("VIBED_STORAGE_LOCAL_BASE_PATH"); v != "" {
-		cfg.Storage.Local.BasePath = v
-	}
-	if v := os.Getenv("VIBED_STORAGE_GITHUB_OWNER"); v != "" {
-		cfg.Storage.GitHub.Owner = v
-	}
-	if v := os.Getenv("VIBED_STORAGE_GITHUB_REPO"); v != "" {
-		cfg.Storage.GitHub.Repo = v
 	}
 	if v := os.Getenv("VIBED_REGISTRY_ENABLED"); v != "" {
 		cfg.Registry.Enabled, _ = strconv.ParseBool(v)
@@ -601,23 +530,6 @@ func validate(cfg *Config) error {
 	validTargets := map[string]bool{"auto": true, "kubernetes": true}
 	if !validTargets[cfg.Deployment.PreferredTarget] {
 		return fmt.Errorf("deployment.preferredTarget must be one of: auto, kubernetes (got %q)", cfg.Deployment.PreferredTarget)
-	}
-
-	validStorageBackends := map[string]bool{"local": true, "github": true, "gitlab": true}
-	if !validStorageBackends[cfg.Storage.Backend] {
-		return fmt.Errorf("storage.backend must be one of: local, github, gitlab (got %q)", cfg.Storage.Backend)
-	}
-
-	if cfg.Storage.Backend == "github" {
-		if cfg.Storage.GitHub.Owner == "" || cfg.Storage.GitHub.Repo == "" {
-			return fmt.Errorf("storage.github.owner and storage.github.repo are required when storage.backend is github")
-		}
-	}
-
-	if cfg.Storage.Backend == "gitlab" {
-		if cfg.Storage.GitLab.ProjectID == 0 {
-			return fmt.Errorf("storage.gitlab.projectID is required when storage.backend is gitlab")
-		}
 	}
 
 	// Built-in backends are always valid; an out-of-tree backend registered in

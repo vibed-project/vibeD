@@ -123,7 +123,7 @@ func Run(cfg *config.Config, logger *slog.Logger) {
 	logger.Info("starting vibeD",
 		"transport", cfg.Server.Transport,
 		"namespace", cfg.Deployment.Namespace,
-		"storage", cfg.Storage.Backend,
+		"tarballStore", cfg.Storage.Tarball.Backend,
 		"auth", cfg.Auth.Enabled,
 		"tls", cfg.Auth.TLS.Enabled,
 	)

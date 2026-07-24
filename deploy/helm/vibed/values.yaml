@@ -294,9 +294,6 @@ config:
     #     intentionally generous.
     readyTimeout: "10m"
   storage:
-    backend: "local"
-    local:
-      basePath: "/data/vibed/artifacts"
     # -- Source-blob store for the /v1/deploy path.
     #    "served" keeps the tarball on vibeD's PVC and serves it at an
     #      in-cluster URL — DEV ONLY. Once a restrictive sandbox NetworkPolicy
