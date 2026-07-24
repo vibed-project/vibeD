@@ -34,13 +34,6 @@ export interface ArtifactVersion {
   created_by: string;
 }
 
-export interface TargetInfo {
-  name: string;
-  available: boolean;
-  preferred: boolean;
-  description: string;
-}
-
 export interface LogsResponse {
   artifact_id: string;
   logs: string[];
@@ -283,12 +276,6 @@ export async function deleteArtifact(id: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw httpError(res, "Failed to delete app");
 }
 
-export async function fetchTargets(): Promise<TargetInfo[]> {
-  const res = await fetchWithTimeout(`${BASE}/api/targets`);
-  if (!res.ok) throw httpError(res, "Failed to fetch targets");
-  return res.json();
-}
-
 export async function fetchWhoami(): Promise<WhoAmI> {
   const res = await fetchWithTimeout(`${BASE}/api/whoami`);
   if (!res.ok) throw httpError(res, "Failed to fetch user info");
@@ -335,24 +322,6 @@ export async function rollbackArtifact(id: string, version: number): Promise<voi
     body: JSON.stringify({ version }),
   });
   if (!res.ok) throw httpError(res, "Failed to roll back app");
-}
-
-export async function shareArtifact(id: string, userIds: string[]): Promise<void> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}/share`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_ids: userIds }),
-  });
-  if (!res.ok) throw httpError(res, "Failed to share artifact");
-}
-
-export async function unshareArtifact(id: string, userIds: string[]): Promise<void> {
-  const res = await fetchWithTimeout(`${BASE}/api/artifacts/${id}/unshare`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_ids: userIds }),
-  });
-  if (!res.ok) throw httpError(res, "Failed to unshare artifact");
 }
 
 // User management (admin)

@@ -431,7 +431,6 @@ function App() {
         <ShareDialog
           artifactId={shareArtifactId}
           onClose={() => setShareArtifactId(null)}
-          onShareComplete={loadData}
         />
       )}
     </div>

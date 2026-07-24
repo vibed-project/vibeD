@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   fetchArtifact,
-  shareArtifact,
-  unshareArtifact,
   createShareLink,
   listShareLinks,
   revokeShareLink,
@@ -14,7 +12,6 @@ import './ShareDialog.css'
 interface Props {
   artifactId: string
   onClose: () => void
-  onShareComplete: () => void
 }
 
 function generatePassword(length = 16): string {
@@ -39,15 +36,10 @@ function CopyButton({ value }: { value: string }) {
   )
 }
 
-export default function ShareDialog({ artifactId, onClose, onShareComplete }: Props) {
+export default function ShareDialog({ artifactId, onClose }: Props) {
   const [artifact, setArtifact] = useState<Artifact | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-
-  // User-based sharing
-  const [inputValue, setInputValue] = useState('')
-  const [sharing, setSharing] = useState(false)
-  const [removing, setRemoving] = useState<string | null>(null)
 
   // Share links
   const [links, setLinks] = useState<ShareLink[]>([])
@@ -89,39 +81,6 @@ export default function ShareDialog({ artifactId, onClose, onShareComplete }: Pr
     return () => { mounted = false }
   }, [artifactId, loadLinks])
 
-  const handleShare = async () => {
-    const userIds = inputValue.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-    if (userIds.length === 0) return
-    setSharing(true)
-    setError(null)
-    try {
-      await shareArtifact(artifactId, userIds)
-      setInputValue('')
-      const updated = await fetchArtifact(artifactId)
-      setArtifact(updated)
-      onShareComplete()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to share')
-    } finally {
-      setSharing(false)
-    }
-  }
-
-  const handleRemove = async (userId: string) => {
-    setRemoving(userId)
-    setError(null)
-    try {
-      await unshareArtifact(artifactId, [userId])
-      const updated = await fetchArtifact(artifactId)
-      setArtifact(updated)
-      onShareComplete()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remove')
-    } finally {
-      setRemoving(null)
-    }
-  }
-
   const handleCreateLink = async () => {
     setCreating(true)
     setError(null)
@@ -153,13 +112,12 @@ export default function ShareDialog({ artifactId, onClose, onShareComplete }: Pr
   }
 
   const activeLinks = links.filter((l) => !l.revoked)
-  const sharedWith = artifact?.shared_with ?? []
 
   return (
     <div className="sd-overlay" onClick={onClose}>
       <div className="sd-panel" onClick={(e) => e.stopPropagation()}>
         <div className="sd-header">
-          <h3>Share Artifact</h3>
+          <h3>Share link</h3>
           <button className="sd-close" onClick={onClose}>&times;</button>
         </div>
 
@@ -276,49 +234,6 @@ export default function ShareDialog({ artifactId, onClose, onShareComplete }: Pr
                     ))}
                   </div>
                 )}
-              </div>
-
-              {/* ── User-based sharing ── */}
-              <div className="sd-section">
-                <div className="sd-section-title">Shared with users</div>
-                {sharedWith.length === 0 ? (
-                  <div className="sd-empty">Not shared with anyone</div>
-                ) : (
-                  <div className="sd-user-list">
-                    {sharedWith.map((uid) => (
-                      <div key={uid} className="sd-user-row">
-                        <span className="sd-user-name">{uid}</span>
-                        <span className="sd-user-perm">read-only</span>
-                        <button
-                          className="sd-remove-btn"
-                          onClick={() => handleRemove(uid)}
-                          disabled={removing === uid}
-                        >
-                          {removing === uid ? '…' : 'Remove'}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="sd-input-row" style={{ marginTop: '0.5rem' }}>
-                  <input
-                    className="sd-input"
-                    type="text"
-                    placeholder="User IDs (comma-separated)"
-                    value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !sharing) handleShare() }}
-                    disabled={sharing}
-                  />
-                  <button
-                    className="sd-share-btn"
-                    onClick={handleShare}
-                    disabled={sharing || inputValue.trim().length === 0}
-                  >
-                    {sharing ? 'Sharing…' : 'Share'}
-                  </button>
-                </div>
-                <p className="sd-hint">Shared users get read-only access (view status, logs, URL).</p>
               </div>
             </>
           )}

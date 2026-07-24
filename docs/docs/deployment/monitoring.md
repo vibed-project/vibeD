@@ -76,7 +76,7 @@ pool is being drained faster than it replenishes.
 | `vibed_http_requests_total` | Counter | `method`, `path`, `status_code` | HTTP API requests |
 | `vibed_http_request_duration_seconds` | Histogram | `method`, `path` | HTTP request duration (default Prometheus buckets) |
 
-HTTP paths are normalized to prevent high cardinality (e.g., `/api/artifacts/:id` instead of individual artifact IDs).
+HTTP paths are normalized to prevent high cardinality (e.g., `/v1/apps/:id` instead of individual app IDs).
 
 ### SSE Metrics
 
@@ -114,7 +114,7 @@ These are served on the main server's `/metrics` (:8080). The bring-your-own bas
 | `status` | `success`, `error` |
 | `language` | `nodejs`, `python`, `go`, `static` |
 | `target` | `sandbox`, `kubernetes` (for `vibed_deploys_total` / `vibed_artifacts_active`); the template name, e.g. `node-24`, `python-313`, `static-nginx` (for `vibed_deploy_duration_seconds`) |
-| `tool` | `deploy_artifact`, `update_artifact`, `list_artifacts`, `get_artifact_status`, `get_artifact_logs`, `delete_artifact`, `list_deployment_targets` |
+| `tool` | `deploy_artifact`, `update_artifact`, `list_artifacts`, `get_artifact_status`, `get_artifact_logs`, `delete_artifact` |
 
 ## Scraping with Prometheus
 
@@ -282,15 +282,7 @@ export VIBED_TRACING_SAMPLE_RATE=1.0
 
 ### Trace Structure
 
-A deploy operation produces spans like:
-
-```
-orchestrator.Deploy (root)
-  +-- builder.Build
-  +-- deployer.Deploy
-```
-
-Update and rollback operations are similarly instrumented. HTTP requests are traced via the `otelhttp` middleware, which extracts and injects `traceparent` headers.
+HTTP requests are traced via the `otelhttp` middleware, which extracts and injects `traceparent` headers, so each `/v1` call (deploy, update, rollback, delete) is the root span of its trace with the deploy-path work nested underneath. Wire in an OTLP backend (below) to see the full span tree.
 
 ### Viewing Traces
 

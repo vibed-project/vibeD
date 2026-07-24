@@ -41,11 +41,11 @@ Requires [authentication](/docs/configuration/authentication) and the SQLite sto
 ## REST API
 
 ```
-GET /api/artifacts/{id}/share-links
+GET /v1/apps/{id}/share-links
 ```
 
-:::caution Deprecated endpoint
-This route is part of the legacy `/api/artifacts*` surface, which is deprecated
-(responses carry a `Deprecation: true` header). List share links through the MCP
-tool above.
+:::note Endpoint moved in v0.7
+Share-link listing moved to `GET /v1/apps/{id}/share-links`. The legacy
+`GET /api/artifacts/{id}/share-links` route (deprecated in v0.6) was removed in
+v0.7 — see [Migrating to v0.7](../migrating-to-v0.7.md).
 :::

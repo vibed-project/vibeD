@@ -225,6 +225,37 @@ curl -X POST -H "Authorization: Bearer $VIBED_TOKEN" \
 
 Returns the same `App` shape as a deploy: `200` when the app is `Ready` within the latency budget, `202` with a `status_url` to poll otherwise. Responses: `200`, `202`, `400` (unknown version), `401`, `404`.
 
+## Share links
+
+A **share link** is a public, optionally password-protected URL that lets an account-less viewer see an app's name, status, and URL. Creating and listing links is owner-scoped and lives under `/v1`; resolving and revoking a link are served under `/api` (the resolve route is deliberately unauthenticated so a recipient without a vibeD account can open it).
+
+Share links require a durable store (the SQLite backend); with the in-memory/configmap backends these routes are unavailable.
+
+### `POST /v1/apps/{id}/share-links`
+
+Create a share link for an app the caller owns.
+
+```bash
+curl -X POST -H "Authorization: Bearer $VIBED_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"password": "s3cret", "expires_in": "7d"}' \
+  http://localhost:8080/v1/apps/my-tool/share-links
+```
+
+`password` and `expires_in` are optional; an empty `expires_in` means no expiry, and a non-empty value that isn't a valid Go duration is rejected with `400`. The response is a `ShareLink` (`token`, `has_password`, `expires_at`, `url`, …). Responses: `200`, `400`, `401`, `404`.
+
+### `GET /v1/apps/{id}/share-links`
+
+List an app's share links (owner or admin only). Returns `{items, total}`. Responses: `200`, `401`, `404`.
+
+### `GET /api/share/{token}` · `POST /api/share/{token}`
+
+**Public** resolution of a share link — no bearer token. `GET` returns the app's name, status, and URL; a password-protected link returns `401` until the password is supplied via `POST` with `{"password": "..."}`. Expired or revoked links return `404` (no information leakage). This route is intentionally exempt from the auth middleware.
+
+### `DELETE /api/share-links/{token}`
+
+Revoke a share link by token (owner or admin). The link returns `404` afterwards. Responses: `204`/`200`, `401`, `404`.
+
 ## Governance
 
 ### `GET /v1/audit`
@@ -272,15 +303,19 @@ The source blob that the in-sandbox agent (`vibed-agent`) pulls on startup. This
 
 It sits behind the same auth middleware as `/v1`, so only the shared agent token can pull. In production the `served` backend is not used: sandboxes have no cluster DNS or cluster-internal egress under the restrictive NetworkPolicy, so the agent instead pulls from a pre-signed **S3** URL and vibeD serves nothing here. See [Storage](../configuration/storage.md) for `served` vs `s3`.
 
-## Legacy `/api` endpoints
+## Other `/api` endpoints
 
-The original REST surface under **`/api/artifacts*`** predates the `/v1` API documented above and exposes the same deploy/list/status/logs operations.
+The original REST surface under **`/api/artifacts*`** (deprecated in v0.6) and **`/api/targets`** were **removed in v0.7**; the artifact lifecycle now lives entirely under `/v1/apps`. See [Migrating to v0.7](../migrating-to-v0.7.md) for the endpoint mapping.
 
-:::caution `/api/artifacts*` is deprecated
-The legacy `/api/artifacts*` endpoints are **deprecated** in favor of the `/v1` API on this page. Their responses now carry a `Deprecation: true` header and an `X-Deprecated-Use: /v1/apps` hint, and `vibed` logs a one-time warning at startup the first time one is served. They still work today, but migrate to `/v1`; removal is planned for a future release.
+These `/api` routes remain — they have no `/v1` equivalent:
 
-**Not deprecated** — these have no `/v1` equivalent, so keep using them: `/api/share/` (public share links), `/api/events` (dashboard SSE stream), and the admin routes `/api/users`, `/api/departments`, `/api/whoami`, and `/api/targets`.
-:::
+| Path                          | Purpose                                                        |
+| ----------------------------- | ------------------------------------------------------------- |
+| `GET`/`POST` `/api/share/{token}` | Public [share-link](#share-links) resolution (unauthenticated) |
+| `DELETE /api/share-links/{token}` | Revoke a [share link](#share-links)                       |
+| `/api/events`                 | Dashboard SSE stream of app lifecycle events                  |
+| `/api/whoami`                 | Authenticated caller's identity                              |
+| `/api/users`, `/api/departments` | Admin user/department management                          |
 
 ## MCP endpoint
 

@@ -40,7 +40,6 @@ These run without a cluster and are included in CI.
 | **Runner Pool** | `internal/pool/{pool,runner}_test.go` | ~12 | Claim warm/cold, Release recycle, replenish, sweep eviction, drain, resource spec rendering |
 | **Runner Deployer** | `internal/deployer/runner_test.go` | 7 | Deploy / Update / Delete / GetLogs, inject failure releases runner, crashed-process detection, language gate |
 | **Preview Proxy** | `internal/preview/handler_test.go` | 6 | Path parsing + redirect, ownership-scoped 404, non-runner rejection, header stripping, X-Forwarded-* hints, upstream 502 |
-| **Promote Guard** | `internal/orchestrator/promote_test.go` | 5 | `canPromote` accepts only `mode=preview, target=runner` |
 
 ### Fully Automated (Integration Tests)
 
@@ -49,8 +48,7 @@ These require a Kind cluster (`make dev` or `make test-integration-setup`). Tagg
 | Feature | Test File | Tests | What's Covered |
 |---------|-----------|-------|----------------|
 | **K8s Deployer** | `internal/deployer/kubernetes_integration_test.go` | 7 | Deploy, update, delete, logs, URL, full lifecycle |
-| **Orchestrator** | `internal/orchestrator/orchestrator_integration_test.go` | 11 | Deploy, list, filter, update, delete, targets, invalid input, duplicates, build failures, logs |
-| **HTTP API** | `internal/frontend/handler_integration_test.go` | 3 | List artifacts, list targets, 404 for missing artifact |
+| **HTTP API** | `internal/frontend/handler_integration_test.go` | 3 | List apps, 404 for missing app |
 | **Authentication** | `internal/auth/auth_integration_test.go` | 8 | Valid/invalid keys, missing token, skip paths, env var keys |
 | **Health Checks** | `internal/health/health_integration_test.go` | 7 | Liveness, readiness, component details, not-ready state |
 | **Environment Detection** | `internal/environment/detector_integration_test.go` | 5 | K8s environment detection, target selection |
@@ -69,7 +67,7 @@ The following features were implemented in v0.1.2 and need manual verification o
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
-| 1 | Stdout traces (dev mode) | Set `tracing.enabled: true` with no endpoint. Deploy an artifact. | Trace JSON printed to stderr with spans: `orchestrator.Deploy`, `builder.Build`, `deployer.Deploy` |
+| 1 | Stdout traces (dev mode) | Set `tracing.enabled: true` with no endpoint. Deploy an artifact. | Trace JSON printed to stderr with a root span for the `/v1` deploy request and its nested deploy-path spans |
 | 2 | OTLP export | Set `tracing.endpoint: "http://jaeger:4317"`. Deploy an artifact. Open Jaeger UI. | Trace visible with `vibed` service name and child spans |
 | 3 | Sample rate | Set `tracing.sampleRate: 0.0`. Deploy 10 artifacts. | No traces emitted |
 | 4 | Disabled (zero overhead) | Set `tracing.enabled: false`. Deploy an artifact. | No trace output, no performance impact |
@@ -85,18 +83,18 @@ The following features were implemented in v0.1.2 and need manual verification o
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
-| 1 | Create link | `POST /api/artifacts/{id}/share-link` with `{"password": "test", "expires_in": "24h"}` | 201 with token, has_password: true, expires_at set |
+| 1 | Create link | `POST /v1/apps/{id}/share-links` with `{"password": "test", "expires_in": "24h"}` | 201 with token, has_password: true, expires_at set |
 | 2 | Access without password | `GET /api/share/{token}` (password-protected link) | 401 "password required" |
 | 3 | Access with correct password | `POST /api/share/{token}` with `{"password": "test"}` | 200 with artifact name, status, URL |
 | 4 | Access with wrong password | `POST /api/share/{token}` with `{"password": "wrong"}` | 401 "password required" |
 | 5 | Access no-password link | Create link without password. `GET /api/share/{token}` | 200 with artifact info |
 | 6 | Expired link | Create link with `expires_in: "1s"`. Wait 2s. `GET /api/share/{token}` | 404 |
 | 7 | Revoked link | Create link. `DELETE /api/share-links/{token}`. `GET /api/share/{token}` | 404 |
-| 8 | List links | `GET /api/artifacts/{id}/share-links` | Array of share links |
+| 8 | List links | `GET /v1/apps/{id}/share-links` | Array of share links |
 | 9 | MCP create_share_link | Call via MCP tool | Returns token and share link metadata |
 | 10 | Auth bypass | `GET /api/share/{token}` without Authorization header (auth enabled) | 200 (share paths skip auth) |
 
-**Automation opportunity:** Unit test with SQLite store + mock orchestrator. Test the full create/resolve/revoke cycle. Add to `sqlite_test.go` for store-level CRUD.
+**Automation opportunity:** Unit test with SQLite store + mock deploy service. Test the full create/resolve/revoke cycle. Add to `sqlite_test.go` for store-level CRUD.
 
 ---
 
@@ -106,7 +104,7 @@ The following features were implemented in v0.1.2 and need manual verification o
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
-| 1 | Under limit | Send 5 requests to `/api/artifacts` with `requestsPerSecond: 10, burst: 20` | All return 200 |
+| 1 | Under limit | Send 5 requests to `/v1/apps` with `requestsPerSecond: 10, burst: 20` | All return 200 |
 | 2 | Exceed burst | Send 25 rapid requests with `burst: 20` | First 20 return 200, rest return 429 |
 | 3 | Retry-After header | Trigger 429 | Response includes `Retry-After: 1` header |
 | 4 | Per-client isolation | Two different IPs exceed limit independently | Each has its own bucket |
@@ -119,7 +117,7 @@ The following features were implemented in v0.1.2 and need manual verification o
 ```bash
 # Quick manual verification:
 for i in $(seq 1 25); do
-  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/api/artifacts
+  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/v1/apps
 done
 ```
 
@@ -129,12 +127,12 @@ done
 
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
-| 1 | Default pagination | `GET /api/artifacts` (no params) | Returns up to 50 artifacts with `total` count |
-| 2 | Custom limit | `GET /api/artifacts?limit=2` | Returns exactly 2 artifacts, `total` shows full count |
-| 3 | Offset | `GET /api/artifacts?offset=1&limit=1` | Skips first artifact, returns second |
-| 4 | Max limit clamped | `GET /api/artifacts?limit=500` | Returns max 200 artifacts |
+| 1 | Default pagination | `GET /v1/apps` (no params) | Returns all apps in `items` with a `total` count |
+| 2 | Custom limit | `GET /v1/apps?limit=2` | Returns exactly 2 items, `total` shows the full count |
+| 3 | Offset | `GET /v1/apps?offset=1&limit=1` | Skips first app, returns second |
+| 4 | Limit exceeds set | `GET /v1/apps?limit=500` | Returns all apps (no clamp); never more than exist |
 | 5 | MCP pagination | `list_artifacts` with `limit: 2, offset: 0` | Response includes `total`, `offset`, `limit` fields |
-| 6 | Empty result | `GET /api/artifacts?offset=9999` | Returns empty artifacts array, `total` still correct |
+| 6 | Empty result | `GET /v1/apps?offset=9999` | Returns empty `items` array, `total` still correct |
 
 **Automation opportunity:** Add to `sqlite_test.go` — create N artifacts, verify List with various offset/limit combos. Add to `handler_integration_test.go` for REST API pagination.
 

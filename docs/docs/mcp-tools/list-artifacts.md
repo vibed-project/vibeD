@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # list_artifacts
 
-List deployed artifacts with their status, deployment target, and access URLs. Supports pagination.
+List deployed artifacts with their status and access URLs. Supports pagination.
 
 ## Input Schema
 
@@ -57,8 +57,10 @@ The `total` field contains the count of all matching artifacts (before paginatio
 
 ## REST API
 
+The `/v1` equivalent is:
+
 ```
-GET /api/artifacts?status=running&offset=0&limit=10
+GET /v1/apps?offset=0&limit=10
 ```
 
-Returns the same JSON structure with `artifacts`, `total`, `offset`, and `limit` fields.
+It returns `{items, total}` where each item is an `App` (`app_id`, `phase`, `runtime`, `url`, …) — see the [HTTP API Reference](../reference/http-api.md#get-v1apps). The legacy `GET /api/artifacts` route was removed in v0.7 ([migration guide](../migrating-to-v0.7.md)).
