@@ -4,72 +4,19 @@ All notable changes to vibeD are recorded here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); each release is also a signed
 git tag, and the Helm chart's `appVersion` tracks the release.
 
-## v0.8.0 — unreleased
-
-Trailing cleanup after the v0.7 orchestrator removal: the one-release legacy GC
-machinery kept for upgrading clusters is dropped, leaving the garbage collector
-a small, CR-keyed backstop.
-
-### Changed
-- **Garbage collection is now a `VibedApp`-CR-keyed `SandboxClaim`-orphan
-  backstop only.** Live resources are owner-referenced to their `VibedApp` and
-  cascade-deleted by Kubernetes, so in the normal case there is nothing to
-  collect. The GC only reaps a `SandboxClaim` whose owning `VibedApp` is gone
-  and whose owner-ref cascade did not fire, once the claim is older than
-  `gc.maxAge` — releasing the stranded warm-pool pod back to the pool.
-
-### Removed
-- **The `gc.legacySweeps` flag and the legacy pre-v0.7 orphan sweeps** (the
-  build Jobs, ConfigMaps, and Deployments keyed on `vibed.dev/artifact-id`).
-  The flag existed only for the v0.7 upgrade window so a cluster migrating from
-  `<= v0.6` could shed legacy debris; no live path creates those resources, so
-  the machinery is gone. `gc.enabled`, `gc.interval`, `gc.maxAge`, and
-  `gc.dryRun` are unchanged.
-
-## v0.7.0 — unreleased
-
-Retires the legacy orchestrator now that the `/v1` deploy path fully covers the
-artifact lifecycle. **Breaking**: the `/api/artifacts*` surface (deprecated in
-v0.6.0) and a few legacy-only capabilities are removed, and ~4k lines of legacy
-code (the orchestrator plus the deployer, environment, and source-storage
-packages) are deleted. Ship **v0.6.0 first** so consumers get a full deprecation
-cycle before these removals land.
-
-### Added
-- **`/v1` share links**: `POST /v1/apps/{id}/share-links` (create) and
-  `GET /v1/apps/{id}/share-links` (list) move public share-link management onto
-  the `/v1` surface. The public resolve (`GET /api/share/{token}`) and revoke
-  (`DELETE /api/share-links/{token}`) routes are unchanged.
-
-### Changed
-- **Garbage collection keys off `VibedApp` CRs**: live-path resources are
-  owner-referenced and cascade-deleted by Kubernetes, so the GC no longer drives
-  their removal. Pre-v0.7 orchestrator/deployer debris (labelled jobs,
-  configmaps, deployments, sandboxes) is reaped behind a new `gc.legacySweeps`
-  flag (default `true`; slated for removal in a future release once no legacy
-  resources remain).
-
-### Removed
-- **The legacy orchestrator and its `/api/artifacts*` REST surface** (deprecated
-  in v0.6.0). The artifact lifecycle now lives entirely under `/v1/apps`; the
-  v0.7 migration guide (`docs/docs/migrating-to-v0.7.md`) maps every removed
-  route to its `/v1` equivalent. Still current: `/api/share/`, `/api/events`
-  (SSE), and the admin `/api/users`, `/api/departments`, `/api/whoami` routes.
-- **`/api/targets` and the `list_deployment_targets` MCP tool.** The
-  deployment-target/backend model they exposed is superseded by lanes and
-  templates.
-- **User-grant sharing**: the `share_artifact` / `unshare_artifact` MCP tools and
-  the `/api/artifacts/{id}/share` and `/api/artifacts/{id}/unshare` endpoints.
-  Public share links (create/list on `/v1/apps/{id}/share-links`) replace it.
-
 ## v0.6.0 — unreleased
 
-A platform performance and API-consolidation pass. It trims per-request work
-across the hot paths — auth, controller, deploy, router, egress, and the state
-stores — brings the live `/v1` deploy path to parity with the legacy path by
-completing its lifecycle events and MCP tooling, and firms up a stable,
-observable `/v1` surface with pagination and deploy-latency metrics. It also
-deprecates the `/api/artifacts*` surface (removed in v0.7.0).
+A platform performance pass and the consolidation of the API onto `/v1`. It
+trims per-request work across the hot paths — auth, controller, deploy, router,
+egress, and the state stores — and firms up a stable, observable `/v1` surface
+with pagination and deploy-latency metrics.
+
+**Breaking**: now that the `/v1` deploy path fully covers the artifact
+lifecycle, the legacy orchestrator and its `/api/artifacts*` REST surface are
+removed, along with a few legacy-only capabilities; ~4k lines of legacy code
+(the orchestrator plus the deployer, environment, and source-storage packages)
+are deleted. The migration guide (`docs/docs/migrating-to-v0.6.md`) maps every
+removed route and MCP tool to its `/v1` equivalent.
 
 ### Added
 - **`/v1/apps` pagination**: `GET /v1/apps` accepts optional `?limit=` and
@@ -83,6 +30,10 @@ deprecates the `/api/artifacts*` surface (removed in v0.7.0).
   so the UI no longer has to poll for status.
 - **`auth.identityCacheTTL`** (Go duration, default `30s`, `0` disables): caps
   how long a resolved user identity (role / status / department) is cached.
+- **`/v1` share links**: `POST /v1/apps/{id}/share-links` (create) and
+  `GET /v1/apps/{id}/share-links` (list) move public share-link management onto
+  the `/v1` surface. The public resolve (`GET /api/share/{token}`) and revoke
+  (`DELETE /api/share-links/{token}`) routes are unchanged.
 - **Additive extension points**: optional `authz.ListScoper` and
   `authz.BatchAuthorizer` interfaces (the `Authorizer` seam itself is unchanged)
   and a streaming `policy.Input.SourceOpener` accessor (the `Source []byte`
@@ -110,13 +61,26 @@ deprecates the `/api/artifacts*` surface (removed in v0.7.0).
   rather than a copy.
 - **Router** skips Caddy updates when no routing-relevant field changed.
 - **Egress authz** uses an indexed pod-IP lookup for the per-request check.
+- **Garbage collection is now a `VibedApp`-CR-keyed `SandboxClaim`-orphan
+  backstop only.** Live resources are owner-referenced to their `VibedApp` and
+  cascade-deleted by Kubernetes, so in the normal case there is nothing to
+  collect. The GC only reaps a `SandboxClaim` whose owning `VibedApp` is gone
+  and whose owner-ref cascade did not fire, once the claim is older than
+  `gc.maxAge` — releasing the stranded warm-pool pod back to the pool.
+  `gc.enabled`, `gc.interval`, `gc.maxAge`, and `gc.dryRun` are unchanged.
 
-### Deprecated
-- The legacy **`/api/artifacts*`** REST endpoints are deprecated in favor of the
-  `/v1` API (responses carry a `Deprecation: true` header and
-  `X-Deprecated-Use: /v1/apps`, with a one-time startup warning). Still current:
-  `/api/share/`, `/api/events` (SSE), and the admin `/api/users`,
-  `/api/departments`, and `/api/whoami` routes. (Removed in v0.7.0.)
+### Removed
+- **The legacy orchestrator and its `/api/artifacts*` REST surface.** The
+  artifact lifecycle now lives entirely under `/v1/apps`; the migration guide
+  (`docs/docs/migrating-to-v0.6.md`) maps every removed route to its `/v1`
+  equivalent. Still current: `/api/share/`, `/api/events` (SSE), and the admin
+  `/api/users`, `/api/departments`, `/api/whoami` routes.
+- **`/api/targets` and the `list_deployment_targets` MCP tool.** The
+  deployment-target/backend model they exposed is superseded by lanes and
+  templates.
+- **User-grant sharing**: the `share_artifact` / `unshare_artifact` MCP tools and
+  the `/api/artifacts/{id}/share` and `/api/artifacts/{id}/unshare` endpoints.
+  Public share links (create/list on `/v1/apps/{id}/share-links`) replace it.
 
 ### Fixed
 - **MCP tools were broken for warm-pool apps**: `list_versions`,
@@ -133,6 +97,8 @@ deprecates the `/api/artifacts*` surface (removed in v0.7.0).
   failing to persist and leaving the API-key user missing.
 - **Event bridge** reconciles its state on reconnect and publishes display
   status, so status is not lost across a dropped connection.
+- **Source classifier** no longer misclassifies uploads because of macOS archive
+  cruft (`__MACOSX/` entries and `._*` AppleDouble files).
 
 ## v0.5.2 — 2026-07-19
 

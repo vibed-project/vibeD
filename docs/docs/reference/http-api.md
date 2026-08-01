@@ -305,7 +305,7 @@ It sits behind the same auth middleware as `/v1`, so only the shared agent token
 
 ## Other `/api` endpoints
 
-The original REST surface under **`/api/artifacts*`** (deprecated in v0.6) and **`/api/targets`** were **removed in v0.7**; the artifact lifecycle now lives entirely under `/v1/apps`. See [Migrating to v0.7](../migrating-to-v0.7.md) for the endpoint mapping.
+The original REST surface under **`/api/artifacts*`** and **`/api/targets`** were **removed in v0.6**; the artifact lifecycle now lives entirely under `/v1/apps`. See [Migrating to v0.6](../migrating-to-v0.6.md) for the endpoint mapping.
 
 These `/api` routes remain — they have no `/v1` equivalent:
 

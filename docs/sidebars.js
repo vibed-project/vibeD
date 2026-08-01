@@ -2,7 +2,7 @@
 const sidebars = {
   docs: [
     'intro',
-    'migrating-to-v0.7',
+    'migrating-to-v0.6',
     {
       type: 'category',
       label: 'Getting Started',

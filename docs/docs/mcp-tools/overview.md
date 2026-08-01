@@ -28,8 +28,8 @@ These tools are always registered.
 | [`list_share_links`](./list-share-links) | List an app's share links |
 | [`revoke_share_link`](./revoke-share-link) | Invalidate a share link by token |
 
-:::note Removed in v0.7
-`list_deployment_targets` (superseded by [lanes and templates](../concepts/lanes-and-templates.md)) and the user-grant `share_artifact` / `unshare_artifact` tools were removed in v0.7. Public share links replace user-grant sharing — see [Migrating to v0.7](../migrating-to-v0.7.md).
+:::note Removed in v0.6
+`list_deployment_targets` (superseded by [lanes and templates](../concepts/lanes-and-templates.md)) and the user-grant `share_artifact` / `unshare_artifact` tools were removed in v0.6. Public share links replace user-grant sharing — see [Migrating to v0.6](../migrating-to-v0.6.md).
 :::
 
 ## Admin Tools
@@ -50,7 +50,7 @@ See [User & department management](./user-management) for input schemas, respons
 The lifecycle tools are scoped to the calling identity: `list_artifacts` returns only the caller's apps, and `get_*` / `update_*` / `delete_*` resolve an app the caller owns. See [Authentication](../configuration/authentication.md) for how the caller identity is established.
 
 :::note Backend routing
-All lifecycle and share-link tools run against the live `VibedApp` deploy path (the same one the `/v1` API serves). The legacy orchestrator was removed in v0.7 — see [Migrating to v0.7](../migrating-to-v0.7.md).
+All lifecycle and share-link tools run against the live `VibedApp` deploy path (the same one the `/v1` API serves). The legacy orchestrator was removed in v0.6 — see [Migrating to v0.6](../migrating-to-v0.6.md).
 :::
 
 ## Transport

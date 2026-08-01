@@ -49,10 +49,10 @@ POST /v1/apps/{id}/share-links
 Body: {"password": "...", "expires_in": "24h"}
 ```
 
-:::note Endpoint moved in v0.7
+:::note Endpoint moved in v0.6
 Share-link creation moved to `POST /v1/apps/{id}/share-links`. The legacy
-`POST /api/artifacts/{id}/share-link` route (deprecated in v0.6) was removed in
-v0.7 — see [Migrating to v0.7](../migrating-to-v0.7.md). The public share URL
+`POST /api/artifacts/{id}/share-link` route was removed in
+v0.6 — see [Migrating to v0.6](../migrating-to-v0.6.md). The public share URL
 `GET /api/share/{token}` is unchanged.
 :::
 

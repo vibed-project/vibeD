@@ -63,4 +63,4 @@ The `/v1` equivalent is:
 GET /v1/apps?offset=0&limit=10
 ```
 
-It returns `{items, total}` where each item is an `App` (`app_id`, `phase`, `runtime`, `url`, …) — see the [HTTP API Reference](../reference/http-api.md#get-v1apps). The legacy `GET /api/artifacts` route was removed in v0.7 ([migration guide](../migrating-to-v0.7.md)).
+It returns `{items, total}` where each item is an `App` (`app_id`, `phase`, `runtime`, `url`, …) — see the [HTTP API Reference](../reference/http-api.md#get-v1apps). The legacy `GET /api/artifacts` route was removed in v0.6 ([migration guide](../migrating-to-v0.6.md)).

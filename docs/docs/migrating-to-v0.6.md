@@ -1,15 +1,14 @@
 ---
-title: Migrating to v0.7
-sidebar_label: Migrating to v0.7
+title: Migrating to v0.6
+sidebar_label: Migrating to v0.6
 sidebar_position: 2
 ---
 
-# Migrating to v0.7
+# Migrating to v0.6
 
-v0.7 removes the legacy orchestrator and the REST/MCP surfaces that were
-deprecated in v0.6. The live `/v1` API is now the only deploy/lifecycle path.
-This page lists what was removed and its `/v1` replacement so you can update
-clients, scripts, and integrations.
+v0.6 removes the legacy orchestrator and its REST/MCP surfaces. The live `/v1`
+API is now the only deploy/lifecycle path. This page lists what was removed and
+its `/v1` replacement so you can update clients, scripts, and integrations.
 
 :::info Deploy path is unchanged
 `POST /v1/deploy`, the sandbox runtime, lanes/templates, and the dashboard's
@@ -19,9 +18,8 @@ changes are required.
 
 ## Removed: the `/api/artifacts*` REST surface
 
-The original REST surface under `/api/artifacts*` — deprecated in v0.6 with a
-`Deprecation: true` header and an `X-Deprecated-Use: /v1/apps` hint — is
-removed. Every operation has a `/v1` equivalent:
+The original REST surface under `/api/artifacts*` is removed. Every operation
+has a `/v1` equivalent:
 
 | Legacy `/api/artifacts*`                        | `/v1` replacement                          |
 | ----------------------------------------------- | ------------------------------------------ |
@@ -74,13 +72,41 @@ continue to work and now back onto these `/v1` endpoints.
 The garbage collector now keys off `VibedApp` custom resources. Live-path
 resources are owner-referenced by their `VibedApp` and are cascade-deleted by
 Kubernetes when the app is deleted, so the GC no longer drives their removal.
+It is now a `SandboxClaim`-orphan backstop only: it reaps a `SandboxClaim`
+whose owning `VibedApp` is gone and whose owner-ref cascade did not fire, once
+the claim is older than `gc.maxAge`. `gc.enabled`, `gc.interval`, `gc.maxAge`,
+and `gc.dryRun` are unchanged — see
+[Configuration Reference](./configuration/config-reference.md#gc).
 
-A `gc.legacySweeps` flag (default `true`) reaped pre-v0.7 orchestrator/deployer
-debris — the labelled jobs, configmaps, and deployments left by `<= v0.6`
-installs. It existed only for the v0.7 upgrade window and is **removed in
-v0.8** along with those sweeps; once you have upgraded through v0.7 there is
-nothing more to clean. In v0.8 the GC is a `SandboxClaim`-orphan backstop only.
-See [Configuration Reference](./configuration/config-reference.md#gc).
+### One-time cleanup of pre-v0.6 debris
+
+Because the orchestrator is gone, nothing stamps `vibed.dev/artifact-id` any
+more, and the GC does **not** sweep resources that carry it. If you are
+upgrading from `<= v0.5`, the legacy deployer's leftovers — build Jobs, deploy
+ConfigMaps, Deployments, and `Sandbox` CRs — are not reclaimed automatically.
+They are inert (nothing reconciles them), but they consume quota and clutter
+the namespace, so clean them up once after upgrading:
+
+```bash
+NS=vibed-system   # your vibeD namespace
+
+# Preview first.
+kubectl -n "$NS" get jobs,deployments,sandboxes \
+  -l 'app.kubernetes.io/managed-by=vibed,vibed.dev/artifact-id'
+
+# ConfigMaps: exclude the artifact store, which is NOT legacy debris.
+kubectl -n "$NS" get configmaps \
+  -l 'app.kubernetes.io/managed-by=vibed,vibed.dev/artifact-id,app.kubernetes.io/component!=artifact-store'
+```
+
+Re-run each command with `delete` in place of `get` once the output looks
+right. Do this only after every app has been redeployed through `/v1`.
+
+:::caution Keep the artifact store
+The `app.kubernetes.io/component!=artifact-store` selector matters — those
+ConfigMaps hold artifact metadata, not deploy state. Deleting them loses app
+history.
+:::
 
 ## Note for policy authors
 
