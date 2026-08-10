@@ -445,3 +445,31 @@
   border-radius: 10px;
   font-weight: 500;
 }
+
+/* --- Dashboard section (app shell) -------------------------------------- */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.section-header .section-title { margin-bottom: 0; }
+.load-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--space-2);
+}
+
+.view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}

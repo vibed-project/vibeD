@@ -1,0 +1,81 @@
+.dt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.dt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.dt-search {
+  position: relative;
+  flex: 1;
+  min-width: 180px;
+  max-width: 360px;
+}
+.dt-search .ui-input { width: 100%; padding-left: 32px; }
+.dt-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  font-size: var(--text-sm);
+  pointer-events: none;
+}
+.dt-toolbar-slot { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+
+.dt-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+.dt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.dt-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-sunken);
+  text-align: left;
+  font-weight: var(--weight-semibold);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.dt-th-sortable { cursor: pointer; user-select: none; }
+.dt-th-sortable:hover { color: var(--text); }
+.dt-sort-caret { margin-left: var(--space-1); opacity: 0.9; }
+.dt-th-right { text-align: right; }
+
+.dt-table tbody td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+.dt-table tbody tr:last-child td { border-bottom: none; }
+.dt-table tbody tr:hover td { background: var(--bg-hover); }
+.dt-td-right { text-align: right; }
+
+.dt-empty { padding: var(--space-6); }
+
+.dt-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.dt-pager { display: flex; align-items: center; gap: var(--space-2); }
+.dt-pageinfo { min-width: 90px; text-align: center; }

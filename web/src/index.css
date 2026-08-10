@@ -1,17 +1,78 @@
 :root {
+  /* --- Color (dark, default) --------------------------------------------- */
   --bg: #0f1117;
   --bg-card: #1a1d27;
   --bg-hover: #22253a;
+  --bg-sunken: #0b0d13;
   --border: #2a2d3e;
+  --border-strong: #3a3e52;
   --text: #e1e4ed;
   --text-muted: #8b8fa3;
+  --text-faint: #62667a;
   --accent: #6c63ff;
   --accent-hover: #7c74ff;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(108, 99, 255, 0.14);
   --green: #22c55e;
   --yellow: #eab308;
   --red: #ef4444;
   --blue: #3b82f6;
+  --green-soft: rgba(34, 197, 94, 0.14);
+  --yellow-soft: rgba(234, 179, 8, 0.14);
+  --red-soft: rgba(239, 68, 68, 0.14);
+  --blue-soft: rgba(59, 130, 246, 0.14);
+
+  /* --- Spacing scale (4px base) ------------------------------------------ */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* --- Radii ------------------------------------------------------------- */
+  --radius-sm: 6px;
   --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* --- Typography -------------------------------------------------------- */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 26px;
+  --leading: 1.5;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* --- Elevation --------------------------------------------------------- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+
+  /* --- Motion ------------------------------------------------------------ */
+  --motion-fast: 120ms ease;
+  --motion: 180ms ease;
+
+  /* --- Layout ------------------------------------------------------------ */
+  --sidebar-w: 240px;
+  --topbar-h: 56px;
+
+  /* --- Z-index scale ----------------------------------------------------- */
+  --z-sidebar: 20;
+  --z-topbar: 30;
+  --z-dropdown: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+
   color-scheme: dark;
 }
 
@@ -24,22 +85,28 @@
   --bg: #f5f6fa;
   --bg-card: #ffffff;
   --bg-hover: #eceef5;
+  --bg-sunken: #eef0f6;
   --border: #d6d9e2;
+  --border-strong: #c2c6d4;
   --text: #1a1d27;
   --text-muted: #6b7080;
+  --text-faint: #9498a8;
   --accent: #5851e0;
   --accent-hover: #4a44c7;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(88, 81, 224, 0.1);
   --green: #15803d;
   --yellow: #b45309;
   --red: #b91c1c;
   --blue: #1d4ed8;
+  --green-soft: rgba(21, 128, 61, 0.1);
+  --yellow-soft: rgba(180, 83, 9, 0.1);
+  --red-soft: rgba(185, 28, 28, 0.1);
+  --blue-soft: rgba(29, 78, 216, 0.1);
+  --shadow-sm: 0 1px 2px rgba(20, 24, 40, 0.08);
+  --shadow: 0 4px 16px rgba(20, 24, 40, 0.1);
+  --shadow-lg: 0 12px 40px rgba(20, 24, 40, 0.18);
   color-scheme: light;
-}
-
-body {
-  /* Smooth the theme flip — short enough to feel instant, long enough
-     to not jar the eye. */
-  transition: background-color 150ms ease, color 150ms ease;
 }
 
 * {
@@ -49,12 +116,32 @@ body {
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading);
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  /* Smooth the theme flip — short enough to feel instant, long enough
+     to not jar the eye. */
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
 #root {
   min-height: 100vh;
+}
+
+/* Consistent, visible keyboard focus across the app. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
 }
