@@ -35,7 +35,7 @@ interface AppShellProps {
 
 export default function AppShell(props: AppShellProps) {
   const {
-    nav, activeId, onNavigate, title, orgName, currentUser, isAdmin, profile,
+    nav, activeId, onNavigate, orgName, currentUser, isAdmin, profile,
     needsAuth, authInput, authError, onAuthInput, onLogin, onLogout, onBrandClick, children,
   } = props
 
@@ -62,7 +62,7 @@ export default function AppShell(props: AppShellProps) {
 
   return (
     <div className="shell">
-      <aside className="shell-sidebar">
+      <header className="shell-topbar">
         <button className="shell-brand" onClick={onBrandClick} aria-label="vibeD home">
           <img src="/logo.png" alt="" className="shell-brand-img" />
           <span>vibeD</span>
@@ -76,15 +76,10 @@ export default function AppShell(props: AppShellProps) {
               aria-current={item.id === activeId ? 'page' : undefined}
             >
               <span className="shell-nav-icon" aria-hidden="true">{item.icon}</span>
-              <span>{item.label}</span>
+              <span className="shell-nav-label">{item.label}</span>
             </button>
           ))}
         </nav>
-        <div className="shell-sidebar-footer">vibeD platform</div>
-      </aside>
-
-      <header className="shell-topbar">
-        <span className="shell-topbar-title">{title}</span>
         <div className="shell-topbar-spacer" />
         {orgName && (
           <span className="shell-org" title="Organization">

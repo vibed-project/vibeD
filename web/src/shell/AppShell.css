@@ -1,60 +1,47 @@
 .shell {
-  display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
-  grid-template-rows: var(--topbar-h) 1fr;
-  grid-template-areas:
-    "sidebar topbar"
-    "sidebar content";
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
 }
 
-/* --- Sidebar ------------------------------------------------------------ */
-.shell-sidebar {
-  grid-area: sidebar;
+/* --- Top bar (brand + horizontal nav + controls) ----------------------- */
+.shell-topbar {
   display: flex;
-  flex-direction: column;
-  background: var(--bg-sunken);
-  border-right: 1px solid var(--border);
+  align-items: center;
+  gap: var(--space-4);
+  height: var(--topbar-h);
+  padding: 0 var(--space-5);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  height: 100vh;
-  z-index: var(--z-sidebar);
+  z-index: var(--z-topbar);
 }
 .shell-brand {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: var(--topbar-h);
-  padding: 0 var(--space-4);
   font-size: var(--text-md);
   font-weight: var(--weight-semibold);
   color: var(--text);
-  border-bottom: 1px solid var(--border);
   cursor: pointer;
   background: none;
-  width: 100%;
-  text-align: left;
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
 }
 .shell-brand-img { width: 22px; height: 22px; border-radius: var(--radius-sm); }
+
 .shell-nav {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--space-3);
-  flex: 1;
-  overflow-y: auto;
-}
-.shell-nav-group-label {
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-faint);
-  padding: var(--space-4) var(--space-3) var(--space-2);
+  align-items: center;
+  gap: var(--space-1);
+  overflow-x: auto;
 }
 .shell-nav-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius);
   color: var(--text-muted);
@@ -63,34 +50,13 @@
   background: none;
   border: none;
   cursor: pointer;
-  width: 100%;
-  text-align: left;
+  white-space: nowrap;
   transition: background var(--motion-fast), color var(--motion-fast);
 }
 .shell-nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .shell-nav-item-active { background: var(--accent-soft); color: var(--accent); }
-.shell-nav-icon { width: 18px; text-align: center; font-size: var(--text-md); flex-shrink: 0; }
-.shell-sidebar-footer {
-  padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--border);
-  font-size: var(--text-xs);
-  color: var(--text-faint);
-}
+.shell-nav-icon { font-size: var(--text-md); }
 
-/* --- Topbar ------------------------------------------------------------- */
-.shell-topbar {
-  grid-area: topbar;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 0 var(--space-5);
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: var(--z-topbar);
-}
-.shell-topbar-title { font-size: var(--text-md); font-weight: var(--weight-semibold); }
 .shell-topbar-spacer { flex: 1; }
 .shell-org {
   display: inline-flex;
@@ -101,19 +67,20 @@
   border-radius: var(--radius-pill);
   font-size: var(--text-sm);
   color: var(--text-muted);
+  flex-shrink: 0;
 }
 .shell-org-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 
 /* --- Content ------------------------------------------------------------ */
 .shell-content {
-  grid-area: content;
   padding: var(--space-6);
   max-width: 1200px;
   width: 100%;
+  margin: 0 auto;
 }
 
 /* --- Profile menu ------------------------------------------------------- */
-.shell-profile { position: relative; }
+.shell-profile { position: relative; flex-shrink: 0; }
 .shell-profile-trigger {
   display: flex;
   align-items: center;
@@ -165,16 +132,15 @@
 .shell-profile-id { font-family: var(--font-mono); font-size: var(--text-xs); }
 .shell-profile-footer { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border); }
 
-.shell-auth { display: flex; align-items: center; gap: var(--space-2); }
+.shell-auth { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
 .shell-auth-error { font-size: var(--text-xs); color: var(--red); }
 
-/* --- Responsive: collapse to icon rail, then stack -------------------- */
-@media (max-width: 900px) {
-  .shell { grid-template-columns: 60px 1fr; }
-  .shell-brand span, .shell-nav-item span:not(.shell-nav-icon), .shell-nav-group-label, .shell-sidebar-footer { display: none; }
-  .shell-nav-item { justify-content: center; }
-}
-@media (max-width: 600px) {
-  .shell-content { padding: var(--space-4); }
+/* --- Responsive: hide nav labels, then wrap the top bar --------------- */
+@media (max-width: 760px) {
+  .shell-nav-label { display: none; }
   .shell-profile-name { display: none; }
+}
+@media (max-width: 560px) {
+  .shell-topbar { height: auto; flex-wrap: wrap; padding: var(--space-2) var(--space-3); gap: var(--space-2); }
+  .shell-content { padding: var(--space-4); }
 }
