@@ -332,7 +332,13 @@ export async function fetchUsers(): Promise<User[]> {
   return res.json();
 }
 
-export async function createUser(name: string, email: string, role: string): Promise<User> {
+// UserWithKey is the create response: the user plus the plaintext API key, which
+// is returned exactly once (only at creation) and is how that user authenticates.
+export interface UserWithKey extends User {
+  api_key?: string;
+}
+
+export async function createUser(name: string, email: string, role: string): Promise<UserWithKey> {
   const res = await fetchWithTimeout(`${BASE}/api/users`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

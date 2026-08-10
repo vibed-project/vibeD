@@ -30,6 +30,9 @@ export default function AdminPanel({ currentUser }: Props) {
   const [creatingDept, setCreatingDept] = useState(false)
   const [actionId, setActionId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'users' | 'departments'>('users')
+  // The plaintext API key for a just-created user, shown once so the admin can
+  // hand it over — the user signs in with it (Authorization: Bearer <key>).
+  const [newKey, setNewKey] = useState<{ name: string; key: string } | null>(null)
 
   const loadData = useCallback(async () => {
     try {
@@ -54,6 +57,7 @@ export default function AdminPanel({ currentUser }: Props) {
       const user = await createUser(createName.trim(), createEmail.trim(), createRole)
       const finalUser = createDeptId ? await updateUser(user.id, { department_id: createDeptId }) : user
       setUsers((prev) => [...prev, finalUser])
+      if (user.api_key) setNewKey({ name: user.name, key: user.api_key })
       setCreateName(''); setCreateEmail(''); setCreateRole('user'); setCreateDeptId('')
       setShowCreateUser(false)
       toast.success('User created')
@@ -183,6 +187,20 @@ export default function AdminPanel({ currentUser }: Props) {
         </div>
         <Button size="sm" variant="ghost" onClick={loadData} disabled={loading}>{loading ? <Spinner label="Refreshing" /> : 'Refresh'}</Button>
       </div>
+
+      {newKey && (
+        <div className="ap-newkey">
+          <div className="ap-newkey-head">
+            <strong>API key for {newKey.name}</strong>
+            <span className="ap-newkey-note">Shown once — copy it now. {newKey.name} signs in with this key.</span>
+          </div>
+          <div className="ap-newkey-row">
+            <code className="ap-newkey-code">{newKey.key}</code>
+            <Button size="sm" onClick={() => navigator.clipboard?.writeText(newKey.key)}>Copy</Button>
+            <Button size="sm" variant="ghost" onClick={() => setNewKey(null)}>Dismiss</Button>
+          </div>
+        </div>
+      )}
 
       {activeTab === 'users' && (
         <>
