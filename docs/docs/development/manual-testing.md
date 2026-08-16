@@ -46,14 +46,23 @@ The classifier reads only file *names* and `package.json` top-level keys, first 
 | only `.html`/`.css`/`.js`/images | `static-nginx` | fast | on by default | nginx serves `/workspace` |
 | `package.json` + browser deps + `build` script | `static-nginx` | fast | on by default | builds async, serves output |
 | `worker.js` / `worker.ts` / `wrangler.toml` | `workerd` | fast | `workerd.enabled=true` | your `export default { fetch }` |
-| `package.json` (any other) | `node-24` | general | `make enable-node-pool` | `npm start`, else `index/server/app/main.js` |
-| `requirements.txt` / `pyproject.toml` | `python-313` | general | `make enable-python-pool` | `app.py` / `main.py` / `server.py` / `run.py` |
+| `package.json` (any other) | `node-24` | general | on by default | `npm start`, else `index/server/app/main.js` |
+| `requirements.txt` / `pyproject.toml` | `python-313` | general | on by default | `app.py` / `main.py` / `server.py` / `run.py` |
 | `go.mod` | `go-123` | general | `make enable-go-pool` | `./app` binary, else `go run .` |
 | `Dockerfile` (hint, not built) | `base-al2023` | general | `make enable-base-pool` | kitchen-sink autodetect |
 | anything else | `base-al2023` | general | `make enable-base-pool` | kitchen-sink autodetect |
 
-:::tip General-lane pools are opt-in
-A fresh `make dev` only runs the `static-nginx` pool. Deploying a Node/Python/Go/base source before enabling its pool returns `Phase=Failed, Reason=TemplateMissing`. Enable the pool (below), wait for the controller to re-validate (~10s), then redeploy.
+:::tip Static, JS and Python work out of the box
+`make install-vibed` (and `make dev`) bring up the `static-nginx`, `node-24` and
+`python-313` pools, so those deploy with no extra step. The general lane runs as
+normal pods on Kind — `runtime.defaultClass` is empty, so no Kata/nested virt is
+needed.
+
+The heavier `go-123` and `base-al2023` pools stay opt-in. Deploying a source that
+needs a pool you haven't enabled returns `Phase=Failed, Reason=TemplateMissing`
+with the explanation in the app's `message` field — **that message is the only
+diagnosis, because an app that never gets a pod has no logs**. Enable the pool
+(below), wait ~10s for the controller to re-validate, then redeploy.
 :::
 
 ### 1a. static-nginx — fast, always on
@@ -75,7 +84,8 @@ curl http://<label>.localhost/                      # → the HTML (label from t
 ### 1b. node-24 — general
 
 ```bash
-make enable-node-pool
+# node-24 is on by default (make install-vibed); `make enable-node-pool`
+# re-enables it if you turned it off.
 mkdir -p node
 cat > node/package.json <<'JSON'
 { "name": "hello-node", "version": "1.0.0", "scripts": { "start": "node server.js" } }
@@ -92,7 +102,8 @@ curl http://<label>.localhost/                       # → hello from node
 `requirements.txt` (even empty) is what routes to Python; `app.py` is the entrypoint.
 
 ```bash
-make enable-python-pool
+# python-313 is on by default (make install-vibed); `make enable-python-pool`
+# re-enables it if you turned it off.
 mkdir -p py && : > py/requirements.txt
 cat > py/app.py <<'PY'
 from http.server import HTTPServer, BaseHTTPRequestHandler
