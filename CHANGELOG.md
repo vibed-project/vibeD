@@ -4,7 +4,7 @@ All notable changes to vibeD are recorded here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); each release is also a signed
 git tag, and the Helm chart's `appVersion` tracks the release.
 
-## v0.6.0 — unreleased
+## v0.6.0 — 2026-08-16
 
 A platform performance pass and the consolidation of the API onto `/v1`. It
 trims per-request work across the hot paths — auth, controller, deploy, router,
@@ -18,7 +18,72 @@ removed, along with a few legacy-only capabilities; ~4k lines of legacy code
 are deleted. The migration guide (`docs/docs/migrating-to-v0.6.md`) maps every
 removed route and MCP tool to its `/v1` equivalent.
 
+### Security
+This release closes eight reported vulnerabilities (2 critical, 6 high).
+
+- **App takeover via deploy-by-name (critical)**: `POST /v1/deploy` with a name
+  another user already owns silently redeployed *their* app — replacing its
+  source and serving attacker code on the victim's URL. A redeploy now requires
+  the caller to own the app (or be an admin), and the authorization request
+  carries the app's real owner instead of describing every request as
+  self-owned, which had blinded ownership-aware authorizers to the attempt.
+- **Control-API token leaked into user code (critical)**: the in-sandbox agent
+  copied its whole environment — including `VIBED_AGENT_TOKEN`, the bearer for
+  its own control API — into the untrusted user process. Since that token is
+  issued per template rather than per app, a deployed app could call `/inject`
+  on itself and on other reachable sandboxes: cross-sandbox code execution. The
+  agent's own `VIBED_`-prefixed variables are now stripped; a deploy's explicit
+  env is applied afterwards, so intentional overrides still work.
+- **Stale runner images (high)**: the chart's warm-pool defaults were pinned by
+  hand to `0.4.4` and had lagged two releases, shipping sandbox agents that
+  predate the v0.5.1 fetch/extract hardening. Image refs may now be untagged
+  and the chart appends its own `appVersion`, so runners can never silently
+  drift from the release again.
+- **Source blobs are no longer guessable (high)**: a version's source key was
+  derived purely from the app name and version (`shop.v1`), and the blob
+  endpoint authenticates callers but cannot authorize them per app — the
+  in-sandbox agent fetches with one shared token, so there is no per-user
+  identity to check. Any authenticated client could therefore guess another
+  user's key and download their source. Keys now carry 128 bits of entropy
+  (`shop.v1.<32 hex>`), making the reference a capability: holding it is the
+  authorization. Directory listing was already blocked, so keys cannot be
+  enumerated.
+
+  **Upgrade note**: sources uploaded *before* this release keep their old
+  guessable keys. Each app's next deploy mints a fresh random key, but the
+  previous blob stays on disk until version retention (20 deploys) evicts it.
+  To close the window immediately, delete the legacy `<name>.v<N>.tar.gz`
+  objects from the blob store after upgrading — this forfeits rollback to those
+  specific versions, which is usually the right trade.
+
+- **Share links outliving their app (high)**: links resolve their target by app
+  *name* at request time and were not revoked on delete, so a link kept working
+  and re-bound to whatever app next took that name — publishing another user's
+  app to everyone holding the old URL. Deleting an app now revokes its links.
+- **Caddy admin API reachable cluster-wide (high)**: Caddy's `:2019` management
+  API — which can repoint any app's hostname at an arbitrary upstream — is
+  published on a Service and was reachable by any pod, including user
+  sandboxes. A NetworkPolicy now restricts it to vibed-router (with
+  `networkPolicy.enabled`), leaving the HTTP/HTTPS data plane open.
+- **Over-broad server ClusterRole (high)**: it granted cluster-wide `get`/`list`
+  on **all Secrets**, plus write verbs on Deployments and Jobs, none of which
+  any code path used (the Deployment target and Job builder were removed in
+  v0.6.0 and v0.4.1). All three grants are gone.
+- **CI publish token exposed to pull-request code (high)**: both `ci.yaml` and
+  `runner-images.yaml` granted `packages: write` at workflow level, so jobs
+  building and testing PR-submitted code — including `docker build`, which runs
+  arbitrary `RUN` steps — held a token that could push to GHCR. The permission
+  is now scoped to the publish jobs, which never run on a pull request.
+
 ### Added
+- **Deploy failures explain themselves**: `GET /v1/apps/{id}` now returns
+  `reason` and `message` from the app's Ready condition, the MCP
+  `deploy_artifact` result carries the same on a `failed` status, and
+  `get_artifact_status` fills `error`. A deploy that fails before it gets a pod
+  (e.g. no warm pool for the required template) produces **no logs at all**, so
+  previously an agent saw a bare "failed", found no logs, and retried a
+  permanent failure indefinitely. The dashboard shows the explanation next to
+  the failed app's status badge.
 - **`/v1/apps` pagination**: `GET /v1/apps` accepts optional `?limit=` and
   `?offset=` and returns `{items, total}`; with no params it returns all apps
   unchanged (`total` is the post-authorization-filter count).
@@ -40,6 +105,15 @@ removed route and MCP tool to its `/v1` equivalent.
   field is retained).
 
 ### Changed
+- **JS and Python deploy out of the box on Kind**: the dev overlay
+  (`values-kind.yaml`) now enables the `node-24` and `python-313` warm pools
+  alongside `static-nginx`, and `make install-vibed` builds and loads their
+  runner images. Previously only static apps worked; a Node or Python deploy
+  failed with `TemplateMissing` until you ran `make enable-node-pool`. The
+  general lane needs no Kata/nested virt here (`runtime.defaultClass` is empty,
+  so its pods schedule normally). `go-123` and `base-al2023` stay opt-in.
+- **Dashboard navigation moved to a top bar**, replacing the left sidebar; the
+  shell now carries the org, theme toggle and profile menu inline.
 - **Static API keys are resolved once at startup** (`file:` / `env:` secrets):
   rotating a key file or env var now requires a restart, rather than being
   re-read on every request.
@@ -83,6 +157,23 @@ removed route and MCP tool to its `/v1` equivalent.
   Public share links (create/list on `/v1/apps/{id}/share-links`) replace it.
 
 ### Fixed
+- **Deploy request bodies are bounded before parsing**: `POST /v1/deploy` now
+  wraps the body in `http.MaxBytesReader` and answers 413. Multipart parsing
+  spools any part over 8 MB to a temp file with no total cap, and the 50 MB
+  tarball limit was enforced only *after* the whole body had been written to
+  disk — so an oversized request could fill the node's disk.
+- **Runner-agent client no longer leaks sockets**: it built a fresh
+  `http.Transport` per call while every call site constructs a client per call
+  (readiness probe, source injection, warm-pool validation). Each connection
+  was parked in a private pool with no `IdleConnTimeout` (zero = never expire)
+  that nothing could drain, leaking sockets and reader goroutines for the
+  controller's lifetime. One shared transport now serves all clients, so
+  keep-alives work as intended.
+- **In-sandbox agent can no longer deadlock its control API**: the wait after
+  SIGKILL is now bounded. `cmd.Wait()` returns only once the log-pipe copy sees
+  EOF, which needs every write end closed — including one inherited by a
+  descendant that escaped the process group. The unbounded wait held the
+  agent's mutex forever and wedged inject/status/logs/stop.
 - **MCP tools were broken for warm-pool apps**: `list_versions`,
   `rollback_artifact`, `get_artifact_logs`, and the share-link tools only saw
   legacy-orchestrator artifacts and missed live apps.

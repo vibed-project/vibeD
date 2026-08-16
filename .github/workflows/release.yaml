@@ -76,6 +76,9 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          # Stamp the release version into the binary (internal/version).
+          build-args: |
+            VERSION=${{ steps.tags.outputs.version }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

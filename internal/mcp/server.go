@@ -7,6 +7,7 @@ import (
 	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/internal/metrics"
 	"github.com/vibed-project/vibeD/internal/store"
+	"github.com/vibed-project/vibeD/internal/version"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -17,7 +18,7 @@ import (
 func NewServer(deploySvc *deploy.Service, limits config.LimitsConfig, userStore store.UserStore) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "vibed",
-		Version: "0.1.0",
+		Version: version.Version,
 	}, nil)
 
 	// Count every tool call (vibed_mcp_tool_calls_total). metrics.New() is a
