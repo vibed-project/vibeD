@@ -16,6 +16,13 @@ type deployArtifactOutput struct {
 	Name       string `json:"name"`
 	URL        string `json:"url,omitempty"`
 	Status     string `json:"status"`
+
+	// Reason/Message explain a "failed" status. A deploy that fails before it
+	// gets a pod (e.g. no warm pool for the required template) produces no
+	// logs at all, so without these an agent sees a bare "failed", finds no
+	// logs, and wrongly concludes the failure was transient and retryable.
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type deployArtifactInput struct {
@@ -34,6 +41,7 @@ func registerDeployTool(server *mcp.Server, deploySvc *deploy.Service, limits co
 		Name: "deploy_artifact",
 		Description: "Deploy a web artifact (website, web app) to the cluster. Provide source files and vibeD classifies the runtime, claims a warm sandbox, and injects the source — no per-deploy container build. " +
 			"Returns an artifact_id and, once ready, a public URL; if it isn't ready within the deploy budget, poll get_artifact_status. " +
+			"A \"failed\" status carries reason and message explaining why — read them before retrying; most failures (e.g. no warm pool for the required runtime) are not transient and will fail again identically. " +
 			"The runtime (and template) are auto-detected from the source; set target only to override.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input deployArtifactInput) (*mcp.CallToolResult, *deployArtifactOutput, error) {
 		if deploySvc == nil {
@@ -74,6 +82,8 @@ func registerDeployTool(server *mcp.Server, deploySvc *deploy.Service, limits co
 			Name:       input.Name,
 			URL:        res.URL,
 			Status:     status,
+			Reason:     res.Reason,
+			Message:    res.Message,
 		}, nil
 	})
 }

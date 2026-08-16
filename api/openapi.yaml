@@ -549,6 +549,18 @@ components:
         name:             { type: string }
         owner:            { type: string }
         phase:            { $ref: '#/components/schemas/Phase' }
+        reason:
+          type: string
+          description: >
+            Short CamelCase reason for the current phase, from the Ready
+            condition (e.g. TemplateMissing). Machine-readable; stable.
+        message:
+          type: string
+          description: >
+            Human-readable explanation of the current phase, from the Ready
+            condition. On a failed deploy this carries why it failed (e.g. no
+            warm pool for the required template) — often the only diagnosis
+            available, since a deploy that never gets a pod has no logs.
         url:              { type: string, format: uri }
         runtime:
           type: object

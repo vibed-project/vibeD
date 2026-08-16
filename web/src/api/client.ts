@@ -9,6 +9,10 @@ export interface ArtifactSummary {
   updated_at: string;
   version: number;
   shared_with?: string[];
+  // Why a failed app failed (from the Ready condition). Present on list rows
+  // too: a deploy that never got a pod has no logs, so this is the only
+  // explanation the UI can show.
+  error?: string;
 }
 
 export interface Artifact extends ArtifactSummary {
@@ -16,7 +20,6 @@ export interface Artifact extends ArtifactSummary {
   port?: number;
   env_vars?: Record<string, string>;
   language?: string;
-  error?: string;
   storage_ref?: string;
   version_id?: string;
 }
@@ -142,6 +145,10 @@ interface ApiApp {
   url?: string;
   runtime?: { lane?: 'fast' | 'general'; template?: string };
   last_deployed_at?: string;
+  // Ready-condition explanation. On a deploy that failed before it got a pod
+  // there are no logs, so this is the only thing that explains the failure.
+  reason?: string;
+  message?: string;
 }
 
 // Exported so SSE consumers (App.tsx) can map the raw phase carried on
@@ -173,6 +180,9 @@ function mapApp(a: ApiApp): Artifact {
     updated_at: ts,
     version: 1, // VibedApp has no version history yet
     language: a.runtime?.template,
+    // Only meaningful for a failed app; the Ready condition also carries a
+    // reason on healthy ones, which would read as a spurious error.
+    error: a.phase === 'Failed' ? (a.message || a.reason) : undefined,
   };
 }
 
@@ -279,6 +289,21 @@ export async function deleteArtifact(id: string): Promise<void> {
 export async function fetchWhoami(): Promise<WhoAmI> {
   const res = await fetchWithTimeout(`${BASE}/api/whoami`);
   if (!res.ok) throw httpError(res, "Failed to fetch user info");
+  return res.json();
+}
+
+// Auth-mode discovery (public endpoint). loginUrl is non-empty for modes with a
+// browser login flow (e.g. SAML) — the login screen sends the user there
+// instead of showing an API-key prompt that can't work in that mode.
+export interface AuthInfo {
+  enabled: boolean;
+  mode: string;
+  loginUrl: string;
+}
+
+export async function fetchAuthInfo(): Promise<AuthInfo> {
+  const res = await fetchWithTimeout(`${BASE}/api/auth`);
+  if (!res.ok) throw httpError(res, "Failed to fetch auth info");
   return res.json();
 }
 

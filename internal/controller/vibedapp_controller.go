@@ -41,16 +41,18 @@ import (
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
-// Condition types written into VibedAppStatus.Conditions.
+// Condition types written into VibedAppStatus.Conditions. Defined with the API
+// types so controller and API consumers cannot drift; aliased here for the
+// controller's existing call sites.
 const (
 	// ConditionReady is the headline condition: True once the app is
 	// serving traffic, False otherwise.
-	ConditionReady = "Ready"
+	ConditionReady = vibedv1.ConditionReady
 
 	// ConditionSourceValid is True when the spec's Source resolves to
 	// exactly one of TarballRef or GitRef. Provides the user-visible reason
 	// when validation fails.
-	ConditionSourceValid = "SourceValid"
+	ConditionSourceValid = vibedv1.ConditionSourceValid
 )
 
 // Reason strings used in conditions. Keep short and machine-readable.

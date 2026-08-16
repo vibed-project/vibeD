@@ -10,6 +10,8 @@ import (
 	"sort"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -78,6 +80,13 @@ func appToArtifact(app *vibedv1.VibedApp) *api.Artifact {
 	}
 	if app.Status.LastDeployedAt != nil {
 		a.UpdatedAt = app.Status.LastDeployedAt.Time
+	}
+	// Explain a failure. An app that never got a pod has no logs, so the Ready
+	// condition is the only diagnosis an agent can act on.
+	if c := meta.FindStatusCondition(app.Status.Conditions, vibedv1.ConditionReady); c != nil && c.Message != "" {
+		if app.Status.Phase == vibedv1.PhaseFailed {
+			a.Error = c.Message
+		}
 	}
 	return a
 }

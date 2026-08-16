@@ -37,6 +37,20 @@ const (
 	PhaseFailed    Phase = "Failed"
 )
 
+// Condition types written into VibedAppStatus.Conditions. They live with the
+// API types (not the controller) because API consumers read them too — the
+// HTTP layer surfaces the Ready condition's reason/message as the failure
+// explanation for deploys that never produce a pod, and therefore no logs.
+const (
+	// ConditionReady is the headline condition: True once the app is
+	// serving traffic, False otherwise.
+	ConditionReady = "Ready"
+
+	// ConditionSourceValid is True when the spec's Source resolves to
+	// exactly one of TarballRef or GitRef.
+	ConditionSourceValid = "SourceValid"
+)
+
 // EnvVar is a single environment variable passed to the user process.
 type EnvVar struct {
 	Name  string `json:"name"`

@@ -52,7 +52,25 @@ export default function ApplicationsTable(props: Props) {
       sortable: true,
       render: (a) => {
         const m = statusMeta[a.status] ?? statusMeta.pending
-        return <Badge tone={m.tone} dot>{m.label}</Badge>
+        const badge = <Badge tone={m.tone} dot>{m.label}</Badge>
+        // A deploy that failed before it got a pod has no logs, so this
+        // explanation is the only thing the user can act on — show it inline
+        // rather than making them go hunting for empty logs.
+        if (!a.error) return badge
+        return (
+          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 'var(--space-1)', alignItems: 'flex-start' }}>
+            {badge}
+            <span
+              title={a.error}
+              style={{
+                fontSize: 'var(--text-xs)', color: 'var(--text-muted)',
+                maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}
+            >
+              {a.error}
+            </span>
+          </span>
+        )
       },
     },
     { key: 'target', header: 'Runtime', sortable: true, render: (a) => targetLabels[a.target] ?? a.target },

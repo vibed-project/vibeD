@@ -45,10 +45,16 @@ const (
 type App struct {
 	AppId          string     `json:"app_id"`
 	LastDeployedAt *time.Time `json:"last_deployed_at,omitempty"`
-	Name           *string    `json:"name,omitempty"`
-	Owner          *string    `json:"owner,omitempty"`
-	Phase          Phase      `json:"phase"`
-	Runtime        *struct {
+
+	// Message Human-readable explanation of the current phase, from the Ready condition. On a failed deploy this carries why it failed (e.g. no warm pool for the required template) — often the only diagnosis available, since a deploy that never gets a pod has no logs.
+	Message *string `json:"message,omitempty"`
+	Name    *string `json:"name,omitempty"`
+	Owner   *string `json:"owner,omitempty"`
+	Phase   Phase   `json:"phase"`
+
+	// Reason Short CamelCase reason for the current phase, from the Ready condition (e.g. TemplateMissing). Machine-readable; stable.
+	Reason  *string `json:"reason,omitempty"`
+	Runtime *struct {
 		Lane     *AppRuntimeLane `json:"lane,omitempty"`
 		Template *string         `json:"template,omitempty"`
 	} `json:"runtime,omitempty"`
