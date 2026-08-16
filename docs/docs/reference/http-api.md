@@ -139,7 +139,9 @@ curl -H "Authorization: Bearer $VIBED_TOKEN" \
       "phase": "Ready",
       "url": "https://my-tool.vibed.example.com",
       "runtime": { "lane": "general", "template": "node-24" },
-      "last_deployed_at": "2026-07-03T10:12:00Z"
+      "last_deployed_at": "2026-07-03T10:12:00Z",
+      "reason": "Running",
+      "message": "user process listening"
     }
   ],
   "total": 1
@@ -147,6 +149,8 @@ curl -H "Authorization: Bearer $VIBED_TOKEN" \
 ```
 
 `items` is the requested page; `total` is the number of apps the caller can see **after** owner/authorization filtering — the full count, not the page size — so a client can tell whether more pages remain. With no `limit`/`offset` the whole list is returned and `total` equals the length of `items`. `phase` is one of `Pending`, `Claiming`, `Starting`, `Ready`, `Suspended`, `Failed` (see [App Lifecycle](../concepts/app-lifecycle.md)). Returns `401` without a token.
+
+`reason` and `message` carry the app's Ready condition — a short machine-readable code and a human explanation. On a **failed** app this is often the only diagnosis available: a deploy that fails before a pod exists (no warm pool for the required template, say) produces no logs at all, so `GET /v1/apps/{id}/logs` returns nothing to explain it. Read these before retrying — most such failures are configuration gaps that will fail again identically. Healthy apps carry them too (`Running` / "user process listening"), so treat them as an error only when `phase` is `Failed`.
 
 ### `GET /v1/apps/{id}`
 
@@ -301,7 +305,7 @@ Whether events persist depends on the store backend — see [Audit Trail](../con
 
 The source blob that the in-sandbox agent (`vibed-agent`) pulls on startup. This route is served **only** when the tarball store uses the `served` backend (dev). Requests must be `GET`/`HEAD` for a path ending in `.tar.gz`; anything else is `404` or `405`. There are no directory listings.
 
-It sits behind the same auth middleware as `/v1`, so only the shared agent token can pull. In production the `served` backend is not used: sandboxes have no cluster DNS or cluster-internal egress under the restrictive NetworkPolicy, so the agent instead pulls from a pre-signed **S3** URL and vibeD serves nothing here. See [Storage](../configuration/storage.md) for `served` vs `s3`.
+It sits behind the same auth middleware as `/v1`, so only the shared agent token can pull. The `{id}` is a **capability**, not a guessable name: since the agent authenticates with one shared token there is no per-user identity to authorize against, so each key carries 128 bits of entropy (`myapp.v3.<32 hex>`) and possession of the reference is the authorization. Keys are minted at deploy time and stored on the app, never re-derived. Sources uploaded before v0.6.0 keep their older, name-derived keys until version retention evicts them. In production the `served` backend is not used: sandboxes have no cluster DNS or cluster-internal egress under the restrictive NetworkPolicy, so the agent instead pulls from a pre-signed **S3** URL and vibeD serves nothing here. See [Storage](../configuration/storage.md) for `served` vs `s3`.
 
 ## Other `/api` endpoints
 
@@ -314,8 +318,29 @@ These `/api` routes remain — they have no `/v1` equivalent:
 | `GET`/`POST` `/api/share/{token}` | Public [share-link](#share-links) resolution (unauthenticated) |
 | `DELETE /api/share-links/{token}` | Revoke a [share link](#share-links)                       |
 | `/api/events`                 | Dashboard SSE stream of app lifecycle events                  |
+| `/api/auth`                   | Public: active auth mode + browser login URL (see below)      |
 | `/api/whoami`                 | Authenticated caller's identity                              |
 | `/api/users`, `/api/departments` | Admin user/department management                          |
+
+### `GET /api/auth`
+
+Reports which auth mode the server runs and, for modes with a browser login
+flow, where that flow starts. **Unauthenticated by design** — a login screen
+needs the mode *before* it can authenticate, and the response reveals nothing
+the login endpoints don't already.
+
+```bash
+curl http://localhost:8080/api/auth
+```
+
+```json
+{ "enabled": true, "mode": "saml", "loginUrl": "/saml/login" }
+```
+
+`loginUrl` is empty for bearer-style modes (`apikey`, `oidc`), where the client
+supplies a token or sits behind an authenticating proxy. The dashboard uses
+this to send users to SSO instead of showing an API-key prompt that could not
+work in that mode.
 
 ## MCP endpoint
 

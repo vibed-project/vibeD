@@ -26,13 +26,15 @@ kubectl get crd vibedapps.vibed.dev -o jsonpath='{.spec.versions[0].schema.openA
 kubectl get vibedapp <name> -n vibed-apps -o jsonpath='{range .status.conditions[*]}{.type}={.reason}: {.message}{"\n"}{end}'
 ```
 
-- **`TemplateMissing: no SandboxTemplate for template "<slot>"`** — the classifier picked a slot (e.g. `python-313`, `node-24`) that has no warm pool in this install. The dev overlay deliberately ships only `static-nginx` to keep `make dev` fast. Enable the slot you need:
+- **`TemplateMissing: no SandboxTemplate for template "<slot>"`** — the classifier picked a slot (e.g. `go-123`, `base-al2023`) that has no warm pool in this install. The dev overlay ships `static-nginx`, `node-24` and `python-313`; the heavier slots are opt-in. Enable the one you need:
 
   ```bash
-  make enable-python-pool   # or enable-node-pool
+  make enable-go-pool   # or enable-base-pool
   ```
 
-  See [Local development → warm pools beyond static](../getting-started/local-dev.md#warm-pools-beyond-static--opt-in-per-slot).
+  This failure happens *before* a pod exists, so there are no logs to read. The reason and message are on the app itself — `GET /v1/apps/{id}` returns them, and both MCP tools surface them — so check those rather than chasing empty logs. Retrying will not help: it is a configuration gap, not a transient error.
+
+  See [Local development → warm pools](../getting-started/local-dev.md#warm-pools).
 
 - **`TemplateInvalid: template "<slot>" image failed validation`** — the BYO validator marked the warm pool's image as not meeting the agent contract. Two common dev causes: (1) the warm pod hasn't reached `Ready` yet and the validator recorded "no Ready pod" — restart the controller (`kubectl rollout restart -n vibed-system deploy/vibed-controller`) to force an immediate re-check rather than waiting for the next 2-minute cycle; (2) the template image is genuinely broken — see the [BYO base-image guide](../configuration/custom-base-images.md) for the contract.
 

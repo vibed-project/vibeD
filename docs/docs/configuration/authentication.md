@@ -127,6 +127,8 @@ An unknown `auth.mode` is rejected at startup with an error listing the register
 
 Each mode is a **provider** that contributes a required token `Verifier` — checked on every authenticated request — and, optionally, a set of **public login routes**. The built-in bearer-only modes (`apikey`, `oauth`, `oidc`) contribute no routes. A mode whose login flow needs browser-facing endpoints (for example an SSO metadata document or an assertion-consumer / callback endpoint) declares them as routes, and vibeD mounts those routes **outside** the bearer-auth middleware. That is deliberate: a login route is how a caller obtains a session in the first place, so it cannot itself require one. Login routes must live on public paths — not under `/api`, `/v1`, `/mcp`, or `/internal/sources/`.
 
+Clients discover all of this at runtime through the public **`GET /api/auth`**, which reports `{enabled, mode, loginUrl}`. `loginUrl` is non-empty only for modes with a browser login flow, and the dashboard uses it to redirect to SSO rather than showing an API-key prompt that cannot work in that mode. A mode that mounts login routes should therefore also be reachable this way — see the [HTTP API reference](../reference/http-api.md#get-apiauth).
+
 See [Custom Auth Providers](../extending/auth-providers.md) for the extension surface, the exported types in `pkg/plugin`, and how to build a custom binary.
 
 ## What Gets Protected

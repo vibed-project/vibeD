@@ -43,6 +43,24 @@ The primary tool for deploying web artifacts to the cluster.
 }
 ```
 
+A `"status": "failed"` result also carries `reason` and `message` explaining
+why:
+
+```json
+{
+  "artifact_id": "my-api",
+  "name": "my-api",
+  "status": "failed",
+  "reason": "TemplateMissing",
+  "message": "no SandboxTemplate for template \"go-123\" (no warm pool configured for it)"
+}
+```
+
+**Read them before retrying.** A deploy that fails this early never gets a pod,
+so `get_logs` returns nothing — and most such failures are configuration gaps
+that will fail again identically. `get_artifact_status` surfaces the same text
+in its `error` field.
+
 ## What Happens
 
 1. **Validates** the name (DNS-safe, unique).

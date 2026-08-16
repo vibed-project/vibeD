@@ -92,8 +92,8 @@ The classifier picks `static-nginx` automatically. To force a lane/template, add
 
 A `200` means the app reached `Ready` within the latency budget and the `url` is live. A `202` with a `status_url` means it took a slow path — poll `GET /v1/apps/{app_id}` until `phase: Ready`.
 
-:::tip Deploying Python/Node/Go
-The dev install only enables the `static-nginx` warm pool. Deploying a Python or Node source without first running `make enable-python-pool` (or `enable-node-pool`) will return `Phase=Failed, Reason=TemplateMissing`. See [Local development → warm pools beyond static](local-dev.md#warm-pools-beyond-static--opt-in-per-slot).
+:::tip Deploying Go or a custom base image
+The dev install runs the `static-nginx`, `node-24` and `python-313` warm pools, so static, JS and Python sources deploy with no extra step. The heavier `go-123` and `base-al2023` slots stay opt-in: deploying one of those first returns `Phase=Failed, Reason=TemplateMissing`, and the app's `message` field says which slot is missing — that message is the only diagnosis available, because an app that never gets a pod has no logs. Enable the slot with `make enable-go-pool` / `make enable-base-pool`; see [Local development → warm pools](local-dev.md#warm-pools).
 :::
 
 ## See it

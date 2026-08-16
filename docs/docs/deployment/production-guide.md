@@ -59,6 +59,8 @@ auth:
 agent-sandbox gives sandbox pods **no cluster-internal egress and no cluster DNS** once a NetworkPolicy is enforced — this is where enterprise data-egress controls live. Two consequences:
 
 - **Source must come from `s3`.** A pre-signed S3/MinIO URL is reachable over the sandbox's allowed public egress; the in-cluster `served` backend is not. `served` is dev-only.
+`networkPolicy.enabled: true` also locks down **Caddy's admin API** (`:2019`), which can repoint any app's hostname at an arbitrary upstream. It is published on the `vibed-caddy` Service and must listen on the pod IP (vibed-router programs it from another pod), so without a policy any pod in the cluster — including a user sandbox — can reach it. The shipped policy admits `:2019` from vibed-router only, while leaving the HTTP/HTTPS data plane open.
+
 - **vibeD must own the NetworkPolicy.** agent-sandbox's `Managed` mode allows ingress only from an `app: sandbox-router` pod it doesn't ship, and blocks all cluster egress — which breaks the controller's probe and Caddy's proxy. Set `runtime.sandboxNetworkPolicy: Unmanaged` and `networkPolicy.enabled: true`; vibeD then ships a policy that allows exactly: control-plane → sandbox `:8080`/`:9000`, DNS, and public egress (for the S3 pull), with cluster-internal CIDRs denied.
 
 ## 4. Install
