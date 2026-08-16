@@ -49,3 +49,22 @@ Service account name
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Warm-pool image reference. An untagged repo gets the chart's appVersion
+appended, so runner images track the release automatically instead of being
+pinned by hand (they drifted to 0.4.4 across two releases, shipping sandbox
+agents that predated the v0.5.1 fetch/extract hardening). A ref that already
+carries a tag or digest is used verbatim, so deliberate pins still work.
+The tag check looks only at the final path segment — a registry host may
+legitimately contain a port, e.g. registry.local:5000/vibed-runner-node.
+*/}}
+{{- define "vibed.warmPoolImage" -}}
+{{- $img := .image -}}
+{{- $lastSegment := regexReplaceAll ".*/" $img "" -}}
+{{- if or (contains ":" $lastSegment) (contains "@" $lastSegment) -}}
+{{- $img -}}
+{{- else -}}
+{{- printf "%s:%s" $img .root.Chart.AppVersion -}}
+{{- end -}}
+{{- end -}}

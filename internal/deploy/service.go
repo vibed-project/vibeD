@@ -19,6 +19,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
@@ -147,6 +148,14 @@ type Result struct {
 	Phase vibedv1.Phase
 	URL   string
 	Ready bool
+
+	// Reason and Message carry the Ready condition's explanation for a
+	// terminal phase. On a failure that never produced a pod (e.g. no warm
+	// pool for the required template) this is the ONLY diagnosis available —
+	// there are no logs to fetch — so callers must surface it rather than
+	// reporting a bare "failed".
+	Reason  string
+	Message string
 }
 
 func (s *Service) defaults() {
@@ -302,15 +311,38 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		}
 	}
 
+	// Ownership gate for a redeploy. A redeploy mutates an EXISTING app, so the
+	// caller must own it (or be an admin). Without this, deploying under a name
+	// someone else already used silently takes over their app — replacing its
+	// source and serving the attacker's code on the victim's URL — because
+	// nothing downstream compares owners. Apps with no recorded owner (legacy
+	// rows) stay open so this can't strand them.
+	callerRole := vibedauth.RoleFromContext(ctx)
+	if !isNew && existing.Spec.Owner != "" && existing.Spec.Owner != req.Owner && callerRole != "admin" {
+		aerr := &authz.DeniedError{
+			Action: authz.ActionAppDeploy,
+			Reason: "app is owned by another user",
+		}
+		_ = s.record(ctx, "deploy", req.Name, "denied", aerr.Error())
+		return nil, aerr
+	}
+
 	// Authorization: may this caller deploy into the target namespace/team?
-	// Consulted on new deploys and redeploys alike.
+	// Consulted on new deploys and redeploys alike. Resource.Owner must be the
+	// EXISTING app's owner on a redeploy — passing the caller's own id would
+	// describe every request as self-owned and blind any ownership-aware
+	// authorizer (e.g. the enterprise RBAC one) to a takeover attempt.
+	resourceOwner := req.Owner
+	if !isNew && existing.Spec.Owner != "" {
+		resourceOwner = existing.Spec.Owner
+	}
 	if s.Authz != nil {
 		if aerr := s.Authz.Authorize(ctx, authz.Request{
 			Subject: req.Owner,
-			Role:    vibedauth.RoleFromContext(ctx),
+			Role:    callerRole,
 			Action:  authz.ActionAppDeploy,
 			Resource: authz.Resource{
-				Kind: "app", ID: req.Name, Owner: req.Owner, Namespace: t.Namespace,
+				Kind: "app", ID: req.Name, Owner: resourceOwner, Namespace: t.Namespace,
 			},
 		}); aerr != nil {
 			_ = s.record(ctx, "deploy", req.Name, "denied", aerr.Error())
@@ -345,7 +377,11 @@ func (s *Service) Deploy(ctx context.Context, req Request) (*Result, error) {
 		history = loadVersions(existing)
 	}
 	version := nextVersion(history)
-	tarballKey := versionKey(req.Name, version)
+	tarballKey, kerr := newVersionKey(req.Name, version)
+	if kerr != nil {
+		_ = s.record(ctx, "deploy", req.Name, "error", kerr.Error())
+		return nil, kerr
+	}
 
 	// Store the tarball so the agent can pull it. On the streaming path this
 	// re-reads the caller's seekable reader or the spool file; the spool is an
@@ -592,11 +628,20 @@ func (s *Service) pollReady(ctx context.Context, key types.NamespacedName, deadl
 func phaseResult(name string, app *vibedv1.VibedApp) *Result {
 	switch app.Status.Phase {
 	case vibedv1.PhaseReady:
-		return &Result{AppID: name, Phase: app.Status.Phase, URL: app.Status.URL, Ready: true}
+		return withReadyCondition(&Result{AppID: name, Phase: app.Status.Phase, URL: app.Status.URL, Ready: true}, app)
 	case vibedv1.PhaseFailed:
-		return &Result{AppID: name, Phase: app.Status.Phase, URL: app.Status.URL, Ready: false}
+		return withReadyCondition(&Result{AppID: name, Phase: app.Status.Phase, URL: app.Status.URL, Ready: false}, app)
 	}
 	return nil
+}
+
+// withReadyCondition copies the Ready condition's reason/message onto the
+// Result so failures explain themselves to every caller (HTTP, MCP, CLI).
+func withReadyCondition(res *Result, app *vibedv1.VibedApp) *Result {
+	if c := meta.FindStatusCondition(app.Status.Conditions, vibedv1.ConditionReady); c != nil {
+		res.Reason, res.Message = c.Reason, c.Message
+	}
+	return res
 }
 
 func readCapped(r io.Reader, max int64) ([]byte, error) {

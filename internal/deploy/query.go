@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -232,6 +233,27 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 		_ = s.record(ctx, "delete", id, "error", derr.Error())
 		return fmt.Errorf("delete VibedApp: %w", derr)
 	}
+	// Revoke this app's share links. ResolveShareLink looks the app up by NAME
+	// at request time, so a link left live after deletion silently re-binds to
+	// whatever app next takes that name — publishing a different (possibly
+	// another user's) app to everyone holding the old URL. Best-effort: the CR
+	// is already gone, and a failure here must not fail the delete, but it is
+	// logged rather than swallowed so a stuck revoke is visible.
+	if s.ShareLinks != nil {
+		links, lerr := s.ShareLinks.ListShareLinks(ctx, id, 0, 0)
+		if lerr != nil {
+			slog.Default().Warn("could not list share links to revoke on delete", "app", id, "error", lerr)
+		}
+		for _, l := range links {
+			if l.Revoked {
+				continue
+			}
+			if rerr := s.ShareLinks.RevokeShareLink(ctx, l.Token); rerr != nil {
+				slog.Default().Warn("could not revoke share link on delete", "app", id, "error", rerr)
+			}
+		}
+	}
+
 	// Best-effort source cleanup; the CR is already gone either way. Remove
 	// every retained version's tarball, plus the legacy per-name key for apps
 	// created before versioned storage.

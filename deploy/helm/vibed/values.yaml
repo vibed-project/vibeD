@@ -266,15 +266,19 @@ warmPoolsEnabled: true
 
 # -- Warm pools: one SandboxTemplate + SandboxWarmPool per language template
 #    (refactor.md §6.1), rendered into namespaces.apps. Set replicas to size
-#    each pool; image must embed vibed-agent. The image is a full ref
-#    (repo:tag) — bump the tag with each release (CI publishes these to GHCR).
-#    Override with your own registry/tag in production.
+#    each pool; image must embed vibed-agent.
+#
+#    The image may be an untagged repo (as below), in which case the chart
+#    appends its own appVersion — so the runners can never silently lag the
+#    release the way they did when each tag was pinned by hand (they sat on
+#    0.4.4 through two releases, shipping agents that predated the v0.5.1
+#    fetch/extract hardening). Give a full `repo:tag` to pin deliberately.
 warmPools:
-  node-24:      { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-runner-node:0.4.4",         replicas: 5, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
-  python-313:   { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-runner-python:0.4.4",       replicas: 5, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
-  go-123:       { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-template-go-123:0.4.4",     replicas: 5, resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { cpu: "1", memory: 768Mi } } }
-  base-al2023:  { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-template-base-al2023:0.4.4", replicas: 5, resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } } }
-  static-nginx: { enabled: true,  lane: fast,    image: "ghcr.io/vibed-project/vibed-template-static-nginx:0.4.4", replicas: 5, resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { cpu: 200m, memory: 128Mi } } }
+  node-24:      { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-runner-node",         replicas: 5, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
+  python-313:   { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-runner-python",       replicas: 5, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
+  go-123:       { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-template-go-123",     replicas: 5, resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { cpu: "1", memory: 768Mi } } }
+  base-al2023:  { enabled: true,  lane: general, image: "ghcr.io/vibed-project/vibed-template-base-al2023", replicas: 5, resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } } }
+  static-nginx: { enabled: true,  lane: fast,    image: "ghcr.io/vibed-project/vibed-template-static-nginx", replicas: 5, resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { cpu: 200m, memory: 128Mi } } }
 
 config:
   server:

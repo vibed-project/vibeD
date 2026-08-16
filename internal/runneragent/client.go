@@ -33,26 +33,36 @@ type Client struct {
 // whole-request Timeout: it would silently truncate any caller deadline above
 // it (e.g. the injector's 60s cold-start budget). The transport only bounds
 // the individual phases of a hung connection.
-func NewClient(controlURL, token string) *Client {
-	dialer := &net.Dialer{
+// sharedTransport is process-wide on purpose. A Transport owns its connection
+// pool, and every production call site builds a Client per call (readiness
+// probe per reconcile, source injection, warm-pool image validation). A
+// per-Client Transport therefore reused no connection and — with no
+// IdleConnTimeout, whose zero value means "never expire" — parked each one in a
+// private pool that nothing could ever drain, leaking sockets and their reader
+// goroutines for the controller's lifetime. One shared Transport both fixes the
+// leak and lets keep-alives actually do their job.
+var sharedTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
-	}
+	}).DialContext,
+	TLSHandshakeTimeout: 10 * time.Second,
+	// /inject answers only after a synchronous tarball download + process
+	// start, which can legitimately approach the injector's 60s budget. Keep
+	// this comfortably above it so it trips only on a truly wedged agent,
+	// never on a slow cold start.
+	ResponseHeaderTimeout: 2 * time.Minute,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   4,
+	IdleConnTimeout:       90 * time.Second,
+}
+
+func NewClient(controlURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(controlURL, "/"),
 		token:   token,
-		hc: &http.Client{
-			Transport: &http.Transport{
-				Proxy:               http.ProxyFromEnvironment,
-				DialContext:         dialer.DialContext,
-				TLSHandshakeTimeout: 10 * time.Second,
-				// /inject answers only after a synchronous tarball download +
-				// process start, which can legitimately approach the injector's
-				// 60s budget. Keep this comfortably above it so it trips only
-				// on a truly wedged agent, never on a slow cold start.
-				ResponseHeaderTimeout: 2 * time.Minute,
-			},
-		},
+		hc:      &http.Client{Transport: sharedTransport},
 	}
 }
 

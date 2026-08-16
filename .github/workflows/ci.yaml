@@ -12,9 +12,12 @@ on:
       - 'docs/**'
       - '*.md'
 
+# Least privilege by default: the build/race/boundary jobs below run
+# pull-request code, so the workflow token they inherit must NOT be able to
+# publish. packages:write is granted only to the `container` job, which never
+# runs on a pull_request.
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
@@ -81,6 +84,9 @@ jobs:
   # Template/runner images are built separately in runner-images.yaml.
   container:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     needs: build
     runs-on: ubuntu-latest
     strategy:

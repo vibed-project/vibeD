@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/pkg/api"
@@ -141,6 +143,11 @@ func New(health, ready, metrics http.Handler, logger *slog.Logger) *Server {
 // to temp files. The deploy service enforces the real 50 MB source cap.
 const maxMultipartMemory = 8 << 20 // 8 MB
 
+// maxDeployOverheadBytes is the slack allowed above the tarball limit for the
+// metadata part and MIME framing, so a legitimately maximal tarball isn't
+// rejected by the body cap for its envelope.
+const maxDeployOverheadBytes = 1 << 20 // 1 MB
+
 // ---- Ops endpoints (real handlers, delegated) ----
 
 func (s *Server) Healthz(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +182,23 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 // runs it through the deploy service, writing the 200/202/4xx response. When
 // forcedName is set (a redeploy of an existing app) it overrides metadata.name.
 func (s *Server) runDeploy(w http.ResponseWriter, r *http.Request, owner, forcedName string) {
+	// Bound the body BEFORE parsing. ParseMultipartForm keeps only
+	// maxMultipartMemory in RAM and spools every larger part to a temp file
+	// with no total cap, so without this an unauthenticated-size request can
+	// fill the node's disk. deploy.MaxTarballBytes is enforced only inside
+	// Service.Deploy — i.e. after the whole body has already been written to
+	// disk — so it cannot protect this path. The slack covers the metadata
+	// part and MIME framing; exceeding it surfaces as 413 below.
+	r.Body = http.MaxBytesReader(w, r.Body, deploy.MaxTarballBytes+maxDeployOverheadBytes)
 	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, Error{
+				Code:    "payload_too_large",
+				Message: fmt.Sprintf("deploy body exceeds the %d MB limit", deploy.MaxTarballBytes/(1024*1024)),
+			})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, Error{Code: "bad_multipart", Message: err.Error()})
 		return
 	}
@@ -365,6 +388,18 @@ func toAPIApp(app *vibedv1.VibedApp) App {
 	}
 	if app.Status.URL != "" {
 		out.Url = strPtr(app.Status.URL)
+	}
+	// Surface the Ready condition's reason/message. For a deploy that fails
+	// before any pod exists (e.g. TemplateMissing — no warm pool for the
+	// required template) this is the ONLY diagnosis available: there are no
+	// logs to fetch, so without it clients can only report "no detail".
+	if c := meta.FindStatusCondition(app.Status.Conditions, vibedv1.ConditionReady); c != nil {
+		if c.Reason != "" {
+			out.Reason = strPtr(c.Reason)
+		}
+		if c.Message != "" {
+			out.Message = strPtr(c.Message)
+		}
 	}
 	if app.Status.LastDeployedAt != nil {
 		t := app.Status.LastDeployedAt.Time

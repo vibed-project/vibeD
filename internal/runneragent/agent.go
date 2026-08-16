@@ -517,6 +517,11 @@ func (a *Agent) stopProcess() {
 	a.stopProcessLocked()
 }
 
+// hardKillGrace bounds the wait for a process to be reaped after SIGKILL, so a
+// descendant that escaped the process group (and thus kept a log pipe open)
+// cannot wedge the agent's control API by holding a.mu indefinitely.
+const hardKillGrace = 5 * time.Second
+
 // stopProcessLocked sends SIGTERM to the process group, escalating to SIGKILL
 // after StopGrace. It waits for the supervisor goroutine to observe the exit
 // (via done) rather than calling cmd.Wait() itself — Wait must only be called
@@ -543,7 +548,19 @@ func (a *Agent) stopProcessLocked() {
 	case <-time.After(a.cfg.StopGrace):
 		a.cfg.Logger.Warn("user process did not stop in time, killing", "pid", pid)
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		<-done
+		// Bound this wait too. done closes only after cmd.Wait() returns, and
+		// cmd.Wait() blocks until the stdout/stderr copy goroutine sees EOF —
+		// which needs EVERY write end closed, including one inherited by a
+		// descendant that escaped the process group (so SIGKILL never reached
+		// it). An unbounded receive here would hold a.mu forever and wedge the
+		// whole control API. Abandoning the reap leaks at most one goroutine;
+		// deadlocking the agent takes down the sandbox.
+		select {
+		case <-done:
+		case <-time.After(hardKillGrace):
+			a.cfg.Logger.Error("user process did not reap after SIGKILL; abandoning",
+				"pid", pid, "grace", hardKillGrace)
+		}
 	}
 	a.cfg.Logger.Info("user process stopped", "pid", pid)
 }
@@ -614,12 +631,34 @@ func writeFiles(root string, files map[string]string) error {
 
 // buildEnv merges extra env over the agent's own environment and forces PORT
 // to the app port so apps that honour $PORT bind where vibeD expects.
+// isAgentPrivateEnv reports whether an env var belongs to the agent's own
+// control plane and must never reach the user process.
+//
+// The user process is UNTRUSTED code sharing this container, and it inherits
+// the agent's environment. VIBED_AGENT_TOKEN is the bearer token for the
+// control API on :9000 — leaking it lets the workload call /inject on itself
+// and, since vibeD issues the token per sandbox-template rather than per app,
+// on other sandboxes it can reach, turning any deployed app into arbitrary code
+// execution in its neighbours. The whole VIBED_ prefix is dropped (deny by
+// default) so a future control variable can't silently re-open this; anything a
+// user app legitimately needs arrives via `extra` (the deploy's own env), which
+// is applied after this filter and can therefore still set VIBED_-prefixed
+// values deliberately.
+func isAgentPrivateEnv(key string) bool {
+	return strings.HasPrefix(key, "VIBED_")
+}
+
 func buildEnv(extra map[string]string, appPort int) []string {
 	merged := map[string]string{}
 	for _, kv := range os.Environ() {
-		if i := strings.IndexByte(kv, '='); i > 0 {
-			merged[kv[:i]] = kv[i+1:]
+		i := strings.IndexByte(kv, '=')
+		if i <= 0 {
+			continue
 		}
+		if isAgentPrivateEnv(kv[:i]) {
+			continue
+		}
+		merged[kv[:i]] = kv[i+1:]
 	}
 	for k, v := range extra {
 		merged[k] = v

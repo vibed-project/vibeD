@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -36,10 +38,27 @@ type VersionRecord struct {
 	RolledBackFrom int    `json:"rolledBackFrom,omitempty"`
 }
 
-// versionKey is the store key for a version's source tarball. App names are DNS
-// labels (no dots), so ".vN" can't collide with another app's name.
-func versionKey(name string, v int) string {
-	return fmt.Sprintf("%s.v%d", name, v)
+// newVersionKey mints the store key for a version's source tarball. App names
+// are DNS labels (no dots), so ".vN" can't collide with another app's name.
+//
+// The key is a CAPABILITY, not just a name. The served blob backend publishes
+// it at /internal/sources/<key>.tar.gz; that endpoint authenticates callers but
+// cannot authorize them per app, because the in-sandbox agent fetches with one
+// shared token and so carries no per-user identity to check. While the key was
+// derived purely from name and version ("shop.v1"), any authenticated client
+// could guess another user's key and read their source. The random suffix makes
+// the reference unguessable, so holding it *is* the authorization.
+//
+// Randomness is free at lookup time: the key is always persisted (in the
+// version history and spec.source.tarballRef) and never re-derived.
+func newVersionKey(name string, v int) (string, error) {
+	buf := make([]byte, 16) // 128 bits
+	if _, err := rand.Read(buf); err != nil {
+		// Fail closed. Falling back to a predictable key would silently
+		// re-expose every subsequent deploy's source.
+		return "", fmt.Errorf("generating source key: %w", err)
+	}
+	return fmt.Sprintf("%s.v%d.%s", name, v, hex.EncodeToString(buf)), nil
 }
 
 // loadVersions parses the deploy history from the app's annotation (oldest
