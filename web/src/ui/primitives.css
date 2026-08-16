@@ -1,0 +1,147 @@
+/* Shared UI primitives, token-driven. These replace the per-component button/
+   badge/card/input styles that were re-implemented across the app, so every
+   surface reads as one system in both themes. */
+
+/* --- Button ------------------------------------------------------------- */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: inherit;
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  padding: 0 var(--space-4);
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
+.ui-btn:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+.ui-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ui-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+.ui-btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.ui-btn-ghost { background: transparent; border-color: transparent; }
+.ui-btn-ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: transparent; }
+
+.ui-btn-danger { color: var(--red); border-color: var(--border); }
+.ui-btn-danger:hover:not(:disabled) { background: var(--red-soft); border-color: var(--red); }
+
+.ui-btn-sm { height: 28px; padding: 0 var(--space-3); font-size: var(--text-sm); }
+.ui-btn-icon { width: 36px; padding: 0; }
+
+/* --- Badge -------------------------------------------------------------- */
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.ui-badge-green { background: var(--green-soft); color: var(--green); }
+.ui-badge-yellow { background: var(--yellow-soft); color: var(--yellow); }
+.ui-badge-red { background: var(--red-soft); color: var(--red); }
+.ui-badge-blue { background: var(--blue-soft); color: var(--blue); }
+.ui-badge-accent { background: var(--accent-soft); color: var(--accent); }
+.ui-badge-dot::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* --- Card --------------------------------------------------------------- */
+.ui-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+/* --- Input -------------------------------------------------------------- */
+.ui-input {
+  height: 36px;
+  padding: 0 var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-base);
+  color: var(--text);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--motion-fast);
+}
+.ui-input:focus { border-color: var(--accent); outline: none; }
+.ui-input::placeholder { color: var(--text-faint); }
+
+/* --- Spinner ------------------------------------------------------------ */
+.ui-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ui-spin 0.7s linear infinite;
+}
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+
+/* --- Empty / error states ---------------------------------------------- */
+.ui-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  text-align: center;
+  padding: var(--space-7) var(--space-4);
+  color: var(--text-muted);
+}
+.ui-state-icon { font-size: 32px; opacity: 0.7; }
+.ui-state-title { font-size: var(--text-md); font-weight: var(--weight-semibold); color: var(--text); }
+.ui-state-desc { font-size: var(--text-sm); max-width: 42ch; }
+
+/* --- Toast -------------------------------------------------------------- */
+.ui-toast-region {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: var(--z-toast);
+}
+.ui-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 280px;
+  max-width: 420px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--text-sm);
+  animation: ui-toast-in var(--motion);
+}
+.ui-toast-error { border-left: 3px solid var(--red); }
+.ui-toast-success { border-left: 3px solid var(--green); }
+.ui-toast-close { margin-left: auto; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: var(--text-md); }
+@keyframes ui-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }

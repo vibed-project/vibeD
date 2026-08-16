@@ -1,6 +1,7 @@
-// Package gc implements a resource garbage collector that cleans up
-// orphaned Kubernetes resources left behind by crashed deploys or
-// partial delete failures.
+// Package gc implements a resource garbage collector that backstops the
+// owner-reference cascade for the live /v1 deploy path: it reaps orphaned
+// SandboxClaim CRs whose owning VibedApp is gone but whose owner-ref cascade
+// did not fire, so a stranded warm-pool pod is released back to the pool.
 package gc
 
 import (
@@ -10,17 +11,15 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
-	batchv1 "k8s.io/api/batch/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/metrics"
-	"github.com/vibed-project/vibeD/internal/store"
-	"github.com/vibed-project/vibeD/pkg/api"
+	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
 const (
@@ -63,23 +62,36 @@ func (d *deleteRunner) run(fn func(ctx context.Context)) {
 
 func (d *deleteRunner) wait() { _ = d.g.Wait() }
 
-const (
-	// labelManagedBy is used to identify vibeD-managed resources.
-	labelManagedBy = "app.kubernetes.io/managed-by=vibed"
-	// labelArtifactID is used to cross-reference resources against the store.
-	labelArtifactID = "vibed.dev/artifact-id"
-	// labelComponent identifies the resource type (e.g. "build").
-	labelComponent = "vibed.dev/component"
-	// labelStoreComponent marks artifact-store ConfigMaps that should not be GC'd.
-	labelStoreComponent = "app.kubernetes.io/component"
-)
+// labelApp is the label the controller's live /v1 path stamps on every
+// SandboxClaim it creates (internal/controller: appLabelKey, see claim.go). Its
+// value is the owning VibedApp's CR name, which is exactly the key the active
+// set (listActiveApps) is built on — so a claim is an orphan iff its label
+// value is not a live VibedApp name.
+const labelApp = "vibed.dev/app"
 
-// GarbageCollector periodically scans for orphaned K8s resources and removes them.
+// sandboxClaimGVR identifies the agent-sandbox SandboxClaim resource the live
+// /v1 path creates (one per VibedApp, owner-referenced to it). Group/version
+// mirror internal/controller.SandboxClaimGVK.
+var sandboxClaimGVR = schema.GroupVersionResource{
+	Group:    "extensions.agents.x-k8s.io",
+	Version:  "v1beta1",
+	Resource: "sandboxclaims",
+}
+
+// GarbageCollector periodically backstops the owner-reference cascade for the
+// live /v1 deploy path.
+//
+// Live resources are owner-referenced to their VibedApp and cascade-deleted by
+// Kubernetes when the app goes away, so in the normal case there is nothing to
+// collect. The GC exists only for the failure case: if a VibedApp's owner-ref
+// cascade did not fire, its SandboxClaim would be stranded — pinning a warm-pool
+// pod forever. The GC reaps such a claim (releasing the pod back to the pool)
+// once its owning VibedApp is gone from the authoritative live set and it is
+// older than MaxAge.
 type GarbageCollector struct {
-	clientset     kubernetes.Interface
-	dynamicClient dynamic.Interface // optional; nil if not provided
-	store         store.ArtifactStore
-	namespace     string
+	dynamicClient dynamic.Interface // reads/deletes SandboxClaim CRs; nil if agent-sandbox isn't installed
+	ctrlClient    ctrlclient.Client // reads VibedApp CRs to build the live set
+	appsNamespace string            // where /v1 creates VibedApp CRs and their SandboxClaims
 	interval      time.Duration
 	maxAge        time.Duration
 	dryRun        bool
@@ -88,13 +100,14 @@ type GarbageCollector struct {
 }
 
 // NewGarbageCollector creates a new GarbageCollector from the given config.
-// dynamicClient is optional — pass nil to skip the Sandbox sweep (cluster
-// doesn't have agent-sandbox installed).
+// dynamicClient is optional — pass nil to skip the SandboxClaim sweep (cluster
+// doesn't have agent-sandbox installed). ctrlClient reads VibedApp CRs to build
+// the authoritative live set; appsNamespace is where those CRs (and their
+// SandboxClaims) live.
 func NewGarbageCollector(
-	clientset kubernetes.Interface,
 	dynamicClient dynamic.Interface,
-	st store.ArtifactStore,
-	namespace string,
+	ctrlClient ctrlclient.Client,
+	appsNamespace string,
 	cfg config.GCConfig,
 	m *metrics.Metrics,
 	logger *slog.Logger,
@@ -109,10 +122,9 @@ func NewGarbageCollector(
 	}
 
 	return &GarbageCollector{
-		clientset:     clientset,
 		dynamicClient: dynamicClient,
-		store:         st,
-		namespace:     namespace,
+		ctrlClient:    ctrlClient,
+		appsNamespace: appsNamespace,
 		interval:      interval,
 		maxAge:        maxAge,
 		dryRun:        cfg.DryRun,
@@ -143,73 +155,121 @@ func (gc *GarbageCollector) Run(ctx context.Context) {
 	}
 }
 
-// collect runs a single GC cycle, cleaning up orphaned resources.
+// collect runs a single GC cycle, reaping orphaned SandboxClaims.
+//
+// It first builds the authoritative live set from VibedApp CRs. If that list
+// fails, the cycle is skipped entirely (fail-safe: no deletions) — deleting on
+// a partial/empty view could reap a live app's claim. The claim-orphan sweep
+// then reaps only claims whose owning VibedApp is absent from that set.
 func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.logger.Info("starting GC cycle")
 
-	res, err := gc.store.List(ctx, store.ListOptions{AdminView: true, Limit: 0})
+	active, err := gc.listActiveApps(ctx)
 	if err != nil {
-		gc.logger.Error("failed to list artifacts for GC, skipping cycle", "error", err)
+		gc.logger.Error("failed to list VibedApp CRs for GC, skipping cycle (fail-safe: no deletions)", "error", err)
 		return
 	}
 
-	activeArtifacts := make(map[string]bool, len(res.Artifacts))
-	for _, a := range res.Artifacts {
-		activeArtifacts[a.ID] = true
-	}
-
-	gc.cleanOrphanedJobs(ctx, activeArtifacts)
-	gc.cleanOrphanedConfigMaps(ctx, activeArtifacts)
-	gc.cleanOrphanedDeployments(ctx, activeArtifacts)
-	gc.cleanOrphanedSandboxes(ctx, activeArtifacts)
-	gc.logger.Info("GC cycle complete")
+	claimsReaped := gc.cleanOrphanedClaims(ctx, active)
+	gc.logger.Info("GC cycle complete",
+		"activeApps", len(active),
+		"claimsReaped", claimsReaped,
+		"dryRun", gc.dryRun,
+	)
 }
 
-// cleanOrphanedSandboxes deletes Sandbox CRs whose artifact no longer exists
-// in the store. Skipped silently when the agent-sandbox CRD isn't installed.
-func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeArtifacts map[string]bool) {
-	if gc.dynamicClient == nil {
-		return
+// listActiveApps builds the authoritative live set — VibedApp CR names in the
+// apps namespace — paged so a large fleet is streamed rather than loaded whole.
+// Keyed by CR Name, which is exactly the vibed.dev/app label value the /v1 path
+// stamps on each SandboxClaim. An error is returned so the caller can fail safe.
+func (gc *GarbageCollector) listActiveApps(ctx context.Context) (map[string]bool, error) {
+	active := make(map[string]bool)
+	var cont string
+	for {
+		var list vibedv1.VibedAppList
+		opts := []ctrlclient.ListOption{
+			ctrlclient.InNamespace(gc.appsNamespace),
+			ctrlclient.Limit(gcListPageSize),
+		}
+		if cont != "" {
+			opts = append(opts, ctrlclient.Continue(cont))
+		}
+		if err := gc.ctrlClient.List(ctx, &list, opts...); err != nil {
+			return nil, err
+		}
+		for i := range list.Items {
+			active[list.Items[i].Name] = true
+		}
+		cont = list.Continue
+		if cont == "" {
+			break
+		}
 	}
-	sandboxGVR := schema.GroupVersionResource{
-		Group:    "agents.x-k8s.io",
-		Version:  "v1beta1",
-		Resource: "sandboxes",
+	return active, nil
+}
+
+// cleanOrphanedClaims reaps live-path SandboxClaim CRs whose owning VibedApp is
+// gone. Each claim carries the vibed.dev/app label (value = the owning VibedApp
+// CR name) that the /v1 path stamps at create time. A claim is an orphan iff
+// that value is not in the active set — i.e. the VibedApp was deleted but the
+// owner-ref cascade failed to reap its claim, stranding a warm-pool pod.
+// Deleting the claim releases the pod back to the pool.
+//
+// Safety: never touches a claim whose VibedApp is live (active[app]); a claim
+// younger than MaxAge is spared (a delete racing an in-flight create would be
+// wrong); DryRun logs without deleting; deletes run with bounded concurrency;
+// and the sweep is skipped silently when the SandboxClaim CRD isn't installed.
+// The caller has already failed safe if the active-app list errored.
+//
+// Returns the number of claims reaped (or, in dry-run, that would be).
+func (gc *GarbageCollector) cleanOrphanedClaims(ctx context.Context, active map[string]bool) int {
+	if gc.dynamicClient == nil {
+		return 0
 	}
 
+	reaped := 0
 	runner := newDeleteRunner(ctx)
-	opts := metav1.ListOptions{LabelSelector: labelManagedBy, Limit: gcListPageSize}
+	opts := metav1.ListOptions{LabelSelector: labelApp, Limit: gcListPageSize}
 	for {
-		list, err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).List(ctx, opts)
+		list, err := gc.dynamicClient.Resource(sandboxClaimGVR).Namespace(gc.appsNamespace).List(ctx, opts)
 		if err != nil {
-			// agent-sandbox CRD not installed in this cluster: silent skip.
+			// SandboxClaim CRD not installed in this cluster: silent skip.
 			if k8serrors.IsNotFound(err) {
-				return
+				return reaped
 			}
-			gc.logger.Warn("failed to list sandboxes for GC", "error", err)
+			gc.logger.Warn("failed to list sandboxclaims for GC", "error", err)
 			break
 		}
 
-		for _, sb := range list.Items {
-			artifactID := sb.GetLabels()[labelArtifactID]
-			if artifactID == "" || activeArtifacts[artifactID] {
+		for _, claim := range list.Items {
+			app := claim.GetLabels()[labelApp]
+			// A claim with no app label, or whose owning VibedApp is still live,
+			// is not an orphan — never reap a live app's claim.
+			if app == "" || active[app] {
+				continue
+			}
+			// MaxAge guard: never reap a freshly-created claim in the cycle it
+			// appears — a delete racing an in-flight create would be wrong.
+			if age := time.Since(claim.GetCreationTimestamp().Time); age < gc.maxAge {
 				continue
 			}
 			if gc.dryRun {
-				gc.logger.Info("dry-run: would delete orphaned sandbox", "sandbox", sb.GetName(), "artifactID", artifactID)
+				gc.logger.Info("dry-run: would delete orphaned sandboxclaim", "claim", claim.GetName(), "app", app)
+				reaped++
 				continue
 			}
-			name := sb.GetName()
+			reaped++
+			name := claim.GetName()
 			runner.run(func(ctx context.Context) {
-				if err := gc.dynamicClient.Resource(sandboxGVR).Namespace(gc.namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+				if err := gc.dynamicClient.Resource(sandboxClaimGVR).Namespace(gc.appsNamespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 					if k8serrors.IsNotFound(err) {
 						return
 					}
-					gc.logger.Warn("failed to delete orphaned sandbox", "sandbox", name, "error", err)
+					gc.logger.Warn("failed to delete orphaned sandboxclaim", "claim", name, "error", err)
 					return
 				}
-				gc.metrics.GCResourcesCleaned.WithLabelValues("sandbox").Inc()
-				gc.logger.Info("deleted orphaned sandbox", "sandbox", name, "artifactID", artifactID)
+				gc.metrics.GCResourcesCleaned.WithLabelValues("sandboxclaim").Inc()
+				gc.logger.Info("deleted orphaned sandboxclaim", "claim", name, "app", app)
 			})
 		}
 
@@ -219,180 +279,5 @@ func (gc *GarbageCollector) cleanOrphanedSandboxes(ctx context.Context, activeAr
 		opts.Continue = list.GetContinue()
 	}
 	runner.wait()
-}
-
-// cleanOrphanedJobs deletes completed/failed build Jobs whose artifact
-// no longer exists in the store, or that are older than maxAge.
-func (gc *GarbageCollector) cleanOrphanedJobs(ctx context.Context, activeArtifacts map[string]bool) {
-	selector := labelManagedBy + "," + labelComponent + "=build"
-	runner := newDeleteRunner(ctx)
-	opts := metav1.ListOptions{LabelSelector: selector, Limit: gcListPageSize}
-	for {
-		jobs, err := gc.clientset.BatchV1().Jobs(gc.namespace).List(ctx, opts)
-		if err != nil {
-			gc.logger.Warn("failed to list jobs for GC", "error", err)
-			break
-		}
-
-		for i := range jobs.Items {
-			job := jobs.Items[i]
-			// Skip running jobs.
-			if !isJobFinished(&job) {
-				continue
-			}
-
-			artifactID := job.Labels[labelArtifactID]
-			if artifactID == "" {
-				continue
-			}
-
-			age := time.Since(job.CreationTimestamp.Time)
-			if age < gc.maxAge {
-				continue
-			}
-			// A finished job past maxAge is collected whether its artifact is gone
-			// (orphaned) or still present (stale build job).
-
-			if gc.dryRun {
-				gc.logger.Info("dry-run: would delete orphaned job", "job", job.Name, "artifactID", artifactID, "age", age)
-				continue
-			}
-
-			name := job.Name
-			runner.run(func(ctx context.Context) {
-				propagation := metav1.DeletePropagationBackground
-				if err := gc.clientset.BatchV1().Jobs(gc.namespace).Delete(ctx, name, metav1.DeleteOptions{
-					PropagationPolicy: &propagation,
-				}); err != nil {
-					gc.logger.Warn("failed to delete orphaned job", "job", name, "error", err)
-					return
-				}
-				gc.metrics.GCResourcesCleaned.WithLabelValues("job").Inc()
-				gc.logger.Info("deleted orphaned job", "job", name, "artifactID", artifactID)
-			})
-		}
-
-		if jobs.Continue == "" {
-			break
-		}
-		opts.Continue = jobs.Continue
-	}
-	runner.wait()
-}
-
-// cleanOrphanedConfigMaps deletes ConfigMaps whose artifact no longer exists.
-func (gc *GarbageCollector) cleanOrphanedConfigMaps(ctx context.Context, activeArtifacts map[string]bool) {
-	selector := labelManagedBy + "," + labelArtifactID
-	runner := newDeleteRunner(ctx)
-	opts := metav1.ListOptions{LabelSelector: selector, Limit: gcListPageSize}
-	for {
-		cms, err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).List(ctx, opts)
-		if err != nil {
-			gc.logger.Warn("failed to list configmaps for GC", "error", err)
-			break
-		}
-
-		for _, cm := range cms.Items {
-			// Skip artifact-store ConfigMaps (metadata store, not deploy CMs).
-			if cm.Labels[labelStoreComponent] == "artifact-store" {
-				continue
-			}
-
-			artifactID := cm.Labels[labelArtifactID]
-			if artifactID == "" || activeArtifacts[artifactID] {
-				continue
-			}
-
-			if gc.dryRun {
-				gc.logger.Info("dry-run: would delete orphaned configmap", "configmap", cm.Name, "artifactID", artifactID)
-				continue
-			}
-
-			name := cm.Name
-			runner.run(func(ctx context.Context) {
-				if err := gc.clientset.CoreV1().ConfigMaps(gc.namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-					gc.logger.Warn("failed to delete orphaned configmap", "configmap", name, "error", err)
-					return
-				}
-				gc.metrics.GCResourcesCleaned.WithLabelValues("configmap").Inc()
-				gc.logger.Info("deleted orphaned configmap", "configmap", name, "artifactID", artifactID)
-			})
-		}
-
-		if cms.Continue == "" {
-			break
-		}
-		opts.Continue = cms.Continue
-	}
-	runner.wait()
-}
-
-// cleanOrphanedDeployments deletes Deployments (and their matching Services)
-// whose artifact no longer exists in the store.
-func (gc *GarbageCollector) cleanOrphanedDeployments(ctx context.Context, activeArtifacts map[string]bool) {
-	runner := newDeleteRunner(ctx)
-	opts := metav1.ListOptions{LabelSelector: labelManagedBy, Limit: gcListPageSize}
-	for {
-		deployments, err := gc.clientset.AppsV1().Deployments(gc.namespace).List(ctx, opts)
-		if err != nil {
-			gc.logger.Warn("failed to list deployments for GC", "error", err)
-			break
-		}
-
-		for _, deploy := range deployments.Items {
-			artifactID := deploy.Labels[labelArtifactID]
-			if artifactID == "" || activeArtifacts[artifactID] {
-				continue
-			}
-
-			if gc.dryRun {
-				gc.logger.Info("dry-run: would delete orphaned deployment", "deployment", deploy.Name, "artifactID", artifactID)
-				continue
-			}
-
-			name := deploy.Name
-			runner.run(func(ctx context.Context) {
-				// Delete the Deployment.
-				if err := gc.clientset.AppsV1().Deployments(gc.namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-					gc.logger.Warn("failed to delete orphaned deployment", "deployment", name, "error", err)
-					return
-				}
-				gc.metrics.GCResourcesCleaned.WithLabelValues("deployment").Inc()
-				gc.logger.Info("deleted orphaned deployment", "deployment", name, "artifactID", artifactID)
-
-				// Also delete the matching Service (same name convention used by the kubernetes deployer).
-				if err := gc.clientset.CoreV1().Services(gc.namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-					gc.logger.Warn("failed to delete matching service", "service", name, "error", err)
-				} else {
-					gc.metrics.GCResourcesCleaned.WithLabelValues("service").Inc()
-					gc.logger.Info("deleted orphaned service", "service", name, "artifactID", artifactID)
-				}
-			})
-		}
-
-		if deployments.Continue == "" {
-			break
-		}
-		opts.Continue = deployments.Continue
-	}
-	runner.wait()
-}
-
-// isJobFinished returns true if the Job has completed or failed.
-func isJobFinished(job *batchv1.Job) bool {
-	for _, c := range job.Status.Conditions {
-		if (c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed) && c.Status == "True" {
-			return true
-		}
-	}
-	return false
-}
-
-// isNotFound returns true if the error is an api.ErrNotFound.
-func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	_, ok := err.(*api.ErrNotFound)
-	return ok
+	return reaped
 }

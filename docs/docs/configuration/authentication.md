@@ -56,7 +56,11 @@ auth:
 - Each key has a human-readable `name`; the owning user identity (UserID) is `apikey-<name>`, and a user record is auto-provisioned under that ID on first authentication
 - Optional `scopes` restrict what the key can do (empty = unrestricted)
 - Constant-time comparison prevents timing attacks
-- **Suspension is enforced:** setting a key's user record `status: suspended` immediately revokes access on the next request (401)
+- **Suspension is enforced:** setting a key's user record `status: suspended` revokes access (401). The change propagates within at most [`auth.identityCacheTTL`](config-reference.md#auth) (default 30s) on a warm cache, or immediately when the TTL is `0`. A role change is reflected on the same bound.
+
+:::note Static keys are resolved once at startup
+Static API-key secrets — literal values, `env:VAR`, and `file:/path` — are read **once at startup**. Rotating a key file or environment variable therefore takes effect only after a `vibed` restart. (The API-key user record still self-heals: provisioning is retried until it durably succeeds.)
+:::
 
 :::caution Upgrading to v0.4.4
 The canonical user ID for a static API key is now `apikey-<name>` everywhere — request identity, the provisioned user record, the role map, and **artifact ownership**. Before v0.4.4 the raw `name` was used for ownership, so artifacts deployed by a static-key user on an older version are owned under the bare `name` and won't match after upgrade. If you rely on static-key owner-scoping with pre-existing artifacts, re-key their ownership or redeploy. OIDC and no-auth users are unaffected.
@@ -122,6 +126,8 @@ auth:
 An unknown `auth.mode` is rejected at startup with an error listing the registered modes, so a typo can never silently disable auth.
 
 Each mode is a **provider** that contributes a required token `Verifier` — checked on every authenticated request — and, optionally, a set of **public login routes**. The built-in bearer-only modes (`apikey`, `oauth`, `oidc`) contribute no routes. A mode whose login flow needs browser-facing endpoints (for example an SSO metadata document or an assertion-consumer / callback endpoint) declares them as routes, and vibeD mounts those routes **outside** the bearer-auth middleware. That is deliberate: a login route is how a caller obtains a session in the first place, so it cannot itself require one. Login routes must live on public paths — not under `/api`, `/v1`, `/mcp`, or `/internal/sources/`.
+
+Clients discover all of this at runtime through the public **`GET /api/auth`**, which reports `{enabled, mode, loginUrl}`. `loginUrl` is non-empty only for modes with a browser login flow, and the dashboard uses it to redirect to SSO rather than showing an API-key prompt that cannot work in that mode. A mode that mounts login routes should therefore also be reachable this way — see the [HTTP API reference](../reference/http-api.md#get-apiauth).
 
 See [Custom Auth Providers](../extending/auth-providers.md) for the extension surface, the exported types in `pkg/plugin`, and how to build a custom binary.
 

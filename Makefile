@@ -183,10 +183,10 @@ load-static-nginx-image: image-static-nginx
 	KIND_EXPERIMENTAL_PROVIDER=$(KIND_RUNTIME) kind load image-archive /tmp/vibed-template-static-nginx-dev.tar --name $(KIND_CLUSTER)
 	@rm -f /tmp/vibed-template-static-nginx-dev.tar
 
-## Opt-in warm pools beyond static-nginx. install-vibed enables only the
-## static pool by default (the kind overlay disables the rest so the dev
-## install stays fast and small). These targets build + load the slot's
-## image and helm-upgrade to flip the pool on without changing the chart.
+## Warm pools. install-vibed brings up static-nginx + node-24 + python-313 by
+## default (see deploy/helm/vibed/values-kind.yaml), so static, JS and Python
+## apps all deploy out of the box. These targets re-flip a pool on if you
+## disabled it, and are the pattern to copy for go-123 / base-al2023.
 enable-python-pool: load-runner-images
 	helm upgrade --install vibed deploy/helm/vibed/ \
 		--namespace vibed-system --create-namespace \
@@ -307,7 +307,7 @@ install-agent-sandbox:
 
 install-deps: install-registry install-keycloak install-agent-sandbox
 
-install-vibed: load-image load-controller-image load-router-image load-static-nginx-image
+install-vibed: load-image load-controller-image load-router-image load-static-nginx-image load-runner-images
 	helm upgrade --install vibed deploy/helm/vibed/ \
 		--namespace vibed-system --create-namespace \
 		-f deploy/helm/vibed/values-kind.yaml \

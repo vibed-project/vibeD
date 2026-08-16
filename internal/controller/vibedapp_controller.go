@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -40,22 +41,25 @@ import (
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
-// Condition types written into VibedAppStatus.Conditions.
+// Condition types written into VibedAppStatus.Conditions. Defined with the API
+// types so controller and API consumers cannot drift; aliased here for the
+// controller's existing call sites.
 const (
 	// ConditionReady is the headline condition: True once the app is
 	// serving traffic, False otherwise.
-	ConditionReady = "Ready"
+	ConditionReady = vibedv1.ConditionReady
 
 	// ConditionSourceValid is True when the spec's Source resolves to
 	// exactly one of TarballRef or GitRef. Provides the user-visible reason
 	// when validation fails.
-	ConditionSourceValid = "SourceValid"
+	ConditionSourceValid = vibedv1.ConditionSourceValid
 )
 
 // Reason strings used in conditions. Keep short and machine-readable.
 const (
 	ReasonClaiming         = "Claiming"
 	ReasonStarting         = "Starting"
+	ReasonInjecting        = "Injecting"
 	ReasonRunning          = "Running"
 	ReasonSourceMissing    = "SourceMissing"
 	ReasonSourceAmbiguous  = "SourceAmbiguous"
@@ -144,18 +148,30 @@ type Reconciler struct {
 	// external signal triggers a reconcile. Defaults to 2s.
 	RequeueDelay time.Duration
 
+	// InjectGrace is how long the reconcile pass that launches an inject
+	// waits for it to finish inline before going async (Injecting condition +
+	// requeue). Fast injects complete within the window and keep the old
+	// synchronous path's single-pass Starting→Ready hop; slow ones release
+	// the worker after the grace elapses. Defaults to defaultInjectGrace.
+	InjectGrace time.Duration
+
+	// injects tracks in-flight asynchronous source injections (see
+	// asyncinject.go). Lazily constructed by applyDefaults; SetupWithManager
+	// binds its goroutine lifecycle to the manager so in-flight injects abort
+	// on shutdown.
+	injects *asyncInjector
+
 	// Meter, when set, records app lifecycle usage events on Ready/stopped
 	// transitions (a ready→stopped pair bounds a billable runtime interval).
 	// nil disables lifecycle metering.
 	Meter meter.Sink
 }
 
-// maxConcurrentReconciles is the controller's worker count. Reconcile blocks a
-// worker for the whole synchronous /inject HTTP call (up to 60s), so the
-// controller-runtime default of 1 lets one slow injection stall every app.
-// Injection is I/O-bound, so a small pool restores concurrency without
-// overwhelming the API server or warm pools; tune up if deploy latency degrades
-// under churn.
+// maxConcurrentReconciles is the controller's worker count. Injection runs
+// asynchronously (see asyncinject.go), so workers are never parked on the
+// slow /inject HTTP call; a small pool still helps when many apps progress at
+// once (claim churn, probe fan-out) without overwhelming the API server or
+// warm pools. Tune up if deploy latency degrades under churn.
 const maxConcurrentReconciles = 4
 
 // SetupWithManager registers the reconciler with the manager. The
@@ -166,6 +182,14 @@ const maxConcurrentReconciles = 4
 // VibedApp share namespace/name by convention (see SandboxClaimer).
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.applyDefaults()
+
+	// Bind the async-inject tracker to the manager's lifecycle: launched
+	// injects derive their contexts from the manager context (NOT a reconcile
+	// context, which is cancelled the moment Reconcile returns), so they
+	// survive across reconcile passes but abort promptly on shutdown.
+	if err := mgr.Add(manager.RunnableFunc(r.injects.run)); err != nil {
+		return err
+	}
 
 	claimGVKType := &unstructured.Unstructured{}
 	claimGVKType.SetGroupVersionKind(SandboxClaimGVK)
@@ -180,9 +204,8 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 			claimGVKType,
 			handler.EnqueueRequestsFromMapFunc(claimToVibedApp),
 		).
-		// Bound the blast radius of the synchronous /inject call in Reconcile
-		// (up to 60s): with the controller-runtime default of one worker, a
-		// single slow injection stalls every other app's reconcile.
+		// A small worker pool keeps unrelated apps progressing concurrently;
+		// slow /inject calls no longer park workers at all (asyncinject.go).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Named("vibedapp").
 		Complete(r)
@@ -226,6 +249,16 @@ func (r *Reconciler) applyDefaults() {
 	}
 	if r.RequeueDelay == 0 {
 		r.RequeueDelay = 2 * time.Second
+	}
+	if r.InjectGrace == 0 {
+		r.InjectGrace = defaultInjectGrace
+	}
+	if r.injects == nil {
+		// Closure (not r.Injector directly) so the tracker follows a test's
+		// later Injector override.
+		r.injects = newAsyncInjector(func(ctx context.Context, target string, app *vibedv1.VibedApp) (bool, error) {
+			return r.Injector.Inject(ctx, target, app)
+		})
 	}
 }
 
@@ -293,6 +326,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// Sandbox CR, which agent-sandbox cleans up via ownerRefs when wired in
 	// milestone C).
 	if app.DeletionTimestamp != nil {
+		// Drop (and cancel) any in-flight inject; its result has no app to
+		// drive anymore.
+		r.injects.forget(app.UID)
 		return reconcile.Result{}, nil
 	}
 
@@ -388,6 +424,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		if target == "" {
 			// Should not happen — Claiming → Starting only on bound claim.
 			// Drop back to Claiming and let the next loop figure it out.
+			// Phase regression: any in-flight inject targets a pod we no
+			// longer know about, so drop it.
+			r.injects.forget(app.UID)
 			app.Status.Phase = vibedv1.PhaseClaiming
 			return r.finish(ctx, &app, before, true)
 		}
@@ -411,15 +450,27 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		// The agent pulls the tarball from spec.source.tarballRef and starts
 		// the user process. Idempotent: re-injecting on a requeue replaces
 		// the running process.
-		running, err := r.Injector.Inject(ctx, target, &app)
-		if err != nil {
-			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonInjectFailed, err.Error())
+		//
+		// The agent's /inject is synchronous server-side (up to 60s), so the
+		// call runs in a tracked goroutine (asyncinject.go) instead of parking
+		// this worker; a completed attempt surfaces exactly the transitions
+		// the old synchronous call did, below.
+		state, injected := r.injects.step(app.UID, injectToken(&app, target), target, &app, r.InjectGrace)
+		if state == injectInflight {
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonInjecting, "injecting source into sandbox")
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
 			}
 			return reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
-		if !running {
+		if injected.err != nil {
+			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonInjectFailed, injected.err.Error())
+			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
+				return reconcile.Result{}, perr
+			}
+			return reconcile.Result{RequeueAfter: requeueAfter}, nil
+		}
+		if !injected.running {
 			setCondition(&app, ConditionReady, metav1.ConditionFalse, ReasonStarting, "user process starting")
 			if perr := r.patchStatusIfChanged(ctx, &app, before); perr != nil {
 				return reconcile.Result{}, perr
@@ -516,6 +567,9 @@ func (r *Reconciler) reconcileSuspension(ctx context.Context, app *vibedv1.Vibed
 			}
 			return true, reconcile.Result{RequeueAfter: requeueAfter}, nil
 		}
+		// The compute is gone; an in-flight inject (if any) targets a released
+		// pod and must not resurface after restore.
+		r.injects.forget(app.UID)
 		app.Status.PodIP = ""
 		app.Status.SandboxRef = ""
 		app.Status.RouteTarget = ""

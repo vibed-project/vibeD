@@ -38,34 +38,45 @@ No `kubectl port-forward` is required — kind's `extraPortMappings` bridge host
 - **Caddy is `NodePort: 31080`.** Matches kind-config's `extraPortMappings` host:80 → container:31080. Production keeps it `ClusterIP` behind an external LB.
 - **Only the `static-nginx` warm pool is enabled.** Static-site deploys work out of the box. Python/Node/Go/base require an opt-in (see below).
 
-## Warm pools beyond static — opt-in per slot
+## Warm pools
 
-The dev install enables only the `static-nginx` warm pool. This keeps `make dev` fast: each runner image is its own ~30s build. Try to deploy a Python or Node app without first enabling its pool and you'll see:
+`make dev` runs the three common app shapes — `static-nginx` (fast lane) plus
+`node-24` and `python-313` (general lane) — so static, JS and Python sources
+deploy with no extra step. The general lane needs no Kata or nested virt here:
+`runtime.defaultClass` is empty on Kind, so its pods schedule normally.
+
+`go-123` and `base-al2023` stay opt-in — each runner image is its own ~30s
+build, and they are rarely needed in dev. Deploy a Go source without its pool
+and you'll see:
 
 ```
 Phase=Failed
 Reason=TemplateMissing
-Message=no SandboxTemplate for template "python-313" (no warm pool configured for it)
+Message=no SandboxTemplate for template "go-123" (no warm pool configured for it)
 ```
 
-That's by design — vibeD fails fast rather than retrying forever. Enable the slot you need:
+That's by design — vibeD fails fast rather than retrying forever. Note that
+this failure happens *before* a pod exists, so there are no logs: the reason
+and message on the app are the whole diagnosis, and both `GET /v1/apps/{id}`
+and the MCP tools return them. Enable the slot you need:
 
 ```bash
-# Python: builds vibed-runner-python:dev, loads it into kind,
-# helm-upgrades to flip warmPools.python-313.enabled=true, and
-# restarts the controller so the BYO validator re-checks now
-# (otherwise the first deploy may fail on a stale validation cache).
-make enable-python-pool
-
-# Node: same shape, vibed-runner-node:dev + warmPools.node-24.
-make enable-node-pool
-
-# Go and the base image work the same way:
+# Builds vibed-template-go-123:dev, loads it into kind, helm-upgrades to flip
+# warmPools.go-123.enabled=true, and restarts the controller so the BYO
+# validator re-checks now (otherwise the first deploy may fail on a stale
+# validation cache).
 make enable-go-pool
+
+# The base kitchen-sink image works the same way:
 make enable-base-pool
 ```
 
-After ~30s the warm pod is `Ready`, the validation ConfigMap shows `valid:true`, and `POST /v1/deploy` with a matching source goes `Phase=Ready` instead of `Failed`.
+`make enable-node-pool` and `make enable-python-pool` still exist — use them to
+switch a slot back on if you disabled it.
+
+After ~30s the warm pod is `Ready`, the validation ConfigMap shows `valid:true`,
+and `POST /v1/deploy` with a matching source goes `Phase=Ready` instead of
+`Failed`.
 
 ## Verify
 

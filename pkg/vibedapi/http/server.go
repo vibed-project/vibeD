@@ -19,14 +19,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
 	"github.com/vibed-project/vibeD/internal/deploy"
+	"github.com/vibed-project/vibeD/pkg/api"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
 
@@ -139,6 +143,11 @@ func New(health, ready, metrics http.Handler, logger *slog.Logger) *Server {
 // to temp files. The deploy service enforces the real 50 MB source cap.
 const maxMultipartMemory = 8 << 20 // 8 MB
 
+// maxDeployOverheadBytes is the slack allowed above the tarball limit for the
+// metadata part and MIME framing, so a legitimately maximal tarball isn't
+// rejected by the body cap for its envelope.
+const maxDeployOverheadBytes = 1 << 20 // 1 MB
+
 // ---- Ops endpoints (real handlers, delegated) ----
 
 func (s *Server) Healthz(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +182,23 @@ func (s *Server) DeployApp(w http.ResponseWriter, r *http.Request) {
 // runs it through the deploy service, writing the 200/202/4xx response. When
 // forcedName is set (a redeploy of an existing app) it overrides metadata.name.
 func (s *Server) runDeploy(w http.ResponseWriter, r *http.Request, owner, forcedName string) {
+	// Bound the body BEFORE parsing. ParseMultipartForm keeps only
+	// maxMultipartMemory in RAM and spools every larger part to a temp file
+	// with no total cap, so without this an unauthenticated-size request can
+	// fill the node's disk. deploy.MaxTarballBytes is enforced only inside
+	// Service.Deploy — i.e. after the whole body has already been written to
+	// disk — so it cannot protect this path. The slack covers the metadata
+	// part and MIME framing; exceeding it surfaces as 413 below.
+	r.Body = http.MaxBytesReader(w, r.Body, deploy.MaxTarballBytes+maxDeployOverheadBytes)
 	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, Error{
+				Code:    "payload_too_large",
+				Message: fmt.Sprintf("deploy body exceeds the %d MB limit", deploy.MaxTarballBytes/(1024*1024)),
+			})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, Error{Code: "bad_multipart", Message: err.Error()})
 		return
 	}
@@ -266,7 +291,7 @@ func (s *Server) runDeploy(w http.ResponseWriter, r *http.Request, owner, forced
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
-func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ListApps(w http.ResponseWriter, r *http.Request, params ListAppsParams) {
 	if s.Deploy == nil {
 		notImplemented(w, "list_apps", "deploy service not configured")
 		return
@@ -276,7 +301,17 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
 		return
 	}
-	apps, err := s.Deploy.List(r.Context(), owner)
+	// limit <= 0 (or absent) returns everything, so pre-pagination clients see
+	// the exact pre-existing behavior; a negative offset is clamped to 0 by
+	// the service.
+	limit, offset := 0, 0
+	if params.Limit != nil {
+		limit = *params.Limit
+	}
+	if params.Offset != nil {
+		offset = *params.Offset
+	}
+	apps, total, err := s.Deploy.List(r.Context(), owner, limit, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, Error{Code: "list_failed", Message: err.Error()})
 		return
@@ -287,7 +322,8 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Items []App `json:"items"`
-	}{Items: items})
+		Total int   `json:"total"`
+	}{Items: items, Total: total})
 }
 
 func (s *Server) GetApp(w http.ResponseWriter, r *http.Request, appID AppID) {
@@ -352,6 +388,18 @@ func toAPIApp(app *vibedv1.VibedApp) App {
 	}
 	if app.Status.URL != "" {
 		out.Url = strPtr(app.Status.URL)
+	}
+	// Surface the Ready condition's reason/message. For a deploy that fails
+	// before any pod exists (e.g. TemplateMissing — no warm pool for the
+	// required template) this is the ONLY diagnosis available: there are no
+	// logs to fetch, so without it clients can only report "no detail".
+	if c := meta.FindStatusCondition(app.Status.Conditions, vibedv1.ConditionReady); c != nil {
+		if c.Reason != "" {
+			out.Reason = strPtr(c.Reason)
+		}
+		if c.Message != "" {
+			out.Message = strPtr(c.Message)
+		}
 	}
 	if app.Status.LastDeployedAt != nil {
 		t := app.Status.LastDeployedAt.Time
@@ -570,6 +618,161 @@ func (s *Server) RollbackApp(w http.ResponseWriter, r *http.Request, appID AppID
 	}
 	resp.StatusUrl = strPtr("/v1/apps/" + res.AppID)
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// CreateShareLink mints a public share link for an app the caller owns. The
+// body is optional JSON: {password?, expires_in?}. A non-empty expires_in that
+// fails to parse is a 400 (silently minting a permanent link when the caller
+// asked for a time-limited one would be a fail-open on a security control).
+func (s *Server) CreateShareLink(w http.ResponseWriter, r *http.Request, appID AppID) {
+	if s.Deploy == nil {
+		notImplemented(w, "create_share_link", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+
+	// The body is optional — an empty request mints a passwordless, never-
+	// expiring link — so an EOF (no body) is not an error.
+	var body CreateShareLinkJSONRequestBody
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, Error{Code: "bad_body", Message: "body must be JSON: " + err.Error()})
+			return
+		}
+	}
+	password := ""
+	if body.Password != nil {
+		password = *body.Password
+	}
+	var expiresIn time.Duration
+	if body.ExpiresIn != nil && *body.ExpiresIn != "" {
+		d, err := parseExpiresIn(*body.ExpiresIn)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, Error{Code: "bad_expires_in", Message: err.Error()})
+			return
+		}
+		expiresIn = d
+	}
+
+	link, err := s.Deploy.CreateShareLink(r.Context(), owner, appID, password, expiresIn)
+	if err != nil {
+		// A non-owner (or missing app) surfaces as ErrNotFound to avoid leaking
+		// existence, matching the read/redeploy handlers.
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		if forbidden(err) {
+			writeJSON(w, http.StatusForbidden, Error{Code: "forbidden", Message: err.Error()})
+			return
+		}
+		// e.g. "share links require the sqlite store backend".
+		writeJSON(w, http.StatusBadRequest, Error{Code: "create_share_link_failed", Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIShareLink(link))
+}
+
+// ListShareLinks returns an app's share links (ownership-checked), paged with
+// optional limit/offset that mirror ListApps: total is the full count before
+// slicing so pages report it consistently.
+func (s *Server) ListShareLinks(w http.ResponseWriter, r *http.Request, appID AppID, params ListShareLinksParams) {
+	if s.Deploy == nil {
+		notImplemented(w, "list_share_links", "deploy service not configured")
+		return
+	}
+	owner := vibedauth.UserIDFromContext(r.Context())
+	if owner == "" {
+		writeJSON(w, http.StatusUnauthorized, Error{Code: "unauthenticated", Message: "no authenticated user"})
+		return
+	}
+
+	// Fetch the full set (ownership-checked) so total is accurate, then slice
+	// in-handler — mirroring how Service.List computes its total. Share links
+	// per app are few, so materializing all of them is cheap.
+	links, err := s.Deploy.ListShareLinks(r.Context(), owner, appID, 0, 0)
+	if err != nil {
+		if errors.Is(err, deploy.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, Error{Code: "not_found", Message: "app not found"})
+			return
+		}
+		if forbidden(err) {
+			writeJSON(w, http.StatusForbidden, Error{Code: "forbidden", Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, Error{Code: "list_share_links_failed", Message: err.Error()})
+		return
+	}
+
+	total := len(links)
+	// limit <= 0 (or absent) returns everything from offset; a negative offset
+	// clamps to 0, matching the ListApps contract.
+	offset := 0
+	if params.Offset != nil {
+		offset = *params.Offset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := total
+	if params.Limit != nil && *params.Limit > 0 && offset+*params.Limit < end {
+		end = offset + *params.Limit
+	}
+	page := links[offset:end]
+
+	items := make([]ShareLink, 0, len(page))
+	for i := range page {
+		items = append(items, toAPIShareLink(&page[i]))
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Items []ShareLink `json:"items"`
+		Total int         `json:"total"`
+	}{Items: items, Total: total})
+}
+
+// parseExpiresIn parses a share-link lifetime. It accepts any Go duration
+// (e.g. "24h") plus the "d"-suffixed day shorthand (e.g. "7d") the dashboard
+// emits, which time.ParseDuration itself does not understand.
+func parseExpiresIn(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		d, err := time.ParseDuration(strings.TrimSuffix(s, "d") + "h")
+		if err != nil {
+			return 0, fmt.Errorf("invalid expires_in %q (use e.g. \"24h\" or \"7d\")", s)
+		}
+		return d * 24, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid expires_in %q (use e.g. \"24h\" or \"7d\")", s)
+	}
+	return d, nil
+}
+
+// toAPIShareLink maps the internal api.ShareLink to the generated wire type.
+func toAPIShareLink(l *api.ShareLink) ShareLink {
+	out := ShareLink{
+		Token:       l.Token,
+		ArtifactId:  l.ArtifactID,
+		CreatedBy:   l.CreatedBy,
+		HasPassword: l.HasPassword,
+		CreatedAt:   l.CreatedAt,
+		Revoked:     l.Revoked,
+	}
+	if l.ExpiresAt != nil {
+		t := *l.ExpiresAt
+		out.ExpiresAt = &t
+	}
+	if l.URL != "" {
+		out.Url = strPtr(l.URL)
+	}
+	return out
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {

@@ -5,10 +5,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"sort"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/meta"
 
 	vibedauth "github.com/vibed-project/vibeD/internal/auth"
+	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/pkg/api"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 )
@@ -61,25 +66,6 @@ func tarballFromFiles(files map[string]string) (io.Reader, error) {
 	return &buf, nil
 }
 
-// phaseToStatus maps a VibedApp lifecycle phase onto the artifact-status
-// vocabulary MCP clients already understand.
-func phaseToStatus(p vibedv1.Phase) api.ArtifactStatus {
-	switch p {
-	case vibedv1.PhasePending, vibedv1.PhaseClaiming:
-		return api.StatusPending
-	case vibedv1.PhaseStarting:
-		return api.StatusDeploying
-	case vibedv1.PhaseReady:
-		return api.StatusRunning
-	case vibedv1.PhaseSuspended:
-		return api.StatusRunning
-	case vibedv1.PhaseFailed:
-		return api.StatusFailed
-	default:
-		return api.StatusPending
-	}
-}
-
 // appToArtifact maps a VibedApp CR to the api.Artifact shape MCP returns for
 // get_artifact_status.
 func appToArtifact(app *vibedv1.VibedApp) *api.Artifact {
@@ -87,7 +73,7 @@ func appToArtifact(app *vibedv1.VibedApp) *api.Artifact {
 		ID:       app.Name,
 		Name:     app.Name,
 		OwnerID:  app.Spec.Owner,
-		Status:   phaseToStatus(app.Status.Phase),
+		Status:   vibedv1.StatusFromPhase(app.Status.Phase),
 		Target:   api.TargetSandbox,
 		URL:      app.Status.URL,
 		Language: app.Spec.Runtime.Template,
@@ -95,7 +81,37 @@ func appToArtifact(app *vibedv1.VibedApp) *api.Artifact {
 	if app.Status.LastDeployedAt != nil {
 		a.UpdatedAt = app.Status.LastDeployedAt.Time
 	}
+	// Explain a failure. An app that never got a pod has no logs, so the Ready
+	// condition is the only diagnosis an agent can act on.
+	if c := meta.FindStatusCondition(app.Status.Conditions, vibedv1.ConditionReady); c != nil && c.Message != "" {
+		if app.Status.Phase == vibedv1.PhaseFailed {
+			a.Error = c.Message
+		}
+	}
 	return a
+}
+
+// versionRecordToArtifactVersion maps one deploy-history record onto the
+// api.ArtifactVersion shape MCP returns for list_versions (field names are an
+// MCP client contract). Warm-pool apps have no per-version image, so image_ref
+// stays empty and storage_ref carries the retained source instead. Every
+// recorded version was a successful deploy — matching the legacy
+// snapshot-at-success semantics — hence status "running"; URL and creator come
+// from the app (both are per-app, not per-version, on this path).
+func versionRecordToArtifactVersion(app *vibedv1.VibedApp, rec deploy.VersionRecord) api.ArtifactVersion {
+	v := api.ArtifactVersion{
+		VersionID:  fmt.Sprintf("%s.v%d", app.Name, rec.Version),
+		ArtifactID: app.Name,
+		Version:    rec.Version,
+		StorageRef: rec.TarballRef,
+		Status:     api.StatusRunning,
+		URL:        app.Status.URL,
+		CreatedBy:  app.Spec.Owner,
+	}
+	if t, err := time.Parse(time.RFC3339, rec.Timestamp); err == nil {
+		v.CreatedAt = t
+	}
+	return v
 }
 
 // appToSummary maps a VibedApp CR to the api.ArtifactSummary shape MCP
@@ -106,7 +122,7 @@ func appToSummary(app *vibedv1.VibedApp) api.ArtifactSummary {
 		Name:      app.Name,
 		OwnerID:   app.Spec.Owner,
 		Namespace: app.Namespace,
-		Status:    phaseToStatus(app.Status.Phase),
+		Status:    vibedv1.StatusFromPhase(app.Status.Phase),
 		Target:    api.TargetSandbox,
 		URL:       app.Status.URL,
 	}

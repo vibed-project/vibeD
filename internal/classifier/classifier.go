@@ -192,6 +192,15 @@ func scanTarball(ctx context.Context, r io.Reader) (*scan, error) {
 		}
 		base := path.Base(name)
 
+		// Skip macOS archive cruft: AppleDouble resource forks (._*),
+		// Finder's .DS_Store, and the __MACOSX/ tree. `tar czf x.tgz .` on
+		// macOS embeds these; left in, "._index.html" / "._." land in
+		// rootFiles and their extensions pollute the static-asset check, so a
+		// pure-static app misroutes off the fast lane onto the general lane.
+		if strings.HasPrefix(base, "._") || base == ".DS_Store" || strings.HasPrefix(name, "__MACOSX/") {
+			continue
+		}
+
 		// Root-level entries (no slash in the cleaned name).
 		if !strings.Contains(name, "/") {
 			s.rootFiles[name] = struct{}{}

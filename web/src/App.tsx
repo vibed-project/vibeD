@@ -6,20 +6,25 @@ import {
   fetchArtifact,
   deleteArtifact,
   fetchWhoami,
+  fetchAuthInfo,
   fetchOrganization,
   subscribeToEvents,
-  getAuthToken,
+  phaseToStatus,
   setAuthToken,
   clearAuthToken,
+  getAuthToken,
 } from './api/client'
 import ArtifactList from './components/ArtifactList'
+import ApplicationsTable from './components/ApplicationsTable'
 import LogViewer from './components/LogViewer'
 import VersionHistory from './components/VersionHistory'
 import ShareDialog from './components/ShareDialog'
 import ShareLinkPage from './components/ShareLinkPage'
-import ThemeToggle from './components/ThemeToggle'
 import SettingsPage from './pages/SettingsPage'
 import ConnectPage from './pages/ConnectPage'
+import AppShell, { NavItem } from './shell/AppShell'
+import { Button, Spinner, EmptyState, ErrorState } from './ui/primitives'
+import { useToast } from './ui/toast'
 import './App.css'
 
 // Detect public share link route: /share/<token> or /api/share/<token>
@@ -32,6 +37,10 @@ function getShareToken(): string | null {
 // because it renders a standalone, auth-free page. Everything else maps
 // pathname → route name; unknown paths fall through to the dashboard so
 // stale bookmarks don't 404.
+// Set when we redirect to an SSO login flow; cleared on a successful whoami.
+// Breaks SP↔IdP redirect loops when SSO returns but the session still 401s.
+const SSO_ATTEMPT_KEY = 'vibed_sso_attempt'
+
 type Route = 'dashboard' | 'settings' | 'connect'
 function routeFromPath(path: string): Route {
   if (path === '/settings' || path.startsWith('/settings/')) return 'settings'
@@ -43,8 +52,20 @@ const ROUTE_PATHS: Record<Route, string> = {
   settings: '/settings',
   connect: '/connect',
 }
+const ROUTE_TITLES: Record<Route, string> = {
+  dashboard: 'Applications',
+  settings: 'Administration',
+  connect: 'Connect',
+}
+const NAV: NavItem[] = [
+  { id: 'dashboard', label: 'Applications', icon: '▦' },
+  { id: 'connect', label: 'Connect', icon: '⚡' },
+  { id: 'settings', label: 'Administration', icon: '⚙', requiresAdmin: true },
+]
 
 function App() {
+  const toast = useToast()
+
   // Public share link route — render standalone page, no auth/nav needed
   const shareToken = getShareToken()
   if (shareToken) {
@@ -68,57 +89,67 @@ function App() {
   const [versionArtifactId, setVersionArtifactId] = useState<string | null>(null)
   const [shareArtifactId, setShareArtifactId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState<string>('')
   const [isAdmin, setIsAdmin] = useState(false)
   const [profile, setProfile] = useState<WhoAmI | null>(null)
-  const [showProfile, setShowProfile] = useState(false)
-  const profileRef = useRef<HTMLDivElement>(null)
-
-  // Close the profile menu on outside click or Escape (in addition to the
-  // onMouseLeave below), so it doesn't linger open.
-  useEffect(() => {
-    if (!showProfile) return
-    const onPointerDown = (e: MouseEvent) => {
-      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
-        setShowProfile(false)
-      }
-    }
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShowProfile(false)
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [showProfile])
   const [orgName, setOrgName] = useState<string>('')
   const [totalArtifacts, setTotalArtifacts] = useState(0)
   const [needsAuth, setNeedsAuth] = useState(false)
   const [authInput, setAuthInput] = useState('')
   const [authError, setAuthError] = useState('')
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>(() =>
+    (localStorage.getItem('vibed_apps_view') as 'table' | 'cards') || 'table',
+  )
+  const [statusFilter, setStatusFilter] = useState('all')
+  const setView = useCallback((v: 'table' | 'cards') => {
+    setViewMode(v)
+    localStorage.setItem('vibed_apps_view', v)
+  }, [])
+
+  const [ssoUrl, setSsoUrl] = useState('')
+
+  const applyIdentity = useCallback((info: WhoAmI) => {
+    sessionStorage.removeItem(SSO_ATTEMPT_KEY)
+    setCurrentUser(info.id || info.user_id)
+    setIsAdmin(info.role === 'admin')
+    setProfile(info)
+    setNeedsAuth(false)
+  }, [])
 
   const initIdentity = useCallback(() => {
     fetchWhoami()
-      .then((info) => {
-        setCurrentUser(info.id || info.user_id)
-        setIsAdmin(info.role === 'admin')
-        setProfile(info)
-        setNeedsAuth(false)
-      })
+      .then(applyIdentity)
       .catch((err) => {
         // Key off the numeric status, not the message: Response.statusText is
         // empty over HTTP/2 so the old string match never fired behind an HTTP/2
         // gateway, leaving the login form hidden (issue #41). The string checks
         // stay as a fallback for any error that doesn't carry a status.
         if (err?.status === 401 || err?.message?.includes('401') || err?.message?.includes('Unauthorized')) {
-          setNeedsAuth(true)
+          // Discover the auth mode: modes with a browser login flow (SAML) get
+          // sent to the IdP instead of an API-key prompt that can't work there.
+          // A sessionStorage flag breaks redirect loops: it's set before we
+          // leave, cleared on a successful whoami — so a second consecutive
+          // 401 shows the login screen (with the SSO button) instead of
+          // bouncing between the SP and the IdP forever.
+          fetchAuthInfo()
+            .then((info) => {
+              if (info.loginUrl) {
+                setSsoUrl(info.loginUrl)
+                if (!sessionStorage.getItem(SSO_ATTEMPT_KEY)) {
+                  sessionStorage.setItem(SSO_ATTEMPT_KEY, '1')
+                  window.location.assign(info.loginUrl)
+                  return
+                }
+                setAuthError('SSO sign-in did not complete — try again')
+              }
+              setNeedsAuth(true)
+            })
+            .catch(() => setNeedsAuth(true))
         }
         // Auth may be disabled — that's fine
       })
-  }, [])
+  }, [applyIdentity])
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault()
@@ -127,10 +158,8 @@ function App() {
     setAuthError('')
     fetchWhoami()
       .then((info) => {
-        setCurrentUser(info.id || info.user_id)
-        setIsAdmin(info.role === 'admin')
-        setProfile(info)
-        setNeedsAuth(false)
+        applyIdentity(info)
+        toast.success('Signed in')
       })
       .catch(() => {
         clearAuthToken()
@@ -139,33 +168,55 @@ function App() {
   }
 
   const handleLogout = () => {
+    // Two logout shapes. With a local token (API-key sign-in) we just drop it.
+    // With a browser-SSO session there is no local token — the session lives in
+    // the auth proxy's cookie, so clearing local state alone would let the very
+    // next request silently re-authenticate. In that case redirect through the
+    // proxy's sign-out endpoint, which clears the cookie (and, when the proxy is
+    // configured for RP-initiated logout, the upstream IdP session too).
+    const proxySession = !getAuthToken() && (profile?.provider === 'oidc' || profile?.provider === 'saml')
     clearAuthToken()
+    if (proxySession) {
+      window.location.href = `/oauth2/sign_out?rd=${encodeURIComponent(window.location.origin + '/')}`
+      return
+    }
     setCurrentUser('')
     setIsAdmin(false)
     setProfile(null)
     setNeedsAuth(true)
+    if (route !== 'dashboard') navigate('dashboard')
   }
 
   // Fetch user identity and org info on mount
   useEffect(() => {
+    // SSO handoff: the SAML ACS returns the session JWT in the URL fragment
+    // (#vibed_token=…) so it never hits server logs. Store it, strip the
+    // fragment (routing is path-based, the hash is ours), then load identity.
+    const sso = window.location.hash.match(/vibed_token=([^&]+)/)
+    if (sso) {
+      setAuthToken(sso[1])
+      window.history.replaceState({}, '', window.location.pathname + window.location.search)
+    }
     initIdentity()
-
+    // Keep the SSO entrypoint known even on the happy path, so the login
+    // button after a sign-out offers SSO rather than an API-key form.
+    fetchAuthInfo().then((i) => setSsoUrl(i.loginUrl)).catch(() => {})
     fetchOrganization()
       .then((org) => setOrgName(org.name))
       .catch(() => {
         // Organization may not be configured
       })
-  }, [])
+  }, [initIdentity])
 
   const loadData = useCallback(async () => {
     try {
       setLoading(true)
-      setError(null)
+      setLoadError(null)
       const result = await fetchArtifacts()
       setArtifacts(result.artifacts)
       setTotalArtifacts(result.total)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data')
+      setLoadError(err instanceof Error ? err.message : 'Failed to load applications')
     } finally {
       setLoading(false)
     }
@@ -177,14 +228,27 @@ function App() {
       setArtifacts((prev) => [...prev, ...result.artifacts])
       setTotalArtifacts(result.total)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load more')
+      toast.error(err instanceof Error ? err.message : 'Failed to load more')
     }
-  }, [artifacts.length])
+  }, [artifacts.length, toast])
 
   const handleDelete = useCallback(async (id: string) => {
-    await deleteArtifact(id)
-    setArtifacts((prev) => prev.filter((a) => a.id !== id))
-  }, [])
+    try {
+      await deleteArtifact(id)
+      setArtifacts((prev) => prev.filter((a) => a.id !== id))
+      toast.success('Application deleted')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed')
+    }
+  }, [toast])
+
+  // Mirror of artifacts for the SSE handler below: the subscription effect
+  // runs once, so its closure would otherwise see a stale list when deciding
+  // whether an event's app is already known.
+  const artifactsRef = useRef<ArtifactSummary[]>([])
+  useEffect(() => {
+    artifactsRef.current = artifacts
+  }, [artifacts])
 
   useEffect(() => {
     loadData()
@@ -196,23 +260,46 @@ function App() {
       (event) => {
         if (event.type === 'artifact.deleted') {
           setArtifacts((prev) => prev.filter((a) => a.id !== event.artifact_id))
-        } else {
-          // Refetch the single changed artifact for full data
-          fetchArtifact(event.artifact_id)
-            .then((updated) => {
-              setArtifacts((prev) => {
-                const idx = prev.findIndex((a) => a.id === event.artifact_id)
-                if (idx >= 0) {
-                  const next = [...prev]
-                  next[idx] = updated
-                  return next
-                }
-                // New artifact — add to list
-                return [...prev, updated]
-              })
-            })
-            .catch(() => loadData()) // Full reload on fetch failure
+          return
         }
+        // Enriched bridge events (name + raw VibedApp phase) carry enough to
+        // update a known artifact in place — no per-event refetch. Legacy
+        // orchestrator events lack these fields and keep the refetch path;
+        // unknown apps also refetch once, since the event has no lane/created
+        // info to build a faithful list entry from.
+        const known = artifactsRef.current.some((a) => a.id === event.artifact_id)
+        if (event.name && event.phase && known) {
+          const status = phaseToStatus(event.phase)
+          setArtifacts((prev) =>
+            prev.map((a) =>
+              a.id === event.artifact_id
+                ? {
+                    ...a,
+                    name: event.name ?? a.name,
+                    status,
+                    url: event.url ?? a.url,
+                    updated_at: event.timestamp,
+                  }
+                : a,
+            ),
+          )
+          return
+        }
+        // Refetch the single changed artifact for full data
+        fetchArtifact(event.artifact_id)
+          .then((updated) => {
+            setArtifacts((prev) => {
+              const idx = prev.findIndex((a) => a.id === event.artifact_id)
+              if (idx >= 0) {
+                const next = [...prev]
+                next[idx] = updated
+                return next
+              }
+              // New artifact — add to list
+              return [...prev, updated]
+            })
+          })
+          .catch(() => loadData()) // Full reload on fetch failure
       },
       () => {
         // SSE connection error — EventSource auto-reconnects, but
@@ -238,153 +325,96 @@ function App() {
   }, [loadData])
 
   return (
-    <div className="app">
-      <header className="header">
-        <div className="header-left">
-          <h1 className="logo" onClick={() => navigate('dashboard')} style={{ cursor: 'pointer' }}>
-            <img src="/logo.png" alt="vibeD" className="logo-img" />
-            vibeD
-          </h1>
-          <span className="subtitle">Workload Orchestrator</span>
-          {orgName && <span className="org-badge">{orgName}</span>}
-        </div>
-        <div className="header-right">
-          <button
-            type="button"
-            className={`nav-btn${route === 'connect' ? ' nav-btn-active' : ''}`}
-            onClick={() => navigate('connect')}
-          >
-            How to connect
-          </button>
-          <ThemeToggle />
-          <button
-            type="button"
-            className={`icon-btn${route === 'settings' ? ' icon-btn-active' : ''}`}
-            onClick={() => navigate('settings')}
-            aria-label="Settings"
-            title="Settings"
-          >
-            <span aria-hidden="true">⚙</span>
-          </button>
-          {currentUser && (
-            <div className="profile-wrapper" ref={profileRef} onMouseLeave={() => setShowProfile(false)}>
-              <button className="profile-trigger" onClick={() => setShowProfile(!showProfile)}>
-                <span className="profile-avatar">
-                  {(profile?.name || currentUser).charAt(0).toUpperCase()}
-                </span>
-                <span className="profile-name">{profile?.name || currentUser}</span>
-                {isAdmin && <span className="admin-badge">admin</span>}
-              </button>
-              {showProfile && (
-                <div className="profile-card">
-                  <div className="profile-card-header">
-                    <span className="profile-card-avatar">
-                      {(profile?.name || currentUser).charAt(0).toUpperCase()}
-                    </span>
-                    <div className="profile-card-identity">
-                      <span className="profile-card-name">{profile?.name || currentUser}</span>
-                      {profile?.email && <span className="profile-card-email">{profile.email}</span>}
-                    </div>
-                  </div>
-                  <div className="profile-card-details">
-                    <div className="profile-card-row">
-                      <span className="profile-card-label">Role</span>
-                      <span className={`profile-card-role ${isAdmin ? 'profile-card-role-admin' : ''}`}>
-                        {profile?.role || 'user'}
-                      </span>
-                    </div>
-                    <div className="profile-card-row">
-                      <span className="profile-card-label">Status</span>
-                      <span className="profile-card-status">{profile?.status || 'active'}</span>
-                    </div>
-                    {profile?.provider && (
-                      <div className="profile-card-row">
-                        <span className="profile-card-label">Provider</span>
-                        <span className="profile-card-value">{profile.provider}</span>
-                      </div>
-                    )}
-                    <div className="profile-card-row">
-                      <span className="profile-card-label">ID</span>
-                      <span className="profile-card-value profile-card-id">{profile?.id || profile?.user_id}</span>
-                    </div>
-                  </div>
-                  {getAuthToken() && (
-                    <div className="profile-card-footer">
-                      <button className="profile-logout-btn" onClick={handleLogout}>Sign out</button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-          {needsAuth && !currentUser && (
-            <form className="auth-inline" onSubmit={handleLogin}>
-              <input
-                className="auth-input"
-                type="password"
-                placeholder="API Key"
-                value={authInput}
-                onChange={(e) => setAuthInput(e.target.value)}
-              />
-              <button className="auth-submit" type="submit">Sign in</button>
-              {authError && <span className="auth-error">{authError}</span>}
-            </form>
-          )}
-          <button className="refresh-btn" onClick={loadData} disabled={loading}>
-            {loading ? 'Loading...' : 'Refresh'}
-          </button>
-        </div>
-      </header>
-
-      {error && (
-        <div className="error-banner">
-          {error}
-          <button onClick={() => setError(null)}>Dismiss</button>
-        </div>
-      )}
-
+    <AppShell
+      nav={NAV}
+      activeId={route}
+      onNavigate={(id) => navigate(id as Route)}
+      title={ROUTE_TITLES[route]}
+      orgName={orgName}
+      currentUser={currentUser}
+      isAdmin={isAdmin}
+      profile={profile}
+      needsAuth={needsAuth}
+      ssoUrl={ssoUrl}
+      authInput={authInput}
+      authError={authError}
+      onAuthInput={setAuthInput}
+      onLogin={handleLogin}
+      onLogout={handleLogout}
+      onBrandClick={() => navigate('dashboard')}
+    >
       {route === 'settings' && (
-        <SettingsPage
-          currentUser={currentUser}
-          isAdmin={isAdmin}
-          onBack={() => navigate('dashboard')}
-        />
+        <SettingsPage currentUser={currentUser} isAdmin={isAdmin} onBack={() => navigate('dashboard')} />
       )}
 
-      {route === 'connect' && (
-        <ConnectPage onBack={() => navigate('dashboard')} />
-      )}
+      {route === 'connect' && <ConnectPage onBack={() => navigate('dashboard')} />}
 
       {route === 'dashboard' && (
-        <main className="main">
-          <section className="section">
+        <section className="section">
+          <div className="section-header">
             <h2 className="section-title">
-              Deployed Artifacts
+              Applications
               <span className="count">{artifacts.length}</span>
             </h2>
-            <ArtifactList
-              artifacts={artifacts}
+            <div style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+              <div className="view-toggle" role="group" aria-label="View mode">
+                <Button size="sm" variant={viewMode === 'table' ? 'primary' : 'ghost'} onClick={() => setView('table')} aria-pressed={viewMode === 'table'}>Table</Button>
+                <Button size="sm" variant={viewMode === 'cards' ? 'primary' : 'ghost'} onClick={() => setView('cards')} aria-pressed={viewMode === 'cards'}>Cards</Button>
+              </div>
+              <Button size="sm" onClick={loadData} disabled={loading}>
+                {loading ? <Spinner label="Refreshing" /> : 'Refresh'}
+              </Button>
+            </div>
+          </div>
+
+          {loading && artifacts.length === 0 ? (
+            <div className="ui-state"><Spinner label="Loading applications" /></div>
+          ) : loadError ? (
+            <ErrorState title="Couldn't load applications" description={loadError} onRetry={loadData} />
+          ) : artifacts.length === 0 ? (
+            <EmptyState
+              icon="▦"
+              title="No applications yet"
+              description="Deploy an app through the vibeD MCP server and it will appear here in real time."
+              action={<Button size="sm" onClick={() => navigate('connect')}>How to connect</Button>}
+            />
+          ) : viewMode === 'table' ? (
+            <ApplicationsTable
+              artifacts={statusFilter === 'all' ? artifacts : artifacts.filter((a) => a.status === statusFilter)}
               currentUser={currentUser}
               isAdmin={isAdmin}
+              statusFilter={statusFilter}
+              onStatusFilter={setStatusFilter}
               onViewLogs={(id) => setSelectedArtifactId(id)}
               onViewVersions={(id) => setVersionArtifactId(id)}
               onShare={(id) => setShareArtifactId(id)}
               onDelete={handleDelete}
             />
-            {artifacts.length < totalArtifacts && (
-              <button className="load-more-btn" onClick={loadMore}>
-                Load more ({artifacts.length} of {totalArtifacts})
-              </button>
-            )}
-          </section>
-        </main>
+          ) : (
+            <>
+              <ArtifactList
+                artifacts={artifacts}
+                currentUser={currentUser}
+                isAdmin={isAdmin}
+                onViewLogs={(id) => setSelectedArtifactId(id)}
+                onViewVersions={(id) => setVersionArtifactId(id)}
+                onShare={(id) => setShareArtifactId(id)}
+                onDelete={handleDelete}
+              />
+              {artifacts.length < totalArtifacts && (
+                <div className="load-more-wrap">
+                  <Button onClick={loadMore}>
+                    Load more ({artifacts.length} of {totalArtifacts})
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </section>
       )}
 
       {selectedArtifactId && (
-        <LogViewer
-          artifactId={selectedArtifactId}
-          onClose={() => setSelectedArtifactId(null)}
-        />
+        <LogViewer artifactId={selectedArtifactId} onClose={() => setSelectedArtifactId(null)} />
       )}
 
       {versionArtifactId && (
@@ -396,13 +426,9 @@ function App() {
       )}
 
       {shareArtifactId && (
-        <ShareDialog
-          artifactId={shareArtifactId}
-          onClose={() => setShareArtifactId(null)}
-          onShareComplete={loadData}
-        />
+        <ShareDialog artifactId={shareArtifactId} onClose={() => setShareArtifactId(null)} />
       )}
-    </div>
+    </AppShell>
   )
 }
 

@@ -113,10 +113,20 @@ The `metadata` field is a JSON object:
 
 ### `GET /v1/apps`
 
-List apps owned by the authenticated user.
+List apps owned by the authenticated user. Optional query parameters page the result:
+
+| Param    | Type | Default | Description                                                          |
+| -------- | ---- | ------- | -------------------------------------------------------------------- |
+| `limit`  | int  | —       | Max number of apps to return. Omitted (or `0`) returns **all** apps. |
+| `offset` | int  | `0`     | Number of apps to skip before collecting the page.                   |
 
 ```bash
+# all apps (default — no params)
 curl -H "Authorization: Bearer $VIBED_TOKEN" http://localhost:8080/v1/apps
+
+# a page of 20, starting at the 40th
+curl -H "Authorization: Bearer $VIBED_TOKEN" \
+  "http://localhost:8080/v1/apps?limit=20&offset=40"
 ```
 
 ```json
@@ -129,13 +139,18 @@ curl -H "Authorization: Bearer $VIBED_TOKEN" http://localhost:8080/v1/apps
       "phase": "Ready",
       "url": "https://my-tool.vibed.example.com",
       "runtime": { "lane": "general", "template": "node-24" },
-      "last_deployed_at": "2026-07-03T10:12:00Z"
+      "last_deployed_at": "2026-07-03T10:12:00Z",
+      "reason": "Running",
+      "message": "user process listening"
     }
-  ]
+  ],
+  "total": 1
 }
 ```
 
-`phase` is one of `Pending`, `Claiming`, `Starting`, `Ready`, `Suspended`, `Failed` (see [App Lifecycle](../concepts/app-lifecycle.md)). Returns `401` without a token.
+`items` is the requested page; `total` is the number of apps the caller can see **after** owner/authorization filtering — the full count, not the page size — so a client can tell whether more pages remain. With no `limit`/`offset` the whole list is returned and `total` equals the length of `items`. `phase` is one of `Pending`, `Claiming`, `Starting`, `Ready`, `Suspended`, `Failed` (see [App Lifecycle](../concepts/app-lifecycle.md)). Returns `401` without a token.
+
+`reason` and `message` carry the app's Ready condition — a short machine-readable code and a human explanation. On a **failed** app this is often the only diagnosis available: a deploy that fails before a pod exists (no warm pool for the required template, say) produces no logs at all, so `GET /v1/apps/{id}/logs` returns nothing to explain it. Read these before retrying — most such failures are configuration gaps that will fail again identically. Healthy apps carry them too (`Running` / "user process listening"), so treat them as an error only when `phase` is `Failed`.
 
 ### `GET /v1/apps/{id}`
 
@@ -214,6 +229,37 @@ curl -X POST -H "Authorization: Bearer $VIBED_TOKEN" \
 
 Returns the same `App` shape as a deploy: `200` when the app is `Ready` within the latency budget, `202` with a `status_url` to poll otherwise. Responses: `200`, `202`, `400` (unknown version), `401`, `404`.
 
+## Share links
+
+A **share link** is a public, optionally password-protected URL that lets an account-less viewer see an app's name, status, and URL. Creating and listing links is owner-scoped and lives under `/v1`; resolving and revoking a link are served under `/api` (the resolve route is deliberately unauthenticated so a recipient without a vibeD account can open it).
+
+Share links require a durable store (the SQLite backend); with the in-memory/configmap backends these routes are unavailable.
+
+### `POST /v1/apps/{id}/share-links`
+
+Create a share link for an app the caller owns.
+
+```bash
+curl -X POST -H "Authorization: Bearer $VIBED_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"password": "s3cret", "expires_in": "7d"}' \
+  http://localhost:8080/v1/apps/my-tool/share-links
+```
+
+`password` and `expires_in` are optional; an empty `expires_in` means no expiry, and a non-empty value that isn't a valid Go duration is rejected with `400`. The response is a `ShareLink` (`token`, `has_password`, `expires_at`, `url`, …). Responses: `200`, `400`, `401`, `404`.
+
+### `GET /v1/apps/{id}/share-links`
+
+List an app's share links (owner or admin only). Returns `{items, total}`. Responses: `200`, `401`, `404`.
+
+### `GET /api/share/{token}` · `POST /api/share/{token}`
+
+**Public** resolution of a share link — no bearer token. `GET` returns the app's name, status, and URL; a password-protected link returns `401` until the password is supplied via `POST` with `{"password": "..."}`. Expired or revoked links return `404` (no information leakage). This route is intentionally exempt from the auth middleware.
+
+### `DELETE /api/share-links/{token}`
+
+Revoke a share link by token (owner or admin). The link returns `404` afterwards. Responses: `204`/`200`, `401`, `404`.
+
 ## Governance
 
 ### `GET /v1/audit`
@@ -259,7 +305,42 @@ Whether events persist depends on the store backend — see [Audit Trail](../con
 
 The source blob that the in-sandbox agent (`vibed-agent`) pulls on startup. This route is served **only** when the tarball store uses the `served` backend (dev). Requests must be `GET`/`HEAD` for a path ending in `.tar.gz`; anything else is `404` or `405`. There are no directory listings.
 
-It sits behind the same auth middleware as `/v1`, so only the shared agent token can pull. In production the `served` backend is not used: sandboxes have no cluster DNS or cluster-internal egress under the restrictive NetworkPolicy, so the agent instead pulls from a pre-signed **S3** URL and vibeD serves nothing here. See [Storage](../configuration/storage.md) for `served` vs `s3`.
+It sits behind the same auth middleware as `/v1`, so only the shared agent token can pull. The `{id}` is a **capability**, not a guessable name: since the agent authenticates with one shared token there is no per-user identity to authorize against, so each key carries 128 bits of entropy (`myapp.v3.<32 hex>`) and possession of the reference is the authorization. Keys are minted at deploy time and stored on the app, never re-derived. Sources uploaded before v0.6.0 keep their older, name-derived keys until version retention evicts them. In production the `served` backend is not used: sandboxes have no cluster DNS or cluster-internal egress under the restrictive NetworkPolicy, so the agent instead pulls from a pre-signed **S3** URL and vibeD serves nothing here. See [Storage](../configuration/storage.md) for `served` vs `s3`.
+
+## Other `/api` endpoints
+
+The original REST surface under **`/api/artifacts*`** and **`/api/targets`** were **removed in v0.6**; the artifact lifecycle now lives entirely under `/v1/apps`. See [Migrating to v0.6](../migrating-to-v0.6.md) for the endpoint mapping.
+
+These `/api` routes remain — they have no `/v1` equivalent:
+
+| Path                          | Purpose                                                        |
+| ----------------------------- | ------------------------------------------------------------- |
+| `GET`/`POST` `/api/share/{token}` | Public [share-link](#share-links) resolution (unauthenticated) |
+| `DELETE /api/share-links/{token}` | Revoke a [share link](#share-links)                       |
+| `/api/events`                 | Dashboard SSE stream of app lifecycle events                  |
+| `/api/auth`                   | Public: active auth mode + browser login URL (see below)      |
+| `/api/whoami`                 | Authenticated caller's identity                              |
+| `/api/users`, `/api/departments` | Admin user/department management                          |
+
+### `GET /api/auth`
+
+Reports which auth mode the server runs and, for modes with a browser login
+flow, where that flow starts. **Unauthenticated by design** — a login screen
+needs the mode *before* it can authenticate, and the response reveals nothing
+the login endpoints don't already.
+
+```bash
+curl http://localhost:8080/api/auth
+```
+
+```json
+{ "enabled": true, "mode": "saml", "loginUrl": "/saml/login" }
+```
+
+`loginUrl` is empty for bearer-style modes (`apikey`, `oidc`), where the client
+supplies a token or sits behind an authenticating proxy. The dashboard uses
+this to send users to SSO instead of showing an API-key prompt that could not
+work in that mode.
 
 ## MCP endpoint
 

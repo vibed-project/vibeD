@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -26,11 +27,42 @@ type Client struct {
 // "http://vibed-runner-python-ab12.vibed-runners.svc.cluster.local:9000").
 // token must match the agent's VIBED_AGENT_TOKEN; pass "" if the agent runs
 // without auth.
+//
+// Total request duration is governed by the caller's context deadline — every
+// production call site passes one. The client deliberately sets no
+// whole-request Timeout: it would silently truncate any caller deadline above
+// it (e.g. the injector's 60s cold-start budget). The transport only bounds
+// the individual phases of a hung connection.
+// sharedTransport is process-wide on purpose. A Transport owns its connection
+// pool, and every production call site builds a Client per call (readiness
+// probe per reconcile, source injection, warm-pool image validation). A
+// per-Client Transport therefore reused no connection and — with no
+// IdleConnTimeout, whose zero value means "never expire" — parked each one in a
+// private pool that nothing could ever drain, leaking sockets and their reader
+// goroutines for the controller's lifetime. One shared Transport both fixes the
+// leak and lets keep-alives actually do their job.
+var sharedTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	TLSHandshakeTimeout: 10 * time.Second,
+	// /inject answers only after a synchronous tarball download + process
+	// start, which can legitimately approach the injector's 60s budget. Keep
+	// this comfortably above it so it trips only on a truly wedged agent,
+	// never on a slow cold start.
+	ResponseHeaderTimeout: 2 * time.Minute,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   4,
+	IdleConnTimeout:       90 * time.Second,
+}
+
 func NewClient(controlURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(controlURL, "/"),
 		token:   token,
-		hc:      &http.Client{Timeout: 30 * time.Second},
+		hc:      &http.Client{Transport: sharedTransport},
 	}
 }
 
@@ -131,10 +163,16 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 
 	if out == nil {
+		// Drain so the underlying connection can be reused. Bounded: a
+		// well-behaved agent sends at most a short acknowledgement here.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		return nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("decoding runner agent response: %w", err)
 	}
+	// The decoder stops at the end of the JSON value; drain any trailing
+	// bytes (e.g. a final newline) so the connection can be reused.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return nil
 }

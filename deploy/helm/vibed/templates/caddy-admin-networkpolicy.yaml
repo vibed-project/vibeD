@@ -1,0 +1,47 @@
+{{- /*
+Caddy admin-API lockdown.
+
+Caddy's admin API (:2019) is a full management interface: anything that can
+reach it can rewrite the proxy's routes, i.e. repoint any app's hostname at an
+attacker-controlled upstream. It must listen on the pod IP (vibed-router
+programs it from another pod, so localhost-only is not an option) and it is
+published on the caddy Service — which means, without a policy, ANY pod in the
+cluster (including an untrusted user sandbox) can call it.
+
+This policy allows :2019 ingress from vibed-router only. HTTP/HTTPS ingress is
+deliberately left untouched: an explicit ingress rule for :2019 does not
+restrict other ports, because a NetworkPolicy only restricts the ports it names
+for the pods it selects... which is exactly why the second rule below
+re-permits 80/443 from everywhere. Without it, selecting the caddy pod for
+Ingress would default-deny all other ingress and take the data plane down.
+
+Enabled with networkPolicy.enabled (same switch as the sandbox policy).
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "vibed.fullname" . }}-caddy-admin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vibed.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "vibed.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: caddy
+  policyTypes: [Ingress]
+  ingress:
+    # 1. The management API: vibed-router only.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "vibed.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: router
+      ports:
+        - { protocol: TCP, port: 2019 }
+    # 2. The data plane stays open — see the note above.
+    - ports:
+        - { protocol: TCP, port: 80 }
+        - { protocol: TCP, port: 443 }
+{{- end }}

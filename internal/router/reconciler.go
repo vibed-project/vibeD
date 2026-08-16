@@ -8,8 +8,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/vibed-project/vibeD/internal/controller"
@@ -47,9 +50,62 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.AppPort = 8080
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&vibedv1.VibedApp{}).
+		// The controller writes VibedApp status constantly (condition
+		// LastTransitionTime bumps, transitional-phase churn); without a
+		// predicate every one of those writes becomes a Reconcile → a Caddy
+		// admin PATCH even though nothing routing-relevant changed. Filter
+		// Update events down to the fields route computation actually reads.
+		For(&vibedv1.VibedApp{}, builder.WithPredicates(routingPredicate())).
 		Named("vibed-router").
 		Complete(r)
+}
+
+// routingPredicate passes every Create/Delete/Generic event untouched
+// (predicate.Funcs returns true for unset funcs) and admits Update events
+// only when a routing-relevant field changed — see routingFieldsChanged.
+func routingPredicate() predicate.Funcs {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldApp, okOld := e.ObjectOld.(*vibedv1.VibedApp)
+			newApp, okNew := e.ObjectNew.(*vibedv1.VibedApp)
+			if !okOld || !okNew {
+				// Shouldn't happen on a For(&VibedApp{}) watch; fail open —
+				// a spurious reconcile beats a silently dropped event.
+				return true
+			}
+			return routingFieldsChanged(oldApp, newApp)
+		},
+	}
+}
+
+// routingFieldsChanged reports whether an update touched any VibedApp field
+// the router's route computation reads: Status.Phase (Ready gate), Status.URL
+// (host matcher), and Status.RouteTarget / Status.PodIP (upstream, in that
+// order — see upstream()). The route @id derives from namespace/name only,
+// which are immutable on update.
+//
+// Two fields Reconcile does not read directly are still included out of
+// caution — a false-positive reconcile is a cheap no-op PATCH, a missed one
+// leaves a stale or missing route:
+//   - DeletionTimestamp turning non-nil marks the start of teardown (final
+//     cleanup still happens on the Delete event / IsNotFound path);
+//   - Spec.Suspended is the desired-state precursor of a Phase flip.
+func routingFieldsChanged(oldApp, newApp *vibedv1.VibedApp) bool {
+	switch {
+	case oldApp.Status.Phase != newApp.Status.Phase:
+		return true
+	case oldApp.Status.URL != newApp.Status.URL:
+		return true
+	case oldApp.Status.RouteTarget != newApp.Status.RouteTarget:
+		return true
+	case oldApp.Status.PodIP != newApp.Status.PodIP:
+		return true
+	case oldApp.DeletionTimestamp.IsZero() != newApp.DeletionTimestamp.IsZero():
+		return true
+	case oldApp.Spec.Suspended != newApp.Spec.Suspended:
+		return true
+	}
+	return false
 }
 
 // Reconcile decides whether the app should have a route in Caddy, then

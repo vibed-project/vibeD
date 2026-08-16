@@ -66,7 +66,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: runtime
-          image: {{ $cfg.image | quote }}
+          image: {{ include "vibed.warmPoolImage" (dict "image" $cfg.image "root" $root) | quote }}
           imagePullPolicy: IfNotPresent
           env:
             {{- if $root.Values.egressControl.enabled }}

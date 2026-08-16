@@ -1,7 +1,6 @@
 package frontend
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -67,8 +66,9 @@ func handleSSE(bus *events.EventBus, m *metrics.Metrics) http.HandlerFunc {
 				if userID != "" && !isAdmin && event.OwnerID != "" && event.OwnerID != userID {
 					continue
 				}
-				data, _ := json.Marshal(event)
-				fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, data)
+				// Payload is marshaled once in Publish; every connection
+				// writes the same cached bytes.
+				fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, event.Payload())
 				flusher.Flush()
 
 			case <-ticker.C:

@@ -142,6 +142,28 @@ func init() {
 	Register("sqlite", func(d Deps) (ArtifactStore, error) { return NewSQLiteStore(d.SQLitePath) })
 }
 
+// sqlitePoolSize bounds the database/sql connection pool. SQLite is a
+// single-writer file DB, so more connections only help concurrent readers
+// (which WAL allows on separate connections); a small bound keeps read
+// parallelism without piling up writers that would just queue on the file
+// lock and burn busy_timeout.
+const sqlitePoolSize = 4
+
+// sqliteDSNPragmas are applied by the modernc.org/sqlite driver to every
+// new pooled connection (format: ?_pragma=name(value), busy_timeout first).
+// synchronous, busy_timeout, foreign_keys, cache_size, temp_store and
+// mmap_size are all per-connection settings, so they must live in the DSN —
+// a plain Exec would only configure whichever connection the pool handed
+// out. journal_mode=WAL is persistent in the DB file but harmless to
+// (re)apply per connection.
+const sqliteDSNPragmas = "?_pragma=busy_timeout(5000)" + // first, so lock waits apply while the rest are set
+	"&_pragma=journal_mode(WAL)" +
+	"&_pragma=synchronous(NORMAL)" +
+	"&_pragma=foreign_keys(ON)" +
+	"&_pragma=cache_size(-64000)" + // 64 MB page cache per connection
+	"&_pragma=temp_store(MEMORY)" +
+	"&_pragma=mmap_size(268435456)" // 256 MB mmap'd reads
+
 // NewSQLiteStore opens (or creates) a SQLite database at the given path
 // and initializes the schema. Uses WAL mode for concurrent read performance.
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
@@ -150,22 +172,23 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("resolving sqlite path: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", absPath)
+	db, err := sql.Open("sqlite", absPath+sqliteDSNPragmas)
 	if err != nil {
 		return nil, fmt.Errorf("opening sqlite db: %w", err)
 	}
 
-	// Enable WAL mode for concurrent reads and busy timeout for contention.
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA foreign_keys=ON",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("setting pragma %q: %w", pragma, err)
-		}
+	// Bound the pool (see sqlitePoolSize) and keep the connections idle
+	// rather than closing them: reopening a SQLite connection is cheap but
+	// re-warming its page cache is not, and connections never go stale.
+	db.SetMaxOpenConns(sqlitePoolSize)
+	db.SetMaxIdleConns(sqlitePoolSize)
+	db.SetConnMaxLifetime(0)
+
+	// Force a connection now so a bad path or DSN pragma fails here with a
+	// clear error instead of surfacing on the first query.
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("connecting to sqlite db: %w", err)
 	}
 
 	if _, err := db.Exec(schema); err != nil {

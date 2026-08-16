@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -281,6 +282,171 @@ func TestInjectWithSourceURL(t *testing.T) {
 			t.Fatalf("user process never logged file content: %+v (last err=%v)", snapshot, err)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// stageEntries lists .vibed-stage-* entries in dir. No *testing.T: it is also
+// called from HTTP-handler goroutines, where t.Fatalf is not allowed.
+func stageEntries(dir string) []string {
+	entries, _ := os.ReadDir(dir)
+	var got []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".vibed-stage-") {
+			got = append(got, e.Name())
+		}
+	}
+	return got
+}
+
+// sourceURLAgent returns an Agent (loopback dial guard relaxed) on workdir and
+// an httptest server driving its control handler.
+func sourceURLAgent(t *testing.T, workdir string) (*Agent, *Client) {
+	t.Helper()
+	a := New(Config{Workdir: workdir, AppPort: 8080, StopGrace: 200 * time.Millisecond})
+	a.Fetcher.dialGuard = func(netip.Addr) bool { return false }
+	t.Cleanup(func() { a.stopProcess() })
+	srv := httptest.NewServer(a.handler())
+	t.Cleanup(srv.Close)
+	return a, NewClient(srv.URL, "")
+}
+
+// TestInjectStagesInsideWorkdirAndLeavesNoResidue asserts the two observable
+// halves of in-workdir staging: during the fetch, a .vibed-stage-* dir exists
+// INSIDE the workdir (observed by the tarball server at request time — being
+// inside the workdir means the later adoption is a same-filesystem rename,
+// which we cannot watch directly), and after a successful inject the files
+// are in place with no .vibed-stage-* residue left behind.
+func TestInjectStagesInsideWorkdirAndLeavesNoResidue(t *testing.T) {
+	workdir := t.TempDir()
+	tarball := tarballFromMap(t, map[string]string{"hello.txt": "from-tarball"})
+
+	var sawStage atomic.Bool
+	tarServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if len(stageEntries(workdir)) > 0 {
+			sawStage.Store(true)
+		}
+		_, _ = w.Write(tarball)
+	}))
+	defer tarServer.Close()
+
+	_, c := sourceURLAgent(t, workdir)
+	if _, err := c.Inject(context.Background(), InjectRequest{
+		SourceURL: tarServer.URL,
+		Command:   []string{"sh", "-c", "sleep 5"},
+	}); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+
+	if !sawStage.Load() {
+		t.Error("no .vibed-stage-* dir was visible inside the workdir during the fetch")
+	}
+	if got, err := os.ReadFile(filepath.Join(workdir, "hello.txt")); err != nil || string(got) != "from-tarball" {
+		t.Fatalf("hello.txt = %q (err %v), want %q", got, err, "from-tarball")
+	}
+	if left := stageEntries(workdir); len(left) != 0 {
+		t.Errorf("stage residue left in workdir after inject: %v", left)
+	}
+}
+
+// TestReinjectWithSourceURLReplacesSource injects twice from SourceURL: the
+// second inject must fully replace the first's files (staging inside the
+// workdir must not confuse the reset/swap) and leave no stage residue.
+func TestReinjectWithSourceURLReplacesSource(t *testing.T) {
+	workdir := t.TempDir()
+	srvFor := func(files map[string]string) *httptest.Server {
+		b := tarballFromMap(t, files)
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(b)
+		}))
+		t.Cleanup(s.Close)
+		return s
+	}
+	firstSrv := srvFor(map[string]string{"first.txt": "1"})
+	secondSrv := srvFor(map[string]string{"second.txt": "2"})
+
+	_, c := sourceURLAgent(t, workdir)
+	for _, u := range []string{firstSrv.URL, secondSrv.URL} {
+		if _, err := c.Inject(context.Background(), InjectRequest{
+			SourceURL: u,
+			Command:   []string{"sh", "-c", "sleep 5"},
+		}); err != nil {
+			t.Fatalf("Inject %s: %v", u, err)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(workdir, "second.txt")); err != nil {
+		t.Fatalf("second inject's file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "first.txt")); !os.IsNotExist(err) {
+		t.Errorf("first inject's file should be gone, stat err = %v", err)
+	}
+	if left := stageEntries(workdir); len(left) != 0 {
+		t.Errorf("stage residue after re-inject: %v", left)
+	}
+}
+
+// TestInjectFailedFetchLeavesWorkdirIntact: a fetch that dies mid-extraction
+// must remove its staging dir and must NOT disturb the previously deployed
+// workdir contents (the fetch fails before the reset/swap section).
+func TestInjectFailedFetchLeavesWorkdirIntact(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workdir, "existing.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatalf("seed workdir: %v", err)
+	}
+
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not a gzip stream"))
+	}))
+	defer bad.Close()
+
+	_, c := sourceURLAgent(t, workdir)
+	if _, err := c.Inject(context.Background(), InjectRequest{
+		SourceURL: bad.URL,
+		Command:   []string{"sh", "-c", "sleep 5"},
+	}); err == nil {
+		t.Fatal("expected inject to fail on a bad tarball")
+	}
+
+	if got, err := os.ReadFile(filepath.Join(workdir, "existing.txt")); err != nil || string(got) != "keep" {
+		t.Fatalf("existing workdir content disturbed: %q (err %v)", got, err)
+	}
+	if left := stageEntries(workdir); len(left) != 0 {
+		t.Errorf("stage residue after failed fetch: %v", left)
+	}
+}
+
+// TestInjectCleansStaleStageDirs: a .vibed-stage-* dir left by a crashed agent
+// (not registered in a.stages) is ordinary residue and must be cleared by the
+// next successful inject's workdir reset.
+func TestInjectCleansStaleStageDirs(t *testing.T) {
+	workdir := t.TempDir()
+	stale := filepath.Join(workdir, ".vibed-stage-stale")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatalf("mk stale stage dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "junk"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed stale stage dir: %v", err)
+	}
+
+	tarball := tarballFromMap(t, map[string]string{"app.txt": "v"})
+	tarServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(tarball)
+	}))
+	defer tarServer.Close()
+
+	_, c := sourceURLAgent(t, workdir)
+	if _, err := c.Inject(context.Background(), InjectRequest{
+		SourceURL: tarServer.URL,
+		Command:   []string{"sh", "-c", "sleep 5"},
+	}); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+
+	if left := stageEntries(workdir); len(left) != 0 {
+		t.Errorf("stale stage dir survived inject: %v", left)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "app.txt")); err != nil {
+		t.Fatalf("injected file missing: %v", err)
 	}
 }
 

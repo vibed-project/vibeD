@@ -125,3 +125,46 @@ func TestShareLinks(t *testing.T) {
 		t.Fatal("expected not-found after revoke")
 	}
 }
+
+// A share link resolves its app by NAME at request time. If deleting an app
+// leaves its links live, the next app to take that name — possibly another
+// user's — is silently published to everyone holding the old URL.
+func TestDeleteRevokesShareLinks(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&vibedv1.VibedApp{}).Build()
+	svc := newService(c, newFakeStore())
+	links := newFakeShareLinkStore()
+	svc.ShareLinks = links
+
+	markReady(c, "shop", "vibed-apps", 20*time.Millisecond)
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "shop",
+		Owner:   "alice@example.com",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "<h1>alice</h1>"})),
+	}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	link, err := svc.CreateShareLink(context.Background(), "alice@example.com", "shop", "", 0)
+	if err != nil {
+		t.Fatalf("create share link: %v", err)
+	}
+
+	if err := svc.Delete(context.Background(), "alice@example.com", "shop"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// Mallory now claims the freed name.
+	markReady(c, "shop", "vibed-apps", 20*time.Millisecond)
+	if _, err := svc.Deploy(context.Background(), Request{
+		Name:    "shop",
+		Owner:   "mallory@example.com",
+		Tarball: bytes.NewReader(gzTarball(t, map[string]string{"index.html": "<h1>mallory</h1>"})),
+	}); err != nil {
+		t.Fatalf("mallory's deploy of the freed name: %v", err)
+	}
+
+	// Alice's old link must not resolve to Mallory's app.
+	if app, err := svc.ResolveShareLink(context.Background(), link.Token, ""); err == nil {
+		t.Fatalf("stale share link still resolves, to app owned by %q", app.Spec.Owner)
+	}
+}

@@ -16,7 +16,7 @@ func init() {
 		if len(cfg.APIKeys) == 0 {
 			return nil, fmt.Errorf("auth.mode is 'apikey' but no API keys are configured")
 		}
-		return &Provider{Verifier: apiKeyVerifier(cfg.APIKeys, userStore, logger)}, nil
+		return &Provider{Verifier: apiKeyVerifier(resolveAPIKeys(cfg.APIKeys, logger), userStore, logger)}, nil
 	})
 
 	RegisterProvider("oauth", func(cfg config.AuthConfig, _ store.UserStore, logger *slog.Logger) (*Provider, error) {
@@ -27,11 +27,11 @@ func init() {
 		if len(trusted) == 0 {
 			logger.Warn("auth.mode 'oauth' has no auth.trustedProxies configured: X-Forwarded-User will be ignored and all requests map to a single 'oauth-user' identity. Set auth.trustedProxies to the proxy CIDR(s) to enable per-user identity.")
 		}
-		return &Provider{Verifier: oauthPassthroughVerifier(cfg.APIKeys, trusted, logger)}, nil
+		return &Provider{Verifier: oauthPassthroughVerifier(resolveAPIKeys(cfg.APIKeys, logger), trusted, logger)}, nil
 	})
 
 	RegisterProvider("oidc", func(cfg config.AuthConfig, userStore store.UserStore, logger *slog.Logger) (*Provider, error) {
-		v, err := newOIDCVerifier(cfg.OIDC, userStore, logger)
+		v, err := newOIDCVerifier(cfg.OIDC, cfg.IdentityCacheTTL, userStore, logger)
 		if err != nil {
 			return nil, fmt.Errorf("initializing OIDC verifier: %w", err)
 		}

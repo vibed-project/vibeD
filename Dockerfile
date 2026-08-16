@@ -26,7 +26,12 @@ COPY . .
 # Copy built frontend assets from Stage 1
 COPY --from=frontend /app/internal/frontend/static/ /app/internal/frontend/static/
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /vibed ./cmd/vibed
+# VERSION is injected by the release build so the binary reports the version it
+# actually shipped as; unset locally, leaving the "dev" default.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags "-X github.com/vibed-project/vibeD/internal/version.Version=${VERSION}" \
+    -o /vibed ./cmd/vibed
 
 # Stage 3: Runtime (multi-arch via manifest)
 FROM gcr.io/distroless/static-debian12:nonroot

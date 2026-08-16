@@ -2,6 +2,7 @@
 const sidebars = {
   docs: [
     'intro',
+    'migrating-to-v0.6',
     {
       type: 'category',
       label: 'Getting Started',
@@ -42,11 +43,8 @@ const sidebars = {
         'mcp-tools/update-artifact',
         'mcp-tools/delete-artifact',
         'mcp-tools/get-artifact-logs',
-        'mcp-tools/list-deployment-targets',
         'mcp-tools/list-versions',
         'mcp-tools/rollback-artifact',
-        'mcp-tools/share-artifact',
-        'mcp-tools/unshare-artifact',
         'mcp-tools/create-share-link',
         'mcp-tools/list-share-links',
         'mcp-tools/revoke-share-link',

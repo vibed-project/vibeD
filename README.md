@@ -64,7 +64,7 @@ make build
 make dev
 ```
 
-When it finishes, the dashboard is at `http://localhost:8080/` and deployed apps are reachable at `http://<id>.localhost/` — no `kubectl port-forward` needed (Kind's `extraPortMappings` bridge the host ports). The dev install enables only the `static-nginx` warm pool; enable others with `make enable-python-pool` / `make enable-node-pool`. See [Local development](docs/docs/getting-started/local-dev.md) for details.
+When it finishes, the dashboard is at `http://localhost:8080/` and deployed apps are reachable at `http://<id>.localhost/` — no `kubectl port-forward` needed (Kind's `extraPortMappings` bridge the host ports). The dev install runs the `static-nginx`, `node-24` and `python-313` warm pools, so static, JS and Python apps deploy out of the box; the heavier Go and base-image slots are opt-in via `make enable-go-pool` / `make enable-base-pool`. See [Local development](docs/docs/getting-started/local-dev.md) for details.
 
 ## Connect to Claude Desktop
 

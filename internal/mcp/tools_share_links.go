@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/vibed-project/vibeD/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/deploy"
 	"github.com/vibed-project/vibeD/pkg/api"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,11 +16,14 @@ type createShareLinkInput struct {
 	ExpiresIn  string `json:"expires_in,omitempty" jsonschema:"Optional expiration duration (e.g. '24h', '7d'). Empty means no expiration."`
 }
 
-func registerCreateShareLinkTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
+func registerCreateShareLinkTool(server *mcp.Server, deploySvc *deploy.Service) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "create_share_link",
 		Description: "Create a public shareable link for an artifact. Anyone with the link (and optional password) can view the artifact's status and URL without a vibeD account.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input createShareLinkInput) (*mcp.CallToolResult, *api.ShareLink, error) {
+		if deploySvc == nil {
+			return nil, nil, errDeployServiceNotConfigured
+		}
 		var expiresIn time.Duration
 		if input.ExpiresIn != "" {
 			s := input.ExpiresIn
@@ -34,7 +37,7 @@ func registerCreateShareLinkTool(server *mcp.Server, orch *orchestrator.Orchestr
 			}
 		}
 
-		link, err := orch.CreateShareLink(ctx, input.ArtifactID, input.Password, expiresIn)
+		link, err := deploySvc.CreateShareLink(ctx, ownerFromContext(ctx), input.ArtifactID, input.Password, expiresIn)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -50,12 +53,15 @@ type listShareLinksOutput struct {
 	Links []api.ShareLink `json:"links"`
 }
 
-func registerListShareLinksTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
+func registerListShareLinksTool(server *mcp.Server, deploySvc *deploy.Service) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_share_links",
 		Description: "List all share links for an artifact. Only the artifact owner or admin can see these.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input listShareLinksInput) (*mcp.CallToolResult, *listShareLinksOutput, error) {
-		links, err := orch.ListShareLinks(ctx, input.ArtifactID, 0, 0)
+		if deploySvc == nil {
+			return nil, nil, errDeployServiceNotConfigured
+		}
+		links, err := deploySvc.ListShareLinks(ctx, ownerFromContext(ctx), input.ArtifactID, 0, 0)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -70,12 +76,15 @@ type revokeShareLinkInput struct {
 	Token string `json:"token" jsonschema:"The share link token to revoke"`
 }
 
-func registerRevokeShareLinkTool(server *mcp.Server, orch *orchestrator.Orchestrator) {
+func registerRevokeShareLinkTool(server *mcp.Server, deploySvc *deploy.Service) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "revoke_share_link",
 		Description: "Revoke a share link so it can no longer be used. The link will return 404 after revocation.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input revokeShareLinkInput) (*mcp.CallToolResult, *map[string]string, error) {
-		if err := orch.RevokeShareLink(ctx, input.Token); err != nil {
+		if deploySvc == nil {
+			return nil, nil, errDeployServiceNotConfigured
+		}
+		if err := deploySvc.RevokeShareLink(ctx, ownerFromContext(ctx), input.Token); err != nil {
 			return nil, nil, err
 		}
 		result := map[string]string{"status": "revoked"}

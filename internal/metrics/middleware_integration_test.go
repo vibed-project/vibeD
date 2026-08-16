@@ -5,7 +5,6 @@ package metrics_test
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/vibed-project/vibeD/internal/metrics"
@@ -66,8 +65,10 @@ func TestHTTPMiddleware_RecordsRequests(t *testing.T) {
 }
 
 func TestNormalizePath(t *testing.T) {
-	// We test normalizePath indirectly through the middleware by checking
-	// that different dynamic paths get grouped under the same label.
+	// normalizePath keeps label cardinality bounded: unknown paths (including
+	// former /api/artifacts/{id} routes now that the orchestrator is gone)
+	// collapse to a single "/static" bucket, while /mcp sub-paths collapse to
+	// "/mcp".
 	m := metrics.New()
 
 	handler := m.HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,21 +78,15 @@ func TestNormalizePath(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	// Make requests to different artifact IDs
-	for _, id := range []string{"abc123", "def456", "ghi789"} {
-	        func(id string) {
-	                resp, err := http.Get(srv.URL + "/api/artifacts/" + id)
+	// Many distinct MCP sub-paths must all share one label.
+	for _, sub := range []string{"/mcp", "/mcp/session-abc", "/mcp/session-def"} {
+	        func(sub string) {
+	                resp, err := http.Get(srv.URL + sub)
 	                require.NoError(t, err)
 	                defer resp.Body.Close()
-	        }(id)
+	        }(sub)
 	}
 
-	// Make a logs request
-	func() {
-	        resp, err := http.Get(srv.URL + "/api/artifacts/abc123/logs")
-	        require.NoError(t, err)
-	        defer resp.Body.Close()
-	}()
 	// Gather metrics
 	families, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)
@@ -103,17 +98,16 @@ func TestNormalizePath(t *testing.T) {
 				for _, label := range metric.GetLabel() {
 					if label.GetName() == "path" {
 						val := label.GetValue()
-						// Should be normalized, not raw paths
-						if val == "/api/artifacts/:id" || val == "/api/artifacts/:id/logs" {
+						if val == "/mcp" {
 							found = true
 						}
-						// Should NOT contain actual IDs
-						assert.False(t, strings.Contains(val, "abc123"),
+						// Session IDs must never leak into the label.
+						assert.NotContains(t, val, "session-abc",
 							"path label should be normalized, got %q", val)
 					}
 				}
 			}
 		}
 	}
-	assert.True(t, found, "should find normalized path labels")
+	assert.True(t, found, "should find the normalized /mcp label")
 }

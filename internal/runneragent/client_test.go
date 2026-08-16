@@ -2,8 +2,12 @@ package runneragent
 
 import (
 	"context"
+	"errors"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -92,6 +96,101 @@ func TestClientSurfacesAgentError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "files or source_url") {
 		t.Errorf("error %q should surface the agent's message", err)
+	}
+}
+
+func TestClientHonorsCallerContextDeadline(t *testing.T) {
+	// A slow agent: the response arrives ~600ms after the request. Whether a
+	// call survives that must be decided by the caller's ctx, not by a hidden
+	// client-side cap (the old whole-request Timeout silently truncated any
+	// caller deadline above 30s, cancelling legitimately slow cold-start
+	// injects).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return on client abort so srv.Close (which waits for in-flight
+		// handlers) doesn't stall on the short-deadline request below.
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(600 * time.Millisecond):
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"state":"idle"}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL, "")
+
+	// Guard the fix directly: a whole-request Timeout would reintroduce the
+	// silent truncation no matter what the transport is configured with.
+	if c.hc.Timeout != 0 {
+		t.Fatalf("client Timeout = %v, want 0 (caller ctx must govern)", c.hc.Timeout)
+	}
+
+	// A deadline above the server delay succeeds — no hidden cap below the ctx.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if st, err := c.Status(ctx); err != nil || st.State != StateIdle {
+		t.Fatalf("Status with 2s deadline = %+v, err = %v", st, err)
+	}
+
+	// A deadline below the server delay fails promptly with the ctx's error —
+	// the caller's deadline, not the client, governs total request duration.
+	shortCtx, cancel2 := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel2()
+	start := time.Now()
+	_, err := c.Status(shortCtx)
+	if err == nil {
+		t.Fatal("Status with 150ms deadline should fail")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded in the chain", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("deadline failure took %v, want ~150ms", elapsed)
+	}
+}
+
+// TestClientReusesConnections verifies do() drains response bodies so
+// net/http can return the connection to the idle pool. Without the drain,
+// every probe during an app's Starting phase opens a fresh TCP connection
+// to the agent.
+func TestClientReusesConnections(t *testing.T) {
+	a := New(Config{Workdir: t.TempDir(), Token: "tok", AppPort: 8080, StopGrace: time.Second})
+
+	// Count fresh TCP connections; reuse must keep this at one. ConnState
+	// fires on the server's accept goroutine, hence the atomic.
+	var newConns atomic.Int32
+	srv := httptest.NewUnstartedServer(a.handler())
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			newConns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, "tok")
+	ctx := context.Background()
+
+	// Healthz takes the out == nil path in do(); the agent answers with a
+	// small "ok\n" body that must be drained for the connection to be reused.
+	for i := 0; i < 5; i++ {
+		if err := c.Healthz(ctx); err != nil {
+			t.Fatalf("Healthz #%d: %v", i+1, err)
+		}
+	}
+	if got := newConns.Load(); got != 1 {
+		t.Errorf("after 5 Healthz calls: %d new connections, want 1 (body not drained?)", got)
+	}
+
+	// Status takes the Decode path; the agent's JSON encoder appends a
+	// trailing newline that Decode leaves unread.
+	for i := 0; i < 5; i++ {
+		if _, err := c.Status(ctx); err != nil {
+			t.Fatalf("Status #%d: %v", i+1, err)
+		}
+	}
+	if got := newConns.Load(); got != 1 {
+		t.Errorf("after Status calls: %d new connections total, want 1 (trailing bytes not drained?)", got)
 	}
 }
 

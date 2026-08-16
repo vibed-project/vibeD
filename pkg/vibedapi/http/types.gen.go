@@ -45,10 +45,16 @@ const (
 type App struct {
 	AppId          string     `json:"app_id"`
 	LastDeployedAt *time.Time `json:"last_deployed_at,omitempty"`
-	Name           *string    `json:"name,omitempty"`
-	Owner          *string    `json:"owner,omitempty"`
-	Phase          Phase      `json:"phase"`
-	Runtime        *struct {
+
+	// Message Human-readable explanation of the current phase, from the Ready condition. On a failed deploy this carries why it failed (e.g. no warm pool for the required template) — often the only diagnosis available, since a deploy that never gets a pod has no logs.
+	Message *string `json:"message,omitempty"`
+	Name    *string `json:"name,omitempty"`
+	Owner   *string `json:"owner,omitempty"`
+	Phase   Phase   `json:"phase"`
+
+	// Reason Short CamelCase reason for the current phase, from the Ready condition (e.g. TemplateMissing). Machine-readable; stable.
+	Reason  *string `json:"reason,omitempty"`
+	Runtime *struct {
 		Lane     *AppRuntimeLane `json:"lane,omitempty"`
 		Template *string         `json:"template,omitempty"`
 	} `json:"runtime,omitempty"`
@@ -124,6 +130,29 @@ type RuntimeOverride struct {
 // RuntimeOverrideLane defines model for RuntimeOverride.Lane.
 type RuntimeOverrideLane string
 
+// ShareLink A public, optionally password-protected link to an app.
+type ShareLink struct {
+	// ArtifactId The app the link points at.
+	ArtifactId string    `json:"artifact_id"`
+	CreatedAt  time.Time `json:"created_at"`
+
+	// CreatedBy Owner who minted the link.
+	CreatedBy string `json:"created_by"`
+
+	// ExpiresAt Expiry instant; absent means it never expires.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// HasPassword Whether resolving requires a password.
+	HasPassword bool `json:"has_password"`
+	Revoked     bool `json:"revoked"`
+
+	// Token The credential; a link resolves via this token.
+	Token string `json:"token"`
+
+	// Url Public share URL; absent when no public origin is configured.
+	Url *string `json:"url,omitempty"`
+}
+
 // Template defines model for Template.
 type Template struct {
 	Description *string      `json:"description,omitempty"`
@@ -162,6 +191,15 @@ type NotFound = Error
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
+// ListAppsParams defines parameters for ListApps.
+type ListAppsParams struct {
+	// Limit Maximum number of apps to return. Omitted or <= 0 returns every app (backward compatible with pre-pagination clients).
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Offset Number of apps to skip before the first returned item. Negative values are treated as 0.
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
 // RedeployAppMultipartBody defines parameters for RedeployApp.
 type RedeployAppMultipartBody struct {
 	Metadata *DeployMetadata    `json:"metadata,omitempty"`
@@ -171,6 +209,24 @@ type RedeployAppMultipartBody struct {
 // RollbackAppJSONBody defines parameters for RollbackApp.
 type RollbackAppJSONBody struct {
 	Version int `json:"version"`
+}
+
+// ListShareLinksParams defines parameters for ListShareLinks.
+type ListShareLinksParams struct {
+	// Limit Maximum number of share links to return. Omitted or <= 0 returns every link (backward compatible with pre-pagination clients).
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Offset Number of share links to skip before the first returned item. Negative values are treated as 0.
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
+// CreateShareLinkJSONBody defines parameters for CreateShareLink.
+type CreateShareLinkJSONBody struct {
+	// ExpiresIn Optional lifetime as a Go duration (e.g. "24h"). A "d" suffix is accepted as days (e.g. "7d"). Omitted or empty mints a link that never expires.
+	ExpiresIn *string `json:"expires_in,omitempty"`
+
+	// Password Optional password gate. Omitted or empty mints a link that requires no password.
+	Password *string `json:"password,omitempty"`
 }
 
 // DeployAppMultipartBody defines parameters for DeployApp.
@@ -186,6 +242,9 @@ type RedeployAppMultipartRequestBody RedeployAppMultipartBody
 
 // RollbackAppJSONRequestBody defines body for RollbackApp for application/json ContentType.
 type RollbackAppJSONRequestBody RollbackAppJSONBody
+
+// CreateShareLinkJSONRequestBody defines body for CreateShareLink for application/json ContentType.
+type CreateShareLinkJSONRequestBody CreateShareLinkJSONBody
 
 // DeployAppMultipartRequestBody defines body for DeployApp for multipart/form-data ContentType.
 type DeployAppMultipartRequestBody DeployAppMultipartBody

@@ -31,15 +31,22 @@ on:
       - '.github/workflows/runner-images.yaml'
   workflow_dispatch:
 
+# Least privilege by default. `docker build` of a pull-request Dockerfile runs
+# attacker-controlled RUN steps on the runner, where the workflow token is
+# reachable — so the PR path must not carry packages:write. The build job below
+# therefore inherits contents:read only, and the publish job (which never runs
+# on a pull_request) is the sole holder of packages:write.
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Validation only — builds every runner image but never pushes, and holds no
+  # registry credentials. This is the job that executes pull-request code.
   build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -109,3 +116,75 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.runner.name }}
           # PR: amd64 only (fast). main/dispatch: full multi-arch.
           platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+
+  # Publish — push/workflow_dispatch only, i.e. code that already passed
+  # review. This is the ONLY job granted packages:write.
+  publish:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        runner:
+          - name: node
+            image: vibed-project/vibed-runner-node
+            dockerfile: templates/node-24/Dockerfile
+          - name: python
+            image: vibed-project/vibed-runner-python
+            dockerfile: templates/python-313/Dockerfile
+          - name: go
+            image: vibed-project/vibed-template-go-123
+            dockerfile: templates/go-123/Dockerfile
+          - name: base
+            image: vibed-project/vibed-template-base-al2023
+            dockerfile: templates/base-al2023/Dockerfile
+          - name: static-nginx
+            image: vibed-project/vibed-template-static-nginx
+            dockerfile: templates/static-nginx/Dockerfile
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Compute tags in shell (not docker/metadata-action, whose API-backed
+      # label enrichment intermittently fails with "Bad credentials").
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          img="${REGISTRY}/${{ matrix.runner.image }}"
+          {
+            echo "tags<<EOF"
+            echo "${img}:latest"
+            echo "${img}:sha-${GITHUB_SHA::7}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.runner.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.runner.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.runner.name }}
+          platforms: linux/amd64,linux/arm64

@@ -19,10 +19,13 @@ rules:
     resources: ["events"]
     verbs: ["get", "list", "watch"]
 
-  # --- Secrets: for validating secret references during deploy ---
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list"]
+  # --- Secrets: intentionally NOT granted. This ClusterRole is cluster-scoped,
+  #     so a secrets get/list here reads EVERY Secret in the cluster. It was
+  #     added for "validating secret references during deploy", but no code path
+  #     ever called the Secret API (spec.secretRefs is passed to the workload,
+  #     not resolved here), so the grant was pure standing privilege. If
+  #     reference validation is implemented later, scope it to a Role in the
+  #     deploy namespace — never cluster-wide.
 
   # --- Services: vibeD creates/manages K8s Services for deployed artifacts ---
   - apiGroups: [""]
@@ -34,17 +37,15 @@ rules:
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
 
-  # --- Deployments: plain Kubernetes deployment target ---
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # --- Deployments: intentionally NOT granted. The plain-Kubernetes deploy
+  #     target was removed with the orchestrator in v0.6.0; nothing references
+  #     appsv1.Deployment any more, so create/update/delete on every namespace
+  #     was standing write privilege with no caller.
 
-  # --- Jobs: the garbage collector sweeps orphaned Jobs left by earlier
-  #     deploys. vibeD no longer creates Jobs itself (the in-cluster image
-  #     builder was removed in v0.4.1), so no "create" verb is needed.
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["get", "list", "watch", "delete"]
+  # --- Jobs: intentionally NOT granted. These existed to sweep Jobs left by
+  #     the in-cluster image builder, removed in v0.4.1; no code references
+  #     batchv1.Job today. Any cluster still holding such Jobs predates v0.4.1
+  #     and can be swept once by an operator.
 
   # --- agent-sandbox: BYOC + Sandbox CR target, and the Instant Preview
   #     fast-path warm runner pool. Without these the SandboxDeployer 403s

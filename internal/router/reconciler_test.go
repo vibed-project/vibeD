@@ -6,12 +6,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/vibed-project/vibeD/internal/controller"
@@ -225,6 +227,151 @@ func TestDeletedAppDropsRoute(t *testing.T) {
 	}
 	if _, present := fc.routes[id]; present {
 		t.Errorf("route should be removed when VibedApp is gone")
+	}
+}
+
+// TestRoutingFieldsChanged pins down which VibedApp updates wake the router.
+// The expensive failure mode is the controller's status churn (condition
+// LastTransitionTime bumps) turning into Caddy admin PATCHes; the dangerous
+// one is a real routing change being filtered out. Both directions are
+// covered here.
+func TestRoutingFieldsChanged(t *testing.T) {
+	base := func() *vibedv1.VibedApp {
+		app := readyApp("pred")
+		app.Status = vibedv1.VibedAppStatus{
+			Phase:       vibedv1.PhaseReady,
+			URL:         "https://" + controller.AppLabel(app) + ".vibed.example.com",
+			PodIP:       "10.0.0.42",
+			RouteTarget: "vibed-app-x.vibed-apps.svc.cluster.local:8080",
+			Conditions: []metav1.Condition{{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "Up",
+				LastTransitionTime: metav1.NewTime(time.Unix(1000, 0)),
+			}},
+		}
+		return app
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(app *vibedv1.VibedApp)
+		want   bool
+	}{
+		{
+			name:   "no change",
+			mutate: func(*vibedv1.VibedApp) {},
+			want:   false,
+		},
+		{
+			// The churn this predicate exists to swallow: the controller
+			// rewriting conditions without touching anything routing-relevant.
+			name: "condition-only change",
+			mutate: func(app *vibedv1.VibedApp) {
+				app.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Unix(2000, 0))
+				app.Status.Conditions[0].Reason = "StillUp"
+			},
+			want: false,
+		},
+		{
+			// Non-routing status fields the controller updates alongside
+			// conditions must not wake the router either.
+			name: "sandboxRef/snapshotRef/lastDeployedAt change",
+			mutate: func(app *vibedv1.VibedApp) {
+				app.Status.SandboxRef = "sandbox-abc"
+				app.Status.SnapshotRef = "s3://snap"
+				now := metav1.Now()
+				app.Status.LastDeployedAt = &now
+			},
+			want: false,
+		},
+		{
+			name:   "phase change",
+			mutate: func(app *vibedv1.VibedApp) { app.Status.Phase = vibedv1.PhaseFailed },
+			want:   true,
+		},
+		{
+			name:   "url change",
+			mutate: func(app *vibedv1.VibedApp) { app.Status.URL = "https://other.vibed.example.com" },
+			want:   true,
+		},
+		{
+			name:   "route target change",
+			mutate: func(app *vibedv1.VibedApp) { app.Status.RouteTarget = "vibed-app-y.vibed-apps.svc.cluster.local:8080" },
+			want:   true,
+		},
+		{
+			name:   "pod ip change",
+			mutate: func(app *vibedv1.VibedApp) { app.Status.PodIP = "10.0.0.99" },
+			want:   true,
+		},
+		{
+			name: "deletion timestamp set",
+			mutate: func(app *vibedv1.VibedApp) {
+				now := metav1.Now()
+				app.DeletionTimestamp = &now
+			},
+			want: true,
+		},
+		{
+			name:   "suspended flip",
+			mutate: func(app *vibedv1.VibedApp) { app.Spec.Suspended = true },
+			want:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldApp, newApp := base(), base()
+			tc.mutate(newApp)
+			if got := routingFieldsChanged(oldApp, newApp); got != tc.want {
+				t.Errorf("routingFieldsChanged() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRoutingPredicateEvents exercises the predicate.Funcs wrapper:
+// Create/Delete/Generic always pass (Delete is how the router learns to drop
+// a route), Update defers to routingFieldsChanged, and a non-VibedApp object
+// fails open rather than dropping the event.
+func TestRoutingPredicateEvents(t *testing.T) {
+	p := routingPredicate()
+	app := readyApp("events")
+	app.Status.Phase = vibedv1.PhaseReady
+
+	if !p.Create(event.CreateEvent{Object: app}) {
+		t.Error("Create events must always pass")
+	}
+	if !p.Delete(event.DeleteEvent{Object: app}) {
+		t.Error("Delete events must always pass")
+	}
+	if !p.Generic(event.GenericEvent{Object: app}) {
+		t.Error("Generic events must always pass")
+	}
+
+	// Status-churn update → filtered.
+	churned := app.DeepCopy()
+	churned.Status.Conditions = []metav1.Condition{{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		Reason:             "Up",
+		LastTransitionTime: metav1.Now(),
+	}}
+	if p.Update(event.UpdateEvent{ObjectOld: app, ObjectNew: churned}) {
+		t.Error("condition-only update must be filtered")
+	}
+
+	// Routing-relevant update → passes.
+	moved := app.DeepCopy()
+	moved.Status.RouteTarget = "vibed-app-z.vibed-apps.svc.cluster.local:8080"
+	if !p.Update(event.UpdateEvent{ObjectOld: app, ObjectNew: moved}) {
+		t.Error("RouteTarget update must pass")
+	}
+
+	// Unexpected object type → fail open.
+	if !p.Update(event.UpdateEvent{ObjectOld: &metav1.PartialObjectMetadata{}, ObjectNew: &metav1.PartialObjectMetadata{}}) {
+		t.Error("non-VibedApp update must fail open (reconcile)")
 	}
 }
 

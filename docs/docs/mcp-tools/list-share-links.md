@@ -41,5 +41,11 @@ Requires [authentication](/docs/configuration/authentication) and the SQLite sto
 ## REST API
 
 ```
-GET /api/artifacts/{id}/share-links
+GET /v1/apps/{id}/share-links
 ```
+
+:::note Endpoint moved in v0.6
+Share-link listing moved to `GET /v1/apps/{id}/share-links`. The legacy
+`GET /api/artifacts/{id}/share-links` route was removed in
+v0.6 — see [Migrating to v0.6](../migrating-to-v0.6.md).
+:::

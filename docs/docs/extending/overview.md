@@ -45,7 +45,7 @@ func init() {
 
 ## `pkg/server.Main` — the reusable entry point
 
-`cmd/vibed` is a three-line `main()` that just calls `server.Main()`. All wiring — tracing, Kubernetes clients, storage, the artifact store, the orchestrator, the deploy service, MCP, auth, and the HTTP server — lives in `pkg/server`, so a second binary never has to fork `main()`.
+`cmd/vibed` is a three-line `main()` that just calls `server.Main()`. All wiring — tracing, Kubernetes clients, storage, the artifact store, the deploy service, MCP, auth, and the HTTP server — lives in `pkg/server`, so a second binary never has to fork `main()`.
 
 `server.Main()` parses the `-config` and `-transport` flags, loads and validates the config, builds the logger, and runs the server. Two lower-level helpers are exported for custom bootstraps that need to do work before serving:
 

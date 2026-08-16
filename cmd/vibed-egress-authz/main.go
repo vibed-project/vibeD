@@ -66,6 +66,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Index apps by bound pod IP so the per-request lookup is an indexed cache
+	// hit, not a full VibedApp list scan.
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &vibedv1.VibedApp{}, egressauthz.PodIPIndexField, egressauthz.IndexVibedAppPodIP); err != nil {
+		logger.Error("pod IP field index init failed", "error", err)
+		os.Exit(1)
+	}
+
 	resolver := &egressauthz.K8sResolver{Client: mgr.GetClient(), Namespace: namespace}
 	handler := egressauthz.NewHandler(resolver, systemHosts, logger)
 

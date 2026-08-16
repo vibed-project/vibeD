@@ -45,9 +45,16 @@ The share link URL is `GET /api/share/{token}`. Password-protected links return 
 ## REST API
 
 ```
-POST /api/artifacts/{id}/share-link
+POST /v1/apps/{id}/share-links
 Body: {"password": "...", "expires_in": "24h"}
 ```
+
+:::note Endpoint moved in v0.6
+Share-link creation moved to `POST /v1/apps/{id}/share-links`. The legacy
+`POST /api/artifacts/{id}/share-link` route was removed in
+v0.6 — see [Migrating to v0.6](../migrating-to-v0.6.md). The public share URL
+`GET /api/share/{token}` is unchanged.
+:::
 
 ## Security
 

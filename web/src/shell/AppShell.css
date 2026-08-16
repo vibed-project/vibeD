@@ -1,0 +1,146 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* --- Top bar (brand + horizontal nav + controls) ----------------------- */
+.shell-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: var(--topbar-h);
+  padding: 0 var(--space-5);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: var(--z-topbar);
+}
+.shell-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
+}
+.shell-brand-img { width: 22px; height: 22px; border-radius: var(--radius-sm); }
+
+.shell-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  overflow-x: auto;
+}
+.shell-nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  background: none;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.shell-nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.shell-nav-item-active { background: var(--accent-soft); color: var(--accent); }
+.shell-nav-icon { font-size: var(--text-md); }
+
+.shell-topbar-spacer { flex: 1; }
+.shell-org {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.shell-org-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+
+/* --- Content ------------------------------------------------------------ */
+.shell-content {
+  padding: var(--space-6);
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* --- Profile menu ------------------------------------------------------- */
+.shell-profile { position: relative; flex-shrink: 0; }
+.shell-profile-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  cursor: pointer;
+}
+.shell-profile-trigger:hover { background: var(--bg-hover); }
+.shell-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  display: grid;
+  place-items: center;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+.shell-profile-name { font-size: var(--text-sm); }
+.shell-profile-card {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  width: 280px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-dropdown);
+  overflow: hidden;
+}
+.shell-profile-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.shell-profile-card-name { font-weight: var(--weight-semibold); display: block; }
+.shell-profile-card-email { font-size: var(--text-xs); color: var(--text-muted); }
+.shell-profile-rows { padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
+.shell-profile-row { display: flex; justify-content: space-between; font-size: var(--text-sm); }
+.shell-profile-label { color: var(--text-muted); }
+.shell-profile-id { font-family: var(--font-mono); font-size: var(--text-xs); }
+.shell-profile-footer { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border); }
+
+.shell-auth { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
+.shell-auth-error { font-size: var(--text-xs); color: var(--red); }
+
+/* --- Responsive: hide nav labels, then wrap the top bar --------------- */
+@media (max-width: 760px) {
+  .shell-nav-label { display: none; }
+  .shell-profile-name { display: none; }
+}
+@media (max-width: 560px) {
+  .shell-topbar { height: auto; flex-wrap: wrap; padding: var(--space-2) var(--space-3); gap: var(--space-2); }
+  .shell-content { padding: var(--space-4); }
+}

@@ -9,6 +9,7 @@ package policy
 
 import (
 	"context"
+	"io"
 	"sync"
 
 	"github.com/vibed-project/vibeD/internal/tenant"
@@ -27,7 +28,18 @@ type Input struct {
 	IsNew        bool
 	// Source is the uploaded source tarball (gzip'd), for content policies such
 	// as secret scanning. Read-only; do not retain it past Evaluate.
+	//
+	// Source is deprecated for large payloads: it is still populated today for
+	// compatibility, but it MAY be nil in a future major version whenever
+	// SourceOpener is non-nil. Gates should prefer SourceOpener.
 	Source []byte
+
+	// SourceOpener, when non-nil, opens a fresh reader over the same source
+	// tarball Source carries, so a gate can stream the payload instead of
+	// requiring it fully in memory. Every call returns an independent reader
+	// positioned at the start of the tarball; the gate closes each reader it
+	// opens and must not retain one past Evaluate.
+	SourceOpener func(ctx context.Context) (io.ReadCloser, error)
 }
 
 // Gate evaluates a deploy. A non-nil error denies it; implementations should

@@ -61,9 +61,6 @@ data:
       appsNamespace: {{ .Values.config.deployment.appsNamespace | default .Values.namespaces.apps | quote }}
       readyTimeout: {{ .Values.config.deployment.readyTimeout | default "10m" | quote }}
     storage:
-      backend: {{ .Values.config.storage.backend | quote }}
-      local:
-        basePath: {{ .Values.config.storage.local.basePath | quote }}
       {{- with .Values.config.storage.tarball }}
       tarball:
         backend: {{ .backend | default "served" | quote }}

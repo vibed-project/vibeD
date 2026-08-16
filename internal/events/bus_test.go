@@ -1,7 +1,9 @@
 package events
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strconv"
 	"sync"
 	"testing"
@@ -181,6 +183,65 @@ func TestMonotonicEventIDs(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("timed out waiting for event %d", i)
 		}
+	}
+}
+
+func TestPublishPrecomputesPayload(t *testing.T) {
+	bus := NewEventBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, unsub := bus.Subscribe(ctx)
+	defer unsub()
+
+	bus.Publish(Event{
+		Type:       ArtifactStatusChanged,
+		ArtifactID: "art-payload",
+		Name:       "art-payload",
+		OwnerID:    "alice",
+		Status:     "Ready",
+		Phase:      "Ready",
+		URL:        "https://art-payload.example.com",
+		Template:   "node-24",
+		Timestamp:  time.Now(),
+	})
+
+	select {
+	case ev := <-ch:
+		// Publish must pre-marshal so subscribers never re-encode.
+		if ev.payload == nil {
+			t.Fatal("expected Publish to pre-marshal the event payload")
+		}
+		want, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !bytes.Equal(ev.Payload(), want) {
+			t.Fatalf("payload mismatch:\n got: %s\nwant: %s", ev.Payload(), want)
+		}
+		// The enriched fields must round-trip through the cached bytes.
+		var decoded Event
+		if err := json.Unmarshal(ev.Payload(), &decoded); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if decoded.Name != "art-payload" || decoded.Phase != "Ready" ||
+			decoded.URL != "https://art-payload.example.com" || decoded.Template != "node-24" {
+			t.Fatalf("enriched fields lost in payload: %+v", decoded)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+}
+
+func TestPayloadFallbackWithoutPublish(t *testing.T) {
+	// Events built by hand (never routed through Publish) still encode.
+	ev := Event{Type: ArtifactDeleted, ArtifactID: "art-fallback"}
+	var decoded Event
+	if err := json.Unmarshal(ev.Payload(), &decoded); err != nil {
+		t.Fatalf("unmarshal fallback payload: %v", err)
+	}
+	if decoded.ArtifactID != "art-fallback" {
+		t.Fatalf("expected artifact_id art-fallback, got %s", decoded.ArtifactID)
 	}
 }
 

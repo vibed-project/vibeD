@@ -95,7 +95,13 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                  scheme,
+		Scheme: scheme,
+		// Scope the informer cache to vibeD-managed objects. Without this the
+		// first cached read of a GVK starts an all-namespaces informer for the
+		// whole type — e.g. one per-app Service Get would cache every Service
+		// in the cluster. See controller.ManagerCacheOptions for the per-GVK
+		// audit of why each scope is safe.
+		Cache:                   controller.ManagerCacheOptions(poolNamespace),
 		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress:  probeAddr,
 		LeaderElection:          enableLeaderElection,

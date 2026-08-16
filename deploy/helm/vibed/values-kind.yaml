@@ -56,10 +56,22 @@ workerd:
 
 # Only static-nginx is built + loaded for this test; disable the rest so the
 # controller doesn't claim against pools whose images aren't present.
+# Warm pools for the dev cluster. The three common app shapes — static sites,
+# JS/Node and Python — are ON by default so a deploy of any of them works out
+# of the box; without a pool the app fails with TemplateMissing and never gets
+# a pod (so there are no logs to explain it). `make install-vibed` builds and
+# loads the matching localhost images.
+#
+# The general lane runs as normal pods here (runtime.defaultClass is "" above,
+# so no Kata runtimeClassName is set) — no nested virt needed on Kind.
+#
+# go-123 and base-al2023 stay off: heavier images, rarely needed in dev. Turn
+# one on with `helm upgrade --reuse-values --set warmPools.go-123.enabled=true`
+# after building its image.
 warmPools:
   static-nginx: { enabled: true,  lane: fast,    image: "localhost/vibed-template-static-nginx:dev", replicas: 2, resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { cpu: 200m, memory: 128Mi } } }
-  node-24:      { enabled: false }
-  python-313:   { enabled: false }
+  node-24:      { enabled: true,  lane: general, image: "localhost/vibed-runner-node:dev",           replicas: 2, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
+  python-313:   { enabled: true,  lane: general, image: "localhost/vibed-runner-python:dev",         replicas: 2, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } } }
   go-123:       { enabled: false }
   base-al2023:  { enabled: false }
 

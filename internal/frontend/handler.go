@@ -24,7 +24,6 @@ import (
 	"github.com/vibed-project/vibeD/internal/events"
 	"github.com/vibed-project/vibeD/internal/k8s"
 	"github.com/vibed-project/vibeD/internal/metrics"
-	"github.com/vibed-project/vibeD/internal/orchestrator"
 	"github.com/vibed-project/vibeD/internal/store"
 	"github.com/vibed-project/vibeD/pkg/api"
 )
@@ -49,7 +48,7 @@ func writeError(w http.ResponseWriter, err error, fallbackStatus int) {
 }
 
 // NewHandler creates an HTTP handler that serves the frontend and REST API.
-func NewHandler(orch *orchestrator.Orchestrator, deploySvc *deploy.Service, cfg *config.Config, bus *events.EventBus, m *metrics.Metrics, userStore store.UserStore, k8sClients *k8s.Clients) http.Handler {
+func NewHandler(deploySvc *deploy.Service, cfg *config.Config, bus *events.EventBus, m *metrics.Metrics, userStore store.UserStore, k8sClients *k8s.Clients) http.Handler {
         mux := http.NewServeMux()
 
         // API documentation (Swagger UI)
@@ -59,19 +58,24 @@ func NewHandler(orch *orchestrator.Orchestrator, deploySvc *deploy.Service, cfg 
         // SSE event stream
         mux.HandleFunc("/api/events", handleSSE(bus, m))
 
-        // API routes
-        mux.HandleFunc("/api/artifacts", handleArtifacts(orch, deploySvc))
-        mux.HandleFunc("/api/artifacts/", handleArtifacts(orch, deploySvc))
-        mux.HandleFunc("/api/targets", handleTargets(orch))
+        // API routes. The artifact lifecycle now lives entirely under /v1/apps;
+        // the legacy /api/artifacts and /api/targets surfaces were removed with
+        // the orchestrator.
         mux.HandleFunc("/api/whoami", handleWhoami(userStore))
+        // Auth-mode discovery for the SPA login screen: which auth mode is
+        // active and where a browser login flow starts (e.g. SAML). Public by
+        // design — the login UX needs the mode BEFORE authenticating; it leaks
+        // nothing beyond what the login endpoints themselves reveal.
+        vibedauth.RegisterPublicPrefix("/api/auth")
+        mux.HandleFunc("/api/auth", handleAuthInfo(cfg))
         mux.HandleFunc("/api/organization", handleOrganization(cfg))
         mux.HandleFunc("/api/users", handleUsers(userStore))
         mux.HandleFunc("/api/users/", handleUserDetail(userStore))
         mux.HandleFunc("/api/departments", handleDepartments(userStore, k8sClients))
         mux.HandleFunc("/api/departments/", handleDepartmentDetail(userStore, k8sClients))
 	// Share link routes (public — auth bypassed in SkipAuthPaths)
-	mux.HandleFunc("/api/share/", handlePublicShareLink(orch, deploySvc))
-	mux.HandleFunc("/api/share-links/", handleShareLinkRevoke(orch, deploySvc))
+	mux.HandleFunc("/api/share/", handlePublicShareLink(deploySvc))
+	mux.HandleFunc("/api/share-links/", handleShareLinkRevoke(deploySvc))
 
 	// Browser-friendly share link page — serves the SPA so React renders ShareLinkPage.
 	// The React app detects /share/<token> and calls /api/share/<token> as JSON.
@@ -85,231 +89,14 @@ func NewHandler(orch *orchestrator.Orchestrator, deploySvc *deploy.Service, cfg 
 	mux.HandleFunc("/connect", handleSPAIndex())
 	mux.HandleFunc("/connect/", handleSPAIndex())
 
-	// Serve static frontend files
+	// Serve static frontend files. staticCacheControl forces revalidation of the
+	// HTML shell so a redeploy (new content-hashed asset names) is picked up
+	// immediately instead of a stale cached index.html pinning the old bundle.
 	staticFS, _ := fs.Sub(StaticFiles, "static")
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("/", staticCacheControl(http.FileServer(http.FS(staticFS))))
 
 	// Wrap with request body size limit for API endpoints (64MB for deploy, default for safety)
 	return limitRequestBody(mux, cfg.Limits.MaxTotalFileSize)
-}
-
-func handleArtifacts(orch *orchestrator.Orchestrator, deploySvc *deploy.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Handle /api/artifacts/{id} paths
-		path := strings.TrimPrefix(r.URL.Path, "/api/artifacts")
-		path = strings.TrimPrefix(path, "/")
-
-		if path != "" {
-			parts := strings.SplitN(path, "/", 2)
-			artifactID := parts[0]
-
-			if len(parts) == 2 {
-				switch parts[1] {
-				case "logs":
-					handleArtifactLogs(orch, artifactID, w, r)
-					return
-				case "versions":
-					handleArtifactVersions(orch, artifactID, w, r)
-					return
-				case "rollback":
-					handleArtifactRollback(orch, artifactID, w, r)
-					return
-				case "share":
-					handleArtifactShare(orch, artifactID, w, r)
-					return
-				case "unshare":
-					handleArtifactUnshare(orch, artifactID, w, r)
-					return
-				case "share-link":
-					handleArtifactShareLink(orch, deploySvc, artifactID, w, r)
-					return
-				case "share-links":
-					handleArtifactShareLinks(orch, deploySvc, artifactID, w, r)
-					return
-				}
-			}
-
-			if r.Method == http.MethodDelete {
-				handleArtifactDelete(orch, artifactID, w, r)
-				return
-			}
-
-			handleArtifactDetail(orch, artifactID, w, r)
-			return
-		}
-
-		// List artifacts with pagination
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		result, err := orch.List(r.Context(), r.URL.Query().Get("status"), offset, limit)
-		if err != nil {
-			writeError(w, err, http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
-	}
-}
-
-func handleArtifactDetail(orch *orchestrator.Orchestrator, id string, w http.ResponseWriter, r *http.Request) {
-	artifact, err := orch.Status(r.Context(), id)
-	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-
-	// Sanitize sensitive fields before returning
-	artifact.EnvVars = nil
-	artifact.StorageRef = ""
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(artifact)
-}
-
-func handleArtifactLogs(orch *orchestrator.Orchestrator, id string, w http.ResponseWriter, r *http.Request) {
-	logs, err := orch.Logs(r.Context(), id, 50)
-	if err != nil {
-		writeError(w, err, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"artifact_id": id,
-		"logs":        logs,
-	})
-}
-
-func handleArtifactDelete(orch *orchestrator.Orchestrator, id string, w http.ResponseWriter, r *http.Request) {
-	if err := orch.Delete(r.Context(), id); err != nil {
-		writeError(w, err, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"status": "deleted",
-		"id":     id,
-	})
-}
-
-func handleTargets(orch *orchestrator.Orchestrator) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		targets := orch.ListTargets()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(targets)
-	}
-}
-
-func handleArtifactVersions(orch *orchestrator.Orchestrator, id string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	versions, err := orch.ListVersions(r.Context(), id)
-	if err != nil {
-		writeError(w, err, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"artifact_id": id,
-		"versions":    versions,
-	})
-}
-
-func handleArtifactRollback(orch *orchestrator.Orchestrator, id string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var body struct {
-		Version int `json:"version"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if body.Version <= 0 {
-		http.Error(w, "version must be a positive integer", http.StatusBadRequest)
-		return
-	}
-
-	result, err := orch.Rollback(r.Context(), id, body.Version)
-	if err != nil {
-		writeError(w, err, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
-}
-
-func handleArtifactShare(orch *orchestrator.Orchestrator, id string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var body struct {
-		UserIDs []string `json:"user_ids"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if len(body.UserIDs) == 0 {
-		http.Error(w, "user_ids is required", http.StatusBadRequest)
-		return
-	}
-
-	if err := orch.ShareArtifact(r.Context(), id, body.UserIDs); err != nil {
-		writeError(w, err, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"artifact_id": id,
-		"shared_with": body.UserIDs,
-		"status":      "shared",
-	})
-}
-
-func handleArtifactUnshare(orch *orchestrator.Orchestrator, id string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var body struct {
-		UserIDs []string `json:"user_ids"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if len(body.UserIDs) == 0 {
-		http.Error(w, "user_ids is required", http.StatusBadRequest)
-		return
-	}
-
-	if err := orch.UnshareArtifact(r.Context(), id, body.UserIDs); err != nil {
-		writeError(w, err, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"artifact_id": id,
-		"removed":     body.UserIDs,
-		"status":      "unshared",
-	})
 }
 
 func handleWhoami(userStore store.UserStore) http.HandlerFunc {
@@ -346,6 +133,30 @@ func handleWhoami(userStore store.UserStore) http.HandlerFunc {
 			"user_id": userID,
 			"role":    role,
 		})
+	}
+}
+
+// handleAuthInfo tells the SPA which auth mode is active and, for modes with a
+// browser login flow, where that flow starts. The SPA uses this on a 401 to
+// send the user to SSO instead of showing an API-key prompt that can't work.
+func handleAuthInfo(cfg *config.Config) http.HandlerFunc {
+	// Browser-login entrypoints by mode. Bearer-style modes (apikey, oidc)
+	// have none — the SPA shows its token form / relies on a fronting proxy.
+	loginURLs := map[string]string{
+		"saml": "/saml/login",
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		info := map[string]any{
+			"enabled": cfg.Auth.Enabled,
+			"mode":    "",
+			"loginUrl": "",
+		}
+		if cfg.Auth.Enabled {
+			info["mode"] = cfg.Auth.Mode
+			info["loginUrl"] = loginURLs[cfg.Auth.Mode]
+		}
+		json.NewEncoder(w).Encode(info)
 	}
 }
 
@@ -692,6 +503,24 @@ func handleDepartmentDetail(userStore store.UserStore, k8sClients *k8s.Clients) 
 
 // --- Share Link handlers ---
 
+// staticCacheControl tags responses so browsers cache content-hashed assets
+// aggressively but always revalidate the HTML shell. Without this the shell has
+// no cache headers and browsers heuristically cache it; after a redeploy the
+// asset hashes change and a stale index.html keeps referencing a bundle that no
+// longer exists, leaving the app blank/unresponsive until a hard reload.
+func staticCacheControl(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case strings.HasPrefix(p, "/assets/"):
+			// Vite emits immutable content-hashed filenames here.
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		case p == "/" || strings.HasSuffix(p, "/") || strings.HasSuffix(p, ".html"):
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // handleSPAIndex serves the React SPA index.html for browser-navigated routes
 // that need the frontend app (e.g. /share/<token>).
 func handleSPAIndex() http.HandlerFunc {
@@ -709,119 +538,15 @@ func handleSPAIndex() http.HandlerFunc {
 		defer f.Close()
 		stat, _ := f.Stat()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		http.ServeContent(w, r, "index.html", stat.ModTime(), f.(interface {
 			io.ReadSeeker
 		}))
 	}
 }
 
-// POST /api/artifacts/{id}/share-link — create a share link
-func handleArtifactShareLink(orch *orchestrator.Orchestrator, deploySvc *deploy.Service, artifactID string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var body struct {
-		Password  string `json:"password"`
-		ExpiresIn string `json:"expires_in"` // duration string e.g. "24h", "7d"
-	}
-	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&body)
-	}
-
-	var expiresIn time.Duration
-	if body.ExpiresIn != "" {
-		// Support "7d" as shorthand for 7 days. A non-empty but unparseable
-		// value must be a 400: silently leaving expiresIn=0 mints a PERMANENT
-		// link when the caller asked for a time-limited one (fail-open on a
-		// security control).
-		s := body.ExpiresIn
-		var err error
-		if strings.HasSuffix(s, "d") {
-			var d time.Duration
-			if d, err = time.ParseDuration(strings.TrimSuffix(s, "d") + "h"); err == nil {
-				expiresIn = d * 24
-			}
-		} else {
-			expiresIn, err = time.ParseDuration(s)
-		}
-		if err != nil {
-			writeError(w, fmt.Errorf("invalid expires_in %q (use e.g. \"24h\" or \"7d\")", body.ExpiresIn), http.StatusBadRequest)
-			return
-		}
-	}
-
-	// VibedApp path: create a link for the app the caller owns. Fall back to the
-	// legacy artifact path only when the id isn't a VibedApp.
-	owner := vibedauth.UserIDFromContext(r.Context())
-	if deploySvc != nil && deploySvc.ShareLinks != nil && owner != "" {
-		link, derr := deploySvc.CreateShareLink(r.Context(), owner, artifactID, body.Password, expiresIn)
-		if derr == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(link)
-			return
-		}
-		if !errors.Is(derr, deploy.ErrNotFound) {
-			writeError(w, derr, http.StatusBadRequest)
-			return
-		}
-	}
-
-	link, err := orch.CreateShareLink(r.Context(), artifactID, body.Password, expiresIn)
-	if err != nil {
-		writeError(w, err, http.StatusBadRequest)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(link)
-}
-
-// GET /api/artifacts/{id}/share-links — list share links
-func handleArtifactShareLinks(orch *orchestrator.Orchestrator, deploySvc *deploy.Service, artifactID string, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-
-	owner := vibedauth.UserIDFromContext(r.Context())
-	if deploySvc != nil && deploySvc.ShareLinks != nil && owner != "" {
-		links, derr := deploySvc.ListShareLinks(r.Context(), owner, artifactID, limit, offset)
-		if derr == nil {
-			if links == nil {
-				links = []api.ShareLink{}
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(links)
-			return
-		}
-		if !errors.Is(derr, deploy.ErrNotFound) {
-			writeError(w, derr, http.StatusBadRequest)
-			return
-		}
-	}
-
-	links, err := orch.ListShareLinks(r.Context(), artifactID, limit, offset)
-	if err != nil {
-		writeError(w, err, http.StatusBadRequest)
-		return
-	}
-	if links == nil {
-		links = []api.ShareLink{}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(links)
-}
-
 // DELETE /api/share-links/{token} — revoke a share link
-func handleShareLinkRevoke(orch *orchestrator.Orchestrator, deploySvc *deploy.Service) http.HandlerFunc {
+func handleShareLinkRevoke(deploySvc *deploy.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -834,20 +559,11 @@ func handleShareLinkRevoke(orch *orchestrator.Orchestrator, deploySvc *deploy.Se
 		}
 
 		owner := vibedauth.UserIDFromContext(r.Context())
-		if deploySvc != nil && deploySvc.ShareLinks != nil && owner != "" {
-			derr := deploySvc.RevokeShareLink(r.Context(), owner, token)
-			if derr == nil {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]string{"status": "revoked"})
-				return
-			}
-			if !errors.Is(derr, deploy.ErrNotFound) {
-				writeError(w, derr, http.StatusNotFound)
-				return
-			}
+		if deploySvc == nil || deploySvc.ShareLinks == nil || owner == "" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
 		}
-
-		if err := orch.RevokeShareLink(r.Context(), token); err != nil {
+		if err := deploySvc.RevokeShareLink(r.Context(), owner, token); err != nil {
 			writeError(w, err, http.StatusNotFound)
 			return
 		}
@@ -857,7 +573,7 @@ func handleShareLinkRevoke(orch *orchestrator.Orchestrator, deploySvc *deploy.Se
 }
 
 // GET/POST /api/share/{token} — public share link resolution
-func handlePublicShareLink(orch *orchestrator.Orchestrator, deploySvc *deploy.Service) http.HandlerFunc {
+func handlePublicShareLink(deploySvc *deploy.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.URL.Path, "/api/share/")
 		if token == "" {
@@ -874,43 +590,30 @@ func handlePublicShareLink(orch *orchestrator.Orchestrator, deploySvc *deploy.Se
 			password = body.Password
 		}
 
-		// VibedApp path: resolve the token to the app's URL. A wrong/missing
-		// password is a 401; anything else falls through to the legacy artifact
-		// resolve (the store is shared, so an artifact link is found there).
-		if deploySvc != nil && deploySvc.ShareLinks != nil {
-			app, derr := deploySvc.ResolveShareLink(r.Context(), token, password)
-			if derr == nil {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"name":   app.Name,
-					"status": string(app.Status.Phase),
-					"url":    app.Status.URL,
-					"target": "app",
-				})
-				return
-			}
-			var pwReq *api.ErrPasswordRequired
-			if errors.As(derr, &pwReq) {
-				writeError(w, derr, http.StatusUnauthorized)
-				return
-			}
-		}
-
-		artifact, err := orch.ResolveShareLink(r.Context(), token, password)
-		if err != nil {
-			writeError(w, err, http.StatusNotFound)
+		if deploySvc == nil || deploySvc.ShareLinks == nil {
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 
-		// Return read-only artifact view (strip sensitive fields)
-		resp := map[string]interface{}{
-			"name":   artifact.Name,
-			"status": artifact.Status,
-			"url":    artifact.URL,
-			"target": artifact.Target,
+		// VibedApp path: resolve the token to the app's URL. A wrong/missing
+		// password is a 401; a missing/invalid token is a 404.
+		app, err := deploySvc.ResolveShareLink(r.Context(), token, password)
+		if err != nil {
+			var pwReq *api.ErrPasswordRequired
+			if errors.As(err, &pwReq) {
+				writeError(w, err, http.StatusUnauthorized)
+				return
+			}
+			writeError(w, err, http.StatusNotFound)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":   app.Name,
+			"status": string(app.Status.Phase),
+			"url":    app.Status.URL,
+			"target": "app",
+		})
 	}
 }
 

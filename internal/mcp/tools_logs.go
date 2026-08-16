@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/vibed-project/vibeD/internal/config"
-	"github.com/vibed-project/vibeD/internal/orchestrator"
+	"github.com/vibed-project/vibeD/internal/deploy"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -19,18 +19,26 @@ type getArtifactLogsOutput struct {
 	Logs string `json:"logs"`
 }
 
-func registerLogsTool(server *mcp.Server, orch *orchestrator.Orchestrator, limits config.LimitsConfig) {
+func registerLogsTool(server *mcp.Server, deploySvc *deploy.Service, limits config.LimitsConfig) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_artifact_logs",
 		Description: "Retrieve recent log lines from a deployed artifact for debugging purposes.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input getArtifactLogsInput) (*mcp.CallToolResult, *getArtifactLogsOutput, error) {
+		if deploySvc == nil {
+			return nil, nil, errDeployServiceNotConfigured
+		}
 		lines := clampLogLines(input.Lines, limits)
 
-		logs, err := orch.Logs(ctx, input.ArtifactID, lines)
+		// VibedApp path: one bounded, non-following read of the bound pod's
+		// logs, tail-seeded with the requested line count.
+		var logs []string
+		err := deploySvc.StreamLogs(ctx, ownerFromContext(ctx), input.ArtifactID, false, int64(lines), func(l string) error {
+			logs = append(logs, l)
+			return nil
+		})
 		if err != nil {
 			return nil, nil, err
 		}
-
 		return nil, &getArtifactLogsOutput{Logs: strings.Join(logs, "\n")}, nil
 	})
 }

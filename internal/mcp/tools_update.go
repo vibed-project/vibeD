@@ -5,7 +5,6 @@ import (
 
 	"github.com/vibed-project/vibeD/internal/config"
 	"github.com/vibed-project/vibeD/internal/deploy"
-	"github.com/vibed-project/vibeD/internal/orchestrator"
 	vibedv1 "github.com/vibed-project/vibeD/pkg/vibedapi/v1alpha1"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,35 +17,17 @@ type updateArtifactInput struct {
 	SecretRefs map[string]string `json:"secret_refs,omitempty" jsonschema:"Updated secret references in format 'secret-name:key'"`
 }
 
-func registerUpdateTool(server *mcp.Server, orch *orchestrator.Orchestrator, deploySvc *deploy.Service, limits config.LimitsConfig) {
+func registerUpdateTool(server *mcp.Server, deploySvc *deploy.Service, limits config.LimitsConfig) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "update_artifact",
 		Description: "Update an existing deployed artifact with new source files. Re-injects the source into the running app — no per-deploy container build. " +
 			"Returns the artifact_id and, once ready, the URL; if it isn't ready within the deploy budget, poll get_artifact_status.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input updateArtifactInput) (*mcp.CallToolResult, *deployArtifactOutput, error) {
+		if deploySvc == nil {
+			return nil, nil, errDeployServiceNotConfigured
+		}
 		if err := validateFileLimits(input.Files, limits); err != nil {
 			return nil, nil, err
-		}
-
-		// Legacy fallback: no VibedApp deploy service configured (e.g. no
-		// K8s/tarball store) — use the orchestrator path so the lifecycle
-		// tools stay consistent with each other.
-		if deploySvc == nil {
-			result, err := orch.AsyncUpdate(ctx, orchestrator.UpdateRequest{
-				ArtifactID: input.ArtifactID,
-				Files:      input.Files,
-				EnvVars:    input.EnvVars,
-				SecretRefs: input.SecretRefs,
-			})
-			if err != nil {
-				return nil, nil, err
-			}
-			return nil, &deployArtifactOutput{
-				ArtifactID: result.ArtifactID,
-				Name:       result.Name,
-				URL:        result.URL,
-				Status:     result.Status,
-			}, nil
 		}
 
 		// VibedApp path: a redeploy reuses the existing CR (keyed by name), so

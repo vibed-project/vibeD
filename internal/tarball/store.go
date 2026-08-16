@@ -25,6 +25,10 @@ import (
 type Store interface {
 	// Put writes the tarball bytes for id and returns a fetch URL. Implementations
 	// overwrite any existing blob for the same id (redeploys reuse the id).
+	//
+	// When r is an *os.File positioned at the start, an implementation may
+	// store it by hard-linking the file's inode instead of copying, so callers
+	// passing a file must treat its contents as immutable once Put returns.
 	Put(ctx context.Context, id string, r io.Reader) (refURL string, err error)
 	// Delete removes the stored tarball for id. A missing blob is not an error.
 	Delete(ctx context.Context, id string) error
