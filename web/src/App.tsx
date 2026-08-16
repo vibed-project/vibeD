@@ -6,11 +6,13 @@ import {
   fetchArtifact,
   deleteArtifact,
   fetchWhoami,
+  fetchAuthInfo,
   fetchOrganization,
   subscribeToEvents,
   phaseToStatus,
   setAuthToken,
   clearAuthToken,
+  getAuthToken,
 } from './api/client'
 import ArtifactList from './components/ArtifactList'
 import ApplicationsTable from './components/ApplicationsTable'
@@ -35,6 +37,10 @@ function getShareToken(): string | null {
 // because it renders a standalone, auth-free page. Everything else maps
 // pathname → route name; unknown paths fall through to the dashboard so
 // stale bookmarks don't 404.
+// Set when we redirect to an SSO login flow; cleared on a successful whoami.
+// Breaks SP↔IdP redirect loops when SSO returns but the session still 401s.
+const SSO_ATTEMPT_KEY = 'vibed_sso_attempt'
+
 type Route = 'dashboard' | 'settings' | 'connect'
 function routeFromPath(path: string): Route {
   if (path === '/settings' || path.startsWith('/settings/')) return 'settings'
@@ -101,7 +107,10 @@ function App() {
     localStorage.setItem('vibed_apps_view', v)
   }, [])
 
+  const [ssoUrl, setSsoUrl] = useState('')
+
   const applyIdentity = useCallback((info: WhoAmI) => {
+    sessionStorage.removeItem(SSO_ATTEMPT_KEY)
     setCurrentUser(info.id || info.user_id)
     setIsAdmin(info.role === 'admin')
     setProfile(info)
@@ -117,7 +126,26 @@ function App() {
         // gateway, leaving the login form hidden (issue #41). The string checks
         // stay as a fallback for any error that doesn't carry a status.
         if (err?.status === 401 || err?.message?.includes('401') || err?.message?.includes('Unauthorized')) {
-          setNeedsAuth(true)
+          // Discover the auth mode: modes with a browser login flow (SAML) get
+          // sent to the IdP instead of an API-key prompt that can't work there.
+          // A sessionStorage flag breaks redirect loops: it's set before we
+          // leave, cleared on a successful whoami — so a second consecutive
+          // 401 shows the login screen (with the SSO button) instead of
+          // bouncing between the SP and the IdP forever.
+          fetchAuthInfo()
+            .then((info) => {
+              if (info.loginUrl) {
+                setSsoUrl(info.loginUrl)
+                if (!sessionStorage.getItem(SSO_ATTEMPT_KEY)) {
+                  sessionStorage.setItem(SSO_ATTEMPT_KEY, '1')
+                  window.location.assign(info.loginUrl)
+                  return
+                }
+                setAuthError('SSO sign-in did not complete — try again')
+              }
+              setNeedsAuth(true)
+            })
+            .catch(() => setNeedsAuth(true))
         }
         // Auth may be disabled — that's fine
       })
@@ -140,7 +168,18 @@ function App() {
   }
 
   const handleLogout = () => {
+    // Two logout shapes. With a local token (API-key sign-in) we just drop it.
+    // With a browser-SSO session there is no local token — the session lives in
+    // the auth proxy's cookie, so clearing local state alone would let the very
+    // next request silently re-authenticate. In that case redirect through the
+    // proxy's sign-out endpoint, which clears the cookie (and, when the proxy is
+    // configured for RP-initiated logout, the upstream IdP session too).
+    const proxySession = !getAuthToken() && (profile?.provider === 'oidc' || profile?.provider === 'saml')
     clearAuthToken()
+    if (proxySession) {
+      window.location.href = `/oauth2/sign_out?rd=${encodeURIComponent(window.location.origin + '/')}`
+      return
+    }
     setCurrentUser('')
     setIsAdmin(false)
     setProfile(null)
@@ -150,7 +189,18 @@ function App() {
 
   // Fetch user identity and org info on mount
   useEffect(() => {
+    // SSO handoff: the SAML ACS returns the session JWT in the URL fragment
+    // (#vibed_token=…) so it never hits server logs. Store it, strip the
+    // fragment (routing is path-based, the hash is ours), then load identity.
+    const sso = window.location.hash.match(/vibed_token=([^&]+)/)
+    if (sso) {
+      setAuthToken(sso[1])
+      window.history.replaceState({}, '', window.location.pathname + window.location.search)
+    }
     initIdentity()
+    // Keep the SSO entrypoint known even on the happy path, so the login
+    // button after a sign-out offers SSO rather than an API-key form.
+    fetchAuthInfo().then((i) => setSsoUrl(i.loginUrl)).catch(() => {})
     fetchOrganization()
       .then((org) => setOrgName(org.name))
       .catch(() => {
@@ -285,6 +335,7 @@ function App() {
       isAdmin={isAdmin}
       profile={profile}
       needsAuth={needsAuth}
+      ssoUrl={ssoUrl}
       authInput={authInput}
       authError={authError}
       onAuthInput={setAuthInput}

@@ -62,6 +62,12 @@ func NewHandler(deploySvc *deploy.Service, cfg *config.Config, bus *events.Event
         // the legacy /api/artifacts and /api/targets surfaces were removed with
         // the orchestrator.
         mux.HandleFunc("/api/whoami", handleWhoami(userStore))
+        // Auth-mode discovery for the SPA login screen: which auth mode is
+        // active and where a browser login flow starts (e.g. SAML). Public by
+        // design — the login UX needs the mode BEFORE authenticating; it leaks
+        // nothing beyond what the login endpoints themselves reveal.
+        vibedauth.RegisterPublicPrefix("/api/auth")
+        mux.HandleFunc("/api/auth", handleAuthInfo(cfg))
         mux.HandleFunc("/api/organization", handleOrganization(cfg))
         mux.HandleFunc("/api/users", handleUsers(userStore))
         mux.HandleFunc("/api/users/", handleUserDetail(userStore))
@@ -83,9 +89,11 @@ func NewHandler(deploySvc *deploy.Service, cfg *config.Config, bus *events.Event
 	mux.HandleFunc("/connect", handleSPAIndex())
 	mux.HandleFunc("/connect/", handleSPAIndex())
 
-	// Serve static frontend files
+	// Serve static frontend files. staticCacheControl forces revalidation of the
+	// HTML shell so a redeploy (new content-hashed asset names) is picked up
+	// immediately instead of a stale cached index.html pinning the old bundle.
 	staticFS, _ := fs.Sub(StaticFiles, "static")
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	mux.Handle("/", staticCacheControl(http.FileServer(http.FS(staticFS))))
 
 	// Wrap with request body size limit for API endpoints (64MB for deploy, default for safety)
 	return limitRequestBody(mux, cfg.Limits.MaxTotalFileSize)
@@ -125,6 +133,30 @@ func handleWhoami(userStore store.UserStore) http.HandlerFunc {
 			"user_id": userID,
 			"role":    role,
 		})
+	}
+}
+
+// handleAuthInfo tells the SPA which auth mode is active and, for modes with a
+// browser login flow, where that flow starts. The SPA uses this on a 401 to
+// send the user to SSO instead of showing an API-key prompt that can't work.
+func handleAuthInfo(cfg *config.Config) http.HandlerFunc {
+	// Browser-login entrypoints by mode. Bearer-style modes (apikey, oidc)
+	// have none — the SPA shows its token form / relies on a fronting proxy.
+	loginURLs := map[string]string{
+		"saml": "/saml/login",
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		info := map[string]any{
+			"enabled": cfg.Auth.Enabled,
+			"mode":    "",
+			"loginUrl": "",
+		}
+		if cfg.Auth.Enabled {
+			info["mode"] = cfg.Auth.Mode
+			info["loginUrl"] = loginURLs[cfg.Auth.Mode]
+		}
+		json.NewEncoder(w).Encode(info)
 	}
 }
 
@@ -471,6 +503,24 @@ func handleDepartmentDetail(userStore store.UserStore, k8sClients *k8s.Clients) 
 
 // --- Share Link handlers ---
 
+// staticCacheControl tags responses so browsers cache content-hashed assets
+// aggressively but always revalidate the HTML shell. Without this the shell has
+// no cache headers and browsers heuristically cache it; after a redeploy the
+// asset hashes change and a stale index.html keeps referencing a bundle that no
+// longer exists, leaving the app blank/unresponsive until a hard reload.
+func staticCacheControl(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case strings.HasPrefix(p, "/assets/"):
+			// Vite emits immutable content-hashed filenames here.
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		case p == "/" || strings.HasSuffix(p, "/") || strings.HasSuffix(p, ".html"):
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // handleSPAIndex serves the React SPA index.html for browser-navigated routes
 // that need the frontend app (e.g. /share/<token>).
 func handleSPAIndex() http.HandlerFunc {
@@ -488,6 +538,7 @@ func handleSPAIndex() http.HandlerFunc {
 		defer f.Close()
 		stat, _ := f.Stat()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		http.ServeContent(w, r, "index.html", stat.ModTime(), f.(interface {
 			io.ReadSeeker
 		}))

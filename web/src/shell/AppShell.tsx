@@ -24,6 +24,7 @@ interface AppShellProps {
   isAdmin: boolean
   profile: WhoAmI | null
   needsAuth: boolean
+  ssoUrl?: string
   authInput: string
   authError: string
   onAuthInput: (v: string) => void
@@ -36,7 +37,7 @@ interface AppShellProps {
 export default function AppShell(props: AppShellProps) {
   const {
     nav, activeId, onNavigate, orgName, currentUser, isAdmin, profile,
-    needsAuth, authInput, authError, onAuthInput, onLogin, onLogout, onBrandClick, children,
+    needsAuth, ssoUrl, authInput, authError, onAuthInput, onLogin, onLogout, onBrandClick, children,
   } = props
 
   const [showProfile, setShowProfile] = useState(false)
@@ -111,7 +112,7 @@ export default function AppShell(props: AppShellProps) {
                   )}
                   <div className="shell-profile-row"><span className="shell-profile-label">ID</span><span className="shell-profile-id">{profile?.id || profile?.user_id}</span></div>
                 </div>
-                {getAuthToken() && (
+                {(getAuthToken() || profile?.provider === 'oidc' || profile?.provider === 'saml') && (
                   <div className="shell-profile-footer">
                     <Button size="sm" variant="ghost" onClick={onLogout}>Sign out</Button>
                   </div>
@@ -121,11 +122,20 @@ export default function AppShell(props: AppShellProps) {
           </div>
         )}
         {needsAuth && !currentUser && (
-          <form className="shell-auth" onSubmit={onLogin}>
-            <input className="ui-input" type="password" placeholder="API key" value={authInput} onChange={(e) => onAuthInput(e.target.value)} aria-label="API key" />
-            <Button variant="primary" size="sm" type="submit">Sign in</Button>
-            {authError && <span className="shell-auth-error" role="alert">{authError}</span>}
-          </form>
+          ssoUrl ? (
+            // SSO mode (e.g. SAML): an API key can't authenticate here, so the
+            // only affordance is the IdP login flow.
+            <div className="shell-auth">
+              <Button variant="primary" size="sm" onClick={() => window.location.assign(ssoUrl)}>Sign in with SSO</Button>
+              {authError && <span className="shell-auth-error" role="alert">{authError}</span>}
+            </div>
+          ) : (
+            <form className="shell-auth" onSubmit={onLogin}>
+              <input className="ui-input" type="password" placeholder="API key" value={authInput} onChange={(e) => onAuthInput(e.target.value)} aria-label="API key" />
+              <Button variant="primary" size="sm" type="submit">Sign in</Button>
+              {authError && <span className="shell-auth-error" role="alert">{authError}</span>}
+            </form>
+          )
         )}
       </header>
 
