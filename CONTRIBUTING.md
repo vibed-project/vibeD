@@ -123,6 +123,12 @@ make docs-build     # Production build of the docs site
 
 Documentation-only changes are very welcome and are a great first contribution.
 
+Every pull request that touches `docs/` gets a **Docs preview** check: CI runs
+the production build (which fails on broken links or anchors) and attaches the
+built site as a downloadable artifact, linked from a bot comment on the PR.
+Unzip it and `npx -y serve <dir>` to review the rendered pages locally. The live
+site at vibed.run is only redeployed on merge to `main`.
+
 ## Extensibility
 
 vibeD is built to be extended out of tree. The state store, source storage
