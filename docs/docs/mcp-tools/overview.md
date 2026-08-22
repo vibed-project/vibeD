@@ -55,4 +55,4 @@ All lifecycle and share-link tools run against the live `VibedApp` deploy path (
 
 ## Transport
 
-The MCP server is exposed over **HTTP streamable** at `/mcp` (the `vibed` server's port). For Claude Desktop, bridge to it with `mcp-remote` — see [First deployment](../getting-started/first-deployment.md). stdio transport is also available via `server.transport: stdio`.
+The MCP server is exposed over **HTTP streamable** at `/mcp` (the `vibed` server's port). Client-specific setup lives under [How-Tos](../how-tos/overview.md): [Claude Desktop](../how-tos/connect-claude-desktop.md), [Claude Code](../how-tos/connect-claude-code.md), [pi](../how-tos/connect-pi.md). stdio transport is also available via `server.transport: stdio`.

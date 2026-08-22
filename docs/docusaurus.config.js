@@ -52,6 +52,12 @@ const config = {
             label: 'Docs',
           },
           {
+            type: 'docSidebar',
+            sidebarId: 'howtos',
+            position: 'left',
+            label: 'How-Tos',
+          },
+          {
             to: '/blog',
             label: 'Blog',
             position: 'left',

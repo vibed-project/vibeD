@@ -23,6 +23,8 @@ vibeD speaks **HTTP streamable** MCP at `/mcp`. Bridge Claude Desktop to it with
 
 Port 8080 is the host port kind's `extraPortMappings` bridges to vibeD's `/mcp` endpoint — no `kubectl port-forward` needed (see [local dev](local-dev.md) for the full bridge table). Fully quit and reopen Claude Desktop. With auth disabled (dev default) no token is needed.
 
+Using a different agent? The [How-Tos](../how-tos/overview.md) cover [Claude Code](../how-tos/connect-claude-code.md) and [pi](../how-tos/connect-pi.md), plus the authenticated / production variants for Claude Desktop.
+
 Then ask Claude to deploy something:
 
 > "Deploy a simple portfolio website with my name to vibeD."

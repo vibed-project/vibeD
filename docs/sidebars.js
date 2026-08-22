@@ -62,6 +62,15 @@ const sidebars = {
       items: ['development/testing', 'development/manual-testing'],
     },
   ],
+  howtos: [
+    'how-tos/overview',
+    {
+      type: 'category',
+      label: 'Connect an AI agent',
+      collapsed: false,
+      items: ['how-tos/connect-claude-desktop', 'how-tos/connect-claude-code', 'how-tos/connect-pi'],
+    },
+  ],
 };
 
 export default sidebars;

@@ -292,6 +292,8 @@ When authentication is disabled, ownership checks are skipped and all users see 
 
 ## Connecting MCP Clients
 
+Step-by-step client guides are under [How-Tos](../how-tos/overview.md). The Claude Desktop snippet below is the remote-connector shape; see [Connect Claude Desktop](../how-tos/connect-claude-desktop.md) for the `mcp-remote` variant that works with API keys and local installs.
+
 ### Claude Desktop
 
 Add vibeD as a remote MCP server in Claude Desktop settings:
