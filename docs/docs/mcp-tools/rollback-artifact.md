@@ -4,7 +4,7 @@ sidebar_position: 10
 
 # rollback_artifact
 
-Roll back a deployed artifact to a previous version. This redeploys the artifact using the image and configuration from the specified version snapshot. A new version entry is created for the rollback — history is never rewritten.
+Roll back a deployed artifact to a previous version. This redeploys the artifact using the image and configuration from the specified version snapshot. A new version entry is created for the rollback; history is never rewritten.
 
 ## Input Schema
 

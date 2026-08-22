@@ -12,7 +12,7 @@ By default a sandbox can reach the public internet (the NetworkPolicy only block
 sandbox --HTTPS_PROXY--> [Squid egress proxy] --asks--> [vibed-egress-authz]
                               │  allow → dst host          (src podIP → VibedApp → allowedHosts?)
                               │  deny  → 403 (logged)
-NetworkPolicy: a sandbox may egress ONLY to the proxy — there is no direct internet path.
+NetworkPolicy: a sandbox may egress ONLY to the proxy; there is no direct internet path.
 ```
 
 - The sandbox NetworkPolicy permits egress **only to the Squid proxy** (port 3128) plus DNS. The broad `0.0.0.0/0` rule is removed, so raw sockets and non-HTTP traffic simply can't leave.
@@ -20,7 +20,7 @@ NetworkPolicy: a sandbox may egress ONLY to the proxy — there is no direct int
 - For every connection, Squid asks **`vibed-egress-authz`**, which maps the source pod IP → the owning `VibedApp` → its `egress.allowedHosts`, and allows or denies (default-deny). vibeD's **system hosts** (e.g. the S3/MinIO source store) are always allowed so the agent can still pull source. Denials are logged.
 
 :::note Metadata / DNS-rebinding protection
-The allow-list authorizes a **hostname**, but the decision to connect is also enforced on the **resolved IP** — so an allow-listed domain whose DNS answers `169.254.169.254` (the cloud metadata endpoint) or a link-local/loopback address is still refused. `vibed-egress-authz` rejects a host that resolves to a metadata/link-local range, and Squid additionally denies these ranges by the IP it actually connects to. In the production posture (`storage.tarball.backend: s3`, external object store) Squid also denies RFC1918 / IPv6-ULA ranges — there's no legitimate in-cluster egress target. With the in-cluster `served` source store those private ranges stay reachable so source injection keeps working.
+The allow-list authorizes a **hostname**, but the decision to connect is also enforced on the **resolved IP**, so an allow-listed domain whose DNS answers `169.254.169.254` (the cloud metadata endpoint) or a link-local/loopback address is still refused. `vibed-egress-authz` rejects a host that resolves to a metadata/link-local range, and Squid additionally denies these ranges by the IP it actually connects to. In the production posture (`storage.tarball.backend: s3`, external object store) Squid also denies RFC1918 / IPv6-ULA ranges, since there's no legitimate in-cluster egress target. With the in-cluster `served` source store those private ranges stay reachable so source injection keeps working.
 :::
 
 ## Declaring an app's allowed hosts
@@ -57,11 +57,11 @@ egressControl:
 This deploys the Squid proxy + `vibed-egress-authz`, rewrites the sandbox NetworkPolicy to proxy-only egress, and injects the proxy env into sandboxes.
 
 :::tip Source store
-With egress control on, the agent pulls source **through the proxy** too — so your `storage.tarball.s3` endpoint host must be in `egressControl.systemHosts`, or source injection will be denied.
+With egress control on, the agent pulls source **through the proxy** too, so your `storage.tarball.s3` endpoint host must be in `egressControl.systemHosts`, or source injection will be denied.
 :::
 
 :::caution Non-HTTP egress
-The proxy speaks HTTP/HTTPS (CONNECT) only, and the NetworkPolicy blocks everything else — so a sandbox can't open arbitrary raw TCP/UDP connections at all. That's intentional for web apps; workloads needing other protocols aren't supported under egress control.
+The proxy speaks HTTP/HTTPS (CONNECT) only, and the NetworkPolicy blocks everything else, so a sandbox can't open arbitrary raw TCP/UDP connections at all. That's intentional for web apps; workloads needing other protocols aren't supported under egress control.
 :::
 
 ## Observing denials

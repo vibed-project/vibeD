@@ -4,9 +4,9 @@ sidebar_position: 2
 
 # Custom Auth Providers
 
-vibeD authenticates every request to its MCP, `/api`, `/v1`, and internal-source endpoints with a **bearer token verifier**. The core ships three modes — `apikey`, `oauth`, and `oidc` — but the verifier is pluggable: you can register your own **auth mode** (SAML SP, a bespoke JWT issuer, an internal token service) from a separate Go module without touching the core.
+vibeD authenticates every request to its MCP, `/api`, `/v1`, and internal-source endpoints with a **bearer token verifier**. The core ships three modes (`apikey`, `oauth`, and `oidc`), but the verifier is pluggable: you can register your own **auth mode** (SAML SP, a bespoke JWT issuer, an internal token service) from a separate Go module without touching the core.
 
-You do this through the public extension surface in [`pkg/plugin`](https://github.com/vibed-project/vibeD/tree/main/pkg/plugin). It re-exports the internal auth types as aliases, so a value that satisfies `plugin.TokenVerifier` also satisfies the internal interface — no adapter needed.
+You do this through the public extension surface in [`pkg/plugin`](https://github.com/vibed-project/vibeD/tree/main/pkg/plugin). It re-exports the internal auth types as aliases, so a value that satisfies `plugin.TokenVerifier` also satisfies the internal interface, so no adapter is needed.
 
 This page assumes you have read [Authentication & HTTPS](../configuration/authentication.md), which covers the built-in modes and config.
 
@@ -38,7 +38,7 @@ A bearer-only mode (like the built-in `apikey`/`oauth`/`oidc`) leaves `Routes` e
 type TokenVerifier func(ctx context.Context, token string, req *http.Request) (*TokenInfo, error)
 ```
 
-Return a `*TokenInfo` on success — its `UserID` becomes the authenticated identity for the rest of the request. Return `mcpauth.ErrInvalidToken` (from `github.com/modelcontextprotocol/go-sdk/auth`) on a bad token; the middleware turns that into a `401`.
+Return a `*TokenInfo` on success; its `UserID` becomes the authenticated identity for the rest of the request. Return `mcpauth.ErrInvalidToken` (from `github.com/modelcontextprotocol/go-sdk/auth`) on a bad token; the middleware turns that into a `401`.
 
 `TokenInfo` carries at least:
 
@@ -56,7 +56,7 @@ Return a `*TokenInfo` on success — its `UserID` becomes the authenticated iden
 type AuthProviderFactory func(cfg AuthConfig, userStore UserStore, logger *slog.Logger) (*Provider, error)
 ```
 
-- `cfg` is the whole `auth:` config section. Read your mode's settings from **`cfg.Options`** (a `map[string]string`) — the core modes ignore it, so you never have to add a field to the config struct.
+- `cfg` is the whole `auth:` config section. Read your mode's settings from **`cfg.Options`** (a `map[string]string`); the core modes ignore it, so you never have to add a field to the config struct.
 - `userStore` may be `nil`. When present you can auto-provision user records on first login and look users up.
 - Return a descriptive error (e.g. `"metadata URL not configured"`) rather than panicking; the process fails to start with your message.
 
@@ -69,7 +69,7 @@ func RegisterAuthProvider(mode string, f AuthProviderFactory)
 func AuthProviders() []string // registered mode names, sorted
 ```
 
-`RegisterAuthProvider` **panics** on a `nil` factory or a duplicate mode — both are programmer errors surfaced at process start. The mode name is what operators put in `auth.mode`.
+`RegisterAuthProvider` **panics** on a `nil` factory or a duplicate mode; both are programmer errors surfaced at process start. The mode name is what operators put in `auth.mode`.
 
 ## Selecting your mode
 
@@ -88,12 +88,12 @@ auth:
 Your factory reads those with `cfg.Options["metadataURL"]`, etc.
 
 :::warning Config validation currently allow-lists the built-in modes
-`config.Validate()` rejects any `auth.mode` outside `apikey`, `oauth`, and `oidc`, so a freshly registered custom mode will fail validation before the registry is consulted. To ship a custom mode today you must widen that allow-list in your fork/build (or run with validation adjusted). The registry itself imposes no such restriction — an empty `auth.mode` defaults to `apikey`.
+`config.Validate()` rejects any `auth.mode` outside `apikey`, `oauth`, and `oidc`, so a freshly registered custom mode will fail validation before the registry is consulted. To ship a custom mode today you must widen that allow-list in your fork/build (or run with validation adjusted). The registry itself imposes no such restriction; an empty `auth.mode` defaults to `apikey`.
 :::
 
 ## Public login routes
 
-Bearer verification answers "is this request already authenticated?" — but an SSO flow needs endpoints a user can reach **before** they have a session: an IdP-redirect, an assertion-consumer / callback endpoint, a metadata document. Those are `Provider.Routes`.
+Bearer verification answers "is this request already authenticated?", but an SSO flow needs endpoints a user can reach **before** they have a session: an IdP-redirect, an assertion-consumer / callback endpoint, a metadata document. Those are `Provider.Routes`.
 
 ```go
 type Route struct {
@@ -102,7 +102,7 @@ type Route struct {
 }
 ```
 
-Provider routes are mounted **outside** the bearer-auth middleware — they are how a user obtains a session in the first place, so they cannot themselves require one. Keep them on **public** paths, clear of the authenticated prefixes (`/api`, `/v1`, `/mcp`, `/internal/sources`).
+Provider routes are mounted **outside** the bearer-auth middleware; they are how a user obtains a session in the first place, so they cannot themselves require one. Keep them on **public** paths, clear of the authenticated prefixes (`/api`, `/v1`, `/mcp`, `/internal/sources`).
 
 ## Suspended-user check
 
@@ -197,5 +197,5 @@ Set `auth.mode: mymode` in your config and the server resolves your factory at s
 
 ## See also
 
-- [Authentication & HTTPS](../configuration/authentication.md) — the built-in `apikey`/`oauth`/`oidc` modes and TLS.
-- [Configuration Reference](../configuration/config-reference.md) — the full `auth:` config section.
+- [Authentication & HTTPS](../configuration/authentication.md): the built-in `apikey`/`oauth`/`oidc` modes and TLS.
+- [Configuration Reference](../configuration/config-reference.md): the full `auth:` config section.

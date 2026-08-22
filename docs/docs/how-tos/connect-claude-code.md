@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # Connect Claude Code
 
-[Claude Code](https://code.claude.com/docs) speaks streamable HTTP MCP natively, so it connects to vibeD's `/mcp` endpoint directly — no bridge process.
+[Claude Code](https://code.claude.com/docs) speaks streamable HTTP MCP natively, so it connects to vibeD's `/mcp` endpoint directly, with no bridge process.
 
 ## One command
 
@@ -42,7 +42,7 @@ Inside a session, `/mcp` shows the same status and the tool count.
 
 ## Share it with the team via `.mcp.json`
 
-Project scope is the right choice for a repo whose apps are deployed to vibeD. Commit an `.mcp.json` at the repo root and keep the secret in an environment variable — Claude Code expands `${VAR}` and `${VAR:-default}` in `url` and `headers`:
+Project scope is the right choice for a repo whose apps are deployed to vibeD. Commit an `.mcp.json` at the repo root and keep the secret in an environment variable; Claude Code expands `${VAR}` and `${VAR:-default}` in `url` and `headers`:
 
 ```json
 {
@@ -58,12 +58,12 @@ Project scope is the right choice for a repo whose apps are deployed to vibeD. C
 }
 ```
 
-Each developer then exports `VIBED_API_KEY` (and `VIBED_URL` for a shared instance) in their shell. If a variable is unset and has no default, `claude mcp list` flags it and the raw `${VIBED_API_KEY}` text is sent as-is — so an unexpected `401` usually means the variable isn't exported in the shell that launched Claude Code.
+Each developer then exports `VIBED_API_KEY` (and `VIBED_URL` for a shared instance) in their shell. If a variable is unset and has no default, `claude mcp list` flags it and the raw `${VIBED_API_KEY}` text is sent as-is, so an unexpected `401` usually means the variable isn't exported in the shell that launched Claude Code.
 
 Claude Code asks for approval the first time it sees a project's `.mcp.json`; choose **Use this and all future MCP servers in this project** or approve just `vibed`.
 
 :::note Dev install without auth
-On a `make dev` instance the header is harmless but unnecessary. Either drop the `headers` block, or leave it in and let `VIBED_API_KEY` be empty — vibeD ignores the header when auth is disabled.
+On a `make dev` instance the header is harmless but unnecessary. Either drop the `headers` block, or leave it in and let `VIBED_API_KEY` be empty; vibeD ignores the header when auth is disabled.
 :::
 
 ## Try it
@@ -82,9 +82,9 @@ Put a line in your project's `CLAUDE.md` such as *"After making UI changes, depl
 
 | Symptom | Fix |
 |---|---|
-| `✘ Failed to connect` with `401` | Token missing/wrong, or env var not exported in the shell that launched `claude` — check `claude mcp get vibed` |
+| `✘ Failed to connect` with `401` | Token missing/wrong, or env var not exported in the shell that launched `claude`; check `claude mcp get vibed` |
 | `✘ Connection error` | vibeD not reachable: `curl http://localhost:8080/readyz`; on kind, make sure `make dev` finished |
-| Warning `Leading or trailing whitespace in: headers.Authorization` | The token was pasted with a newline — re-add without it |
+| Warning `Leading or trailing whitespace in: headers.Authorization` | The token was pasted with a newline; re-add without it |
 | Tools visible but `TemplateMissing` on deploy | Enable the warm pool: [local dev → warm pools](../getting-started/local-dev.md#warm-pools) |
 | Need to remove it | `claude mcp remove vibed` (add `--scope` if it was added to user/project scope) |
 

@@ -26,17 +26,17 @@ kubectl get crd vibedapps.vibed.dev -o jsonpath='{.spec.versions[0].schema.openA
 kubectl get vibedapp <name> -n vibed-apps -o jsonpath='{range .status.conditions[*]}{.type}={.reason}: {.message}{"\n"}{end}'
 ```
 
-- **`TemplateMissing: no SandboxTemplate for template "<slot>"`** — the classifier picked a slot (e.g. `go-123`, `base-al2023`) that has no warm pool in this install. The dev overlay ships `static-nginx`, `node-24` and `python-313`; the heavier slots are opt-in. Enable the one you need:
+- **`TemplateMissing: no SandboxTemplate for template "<slot>"`**: the classifier picked a slot (e.g. `go-123`, `base-al2023`) that has no warm pool in this install. The dev overlay ships `static-nginx`, `node-24` and `python-313`; the heavier slots are opt-in. Enable the one you need:
 
   ```bash
   make enable-go-pool   # or enable-base-pool
   ```
 
-  This failure happens *before* a pod exists, so there are no logs to read. The reason and message are on the app itself — `GET /v1/apps/{id}` returns them, and both MCP tools surface them — so check those rather than chasing empty logs. Retrying will not help: it is a configuration gap, not a transient error.
+  This failure happens *before* a pod exists, so there are no logs to read. The reason and message are on the app itself (`GET /v1/apps/{id}` returns them, and both MCP tools surface them), so check those rather than chasing empty logs. Retrying will not help: it is a configuration gap, not a transient error.
 
   See [Local development → warm pools](../getting-started/local-dev.md#warm-pools).
 
-- **`TemplateInvalid: template "<slot>" image failed validation`** — the BYO validator marked the warm pool's image as not meeting the agent contract. Two common dev causes: (1) the warm pod hasn't reached `Ready` yet and the validator recorded "no Ready pod" — restart the controller (`kubectl rollout restart -n vibed-system deploy/vibed-controller`) to force an immediate re-check rather than waiting for the next 2-minute cycle; (2) the template image is genuinely broken — see the [BYO base-image guide](../configuration/custom-base-images.md) for the contract.
+- **`TemplateInvalid: template "<slot>" image failed validation`**: the BYO validator marked the warm pool's image as not meeting the agent contract. Two common dev causes: (1) the warm pod hasn't reached `Ready` yet and the validator recorded "no Ready pod"; restart the controller (`kubectl rollout restart -n vibed-system deploy/vibed-controller`) to force an immediate re-check rather than waiting for the next 2-minute cycle; (2) the template image is genuinely broken; see the [BYO base-image guide](../configuration/custom-base-images.md) for the contract.
 
 ## App stuck in `Starting`
 
@@ -44,14 +44,14 @@ kubectl get vibedapp <name> -n vibed-apps -o jsonpath='{range .status.conditions
 kubectl get vibedapp <name> -n vibed-apps -o jsonpath='{range .status.conditions[*]}{.type}={.reason}: {.message}{"\n"}{end}'
 ```
 
-- **`InjectFailed … context deadline exceeded`** — the sandbox agent couldn't pull the source tarball. The usual cause in dev is a stale `storage.tarball.served.publicBaseURL` (e.g. a hardcoded Service ClusterIP that changed on reinstall). Leave it empty so it defaults to the Service DNS name. In production, this means `served` is being used where `s3` is required — switch to `s3`.
-- **`AgentUnreachable`** — the controller can't reach the sandbox agent on `:9000`. Check the sandbox NetworkPolicy: `Managed` mode blocks the control plane. Use `runtime.sandboxNetworkPolicy: Unmanaged` + `networkPolicy.enabled: true`.
+- **`InjectFailed … context deadline exceeded`**: the sandbox agent couldn't pull the source tarball. The usual cause in dev is a stale `storage.tarball.served.publicBaseURL` (e.g. a hardcoded Service ClusterIP that changed on reinstall). Leave it empty so it defaults to the Service DNS name. In production, this means `served` is being used where `s3` is required; switch to `s3`.
+- **`AgentUnreachable`**: the controller can't reach the sandbox agent on `:9000`. Check the sandbox NetworkPolicy: `Managed` mode blocks the control plane. Use `runtime.sandboxNetworkPolicy: Unmanaged` + `networkPolicy.enabled: true`.
 
 ## App is `Ready` but the URL 502s / isn't reachable
 
-- **502 after a sandbox pod restart** — the route follows a per-app `Service`, and the controller re-injects source on pod recreation, so this self-heals within a reconcile. If it persists, check the Service has endpoints: `kubectl get endpoints vibed-app-<label> -n vibed-apps`.
-- **`https://<label>.localhost` won't open (dev)** — dev Caddy serves plain HTTP on host port 80 (via kind's `extraPortMappings` 31080 → 80). Use the URL vibeD actually returns: `http://<label>.localhost/` (no port). `*.localhost` resolves in Chrome/Firefox; in Safari add a `/etc/hosts` entry or use Chrome.
-- **Caddy route missing** — check `vibed-router` logs and the Caddy admin API:
+- **502 after a sandbox pod restart**: the route follows a per-app `Service`, and the controller re-injects source on pod recreation, so this self-heals within a reconcile. If it persists, check the Service has endpoints: `kubectl get endpoints vibed-app-<label> -n vibed-apps`.
+- **`https://<label>.localhost` won't open (dev)**: dev Caddy serves plain HTTP on host port 80 (via kind's `extraPortMappings` 31080 → 80). Use the URL vibeD actually returns: `http://<label>.localhost/` (no port). `*.localhost` resolves in Chrome/Firefox; in Safari add a `/etc/hosts` entry or use Chrome.
+- **Caddy route missing**: check `vibed-router` logs and the Caddy admin API:
 
   ```bash
   kubectl exec -n vibed-system deploy/vibed-caddy -- wget -qO- http://localhost:2019/config/apps/http/servers

@@ -6,12 +6,12 @@ sidebar_position: 1
 
 There are two layers of configuration:
 
-1. **Application config** (`vibed.yaml`) — runtime settings for the `vibed` server. In Kubernetes this is rendered into a ConfigMap by the Helm chart and mounted at `/etc/vibed/vibed.yaml`.
-2. **Helm values** — cluster topology: namespaces, RuntimeClass, NetworkPolicy, the controller/router/caddy components, and the warm pools.
+1. **Application config** (`vibed.yaml`): runtime settings for the `vibed` server. In Kubernetes this is rendered into a ConfigMap by the Helm chart and mounted at `/etc/vibed/vibed.yaml`.
+2. **Helm values**: cluster topology: namespaces, RuntimeClass, NetworkPolicy, the controller/router/caddy components, and the warm pools.
 
 You normally set everything through Helm values; the chart renders the app config for you.
 
-Config is loaded from a file, then **`VIBED_`-prefixed environment variables override individual keys**, then the result is validated. A missing config file is not an error — the server starts on defaults. Every field maps to a key defined in `internal/config/config.go`; the tables below are grouped by top-level section in that struct.
+Config is loaded from a file, then **`VIBED_`-prefixed environment variables override individual keys**, then the result is validated. A missing config file is not an error; the server starts on defaults. Every field maps to a key defined in `internal/config/config.go`; the tables below are grouped by top-level section in that struct.
 
 ## Application config (`vibed.yaml`)
 
@@ -106,7 +106,7 @@ tracing:
 ```
 
 :::info `served` vs `s3`
-`served` keeps the source tarball on vibeD's PVC and serves it over the in-cluster Service URL — **dev only**. Once a restrictive sandbox NetworkPolicy is in place (production), sandboxes have no cluster DNS or cluster-internal egress, so the agent can only pull from a **pre-signed `s3` URL**. Use `s3` (S3 or MinIO) in production.
+`served` keeps the source tarball on vibeD's PVC and serves it over the in-cluster Service URL (**dev only**). Once a restrictive sandbox NetworkPolicy is in place (production), sandboxes have no cluster DNS or cluster-internal egress, so the agent can only pull from a **pre-signed `s3` URL**. Use `s3` (S3 or MinIO) in production.
 :::
 
 ## `organization`
@@ -119,7 +119,7 @@ tracing:
 
 | Key                            | Type    | Default   | Description                                                                      |
 | ------------------------------ | ------- | --------- | -------------------------------------------------------------------------------- |
-| `transport`                    | string  | `stdio`   | `stdio`, `http`, or `both`. Validated — any other value fails startup.           |
+| `transport`                    | string  | `stdio`   | `stdio`, `http`, or `both`. Validated; any other value fails startup.           |
 | `httpAddr`                     | string  | `:8080`   | Listen address for the HTTP transport (`/v1` API, dashboard, streamable MCP).    |
 | `baseURL`                      | string  | `""`      | Public-facing base URL used to generate share links, e.g. `http://localhost:8080`. |
 | `logFormat`                    | string  | `text`    | `text` or `json`.                                                                |
@@ -132,7 +132,7 @@ tracing:
 
 ## `auth`
 
-Governs authentication and TLS termination. When `enabled` is `false` the API is open (every request is treated as admin) — enable it before exposing vibeD. To guard against that being exposed by accident, vibeD **refuses to start** with auth disabled on a non-loopback bind unless `devInsecure: true` is set. See [Authentication](authentication.md) for a full walkthrough.
+Governs authentication and TLS termination. When `enabled` is `false` the API is open (every request is treated as admin), so enable it before exposing vibeD. To guard against that being exposed by accident, vibeD **refuses to start** with auth disabled on a non-loopback bind unless `devInsecure: true` is set. See [Authentication](authentication.md) for a full walkthrough.
 
 | Key       | Type              | Default | Description                                                                             |
 | --------- | ----------------- | ------- | --------------------------------------------------------------------------------------- |
@@ -141,20 +141,20 @@ Governs authentication and TLS termination. When `enabled` is `false` the API is
 | `mode`    | string            | `""`    | `apikey`, `oauth`, or `oidc`. Out-of-tree providers may register additional modes.      |
 | `identityCacheTTL` | duration | `30s` | Caps how long a resolved user identity (role, status, department) is cached before the user store is re-consulted. This is the propagation bound for account changes: a suspension or role edit takes effect within at most this TTL on a warm cache. `0` (or negative) disables caching, so such changes take effect immediately (as before this key existed), at the cost of an extra per-request user-store lookup. Since v0.6.0. |
 | `apiKeys` | list              | `[]`    | Configured API keys (see below). At least one is required when `mode` is `apikey`/`oauth`/empty. |
-| `oidc`    | object            | —       | OIDC settings (see below).                                                              |
-| `tls`     | object            | —       | TLS termination (see below).                                                            |
+| `oidc`    | object            | none       | OIDC settings (see below).                                                              |
+| `tls`     | object            | none       | TLS termination (see below).                                                            |
 | `options` | map[string]string | `{}`    | Generic bag read by out-of-tree auth providers; core modes ignore it, so a new mode needs no schema change. |
 
 ### `auth.apiKeys[]`
 
 | Key          | Type   | Default  | Description                                                              |
 | ------------ | ------ | -------- | ----------------------------------------------------------------------- |
-| `key`        | string | —        | Token value, or `env:VAR_NAME` to read it from the environment.         |
-| `name`       | string | —        | Human-readable name; used as the caller's `UserID`.                     |
+| `key`        | string | none        | Token value, or `env:VAR_NAME` to read it from the environment.         |
+| `name`       | string | none        | Human-readable name; used as the caller's `UserID`.                     |
 | `scopes`     | list   | `[]`     | Allowed scopes; empty means all.                                        |
 | `role`       | string | `user`   | `admin` or `user`.                                                      |
 | `department` | string | `""`     | Auto-assign the user to this department on first use.                   |
-| `storage`    | object | —        | Optional per-user storage override (`github` or `gitlab`, see [Storage](storage.md)). |
+| `storage`    | object | none        | Optional per-user storage override (`github` or `gitlab`, see [Storage](storage.md)). |
 
 ### `auth.oidc`
 
@@ -184,7 +184,7 @@ Governs authentication and TLS termination. When `enabled` is `false` the API is
 | ----------------- | -------- | ------------ | --------------------------------------------------------------------------------------------- |
 | `preferredTarget` | string   | `auto`       | `auto` or `kubernetes`.                                                                        |
 | `namespace`       | string   | `default`    | Default working namespace for the control plane.                                              |
-| `appsNamespace`   | string   | `vibed-apps` | Namespace where `/v1` creates `VibedApp` CRs. Must match where the warm pools live — agent-sandbox requires a `SandboxClaim` co-located with its `SandboxTemplate`. |
+| `appsNamespace`   | string   | `vibed-apps` | Namespace where `/v1` creates `VibedApp` CRs. Must match where the warm pools live; agent-sandbox requires a `SandboxClaim` co-located with its `SandboxTemplate`. |
 | `readyTimeout`    | duration | `10m`        | How long deployers wait for a workload to become `Ready` before failing the deploy.           |
 
 ## `storage`
@@ -194,10 +194,10 @@ The file-tree artifact store used by the legacy MCP build path. Distinct from `s
 | Key       | Type   | Default | Description                                                          |
 | --------- | ------ | ------- | ------------------------------------------------------------------- |
 | `backend` | string | `local` | `local`, `github`, or `gitlab`. Validated at startup.               |
-| `local`   | object | —       | `basePath` (default `/data/vibed/artifacts`).                       |
-| `github`  | object | —       | `owner`, `repo`, `branch` (default `main`), `tokenFile`. `owner` and `repo` are required when `backend` is `github`. |
-| `gitlab`  | object | —       | `url` (default `https://gitlab.com`), `projectID`, `branch` (default `main`), `token`. `projectID` is required when `backend` is `gitlab`. |
-| `tarball` | object | —       | Source-blob store for `/v1/deploy` (see below).                     |
+| `local`   | object | none       | `basePath` (default `/data/vibed/artifacts`).                       |
+| `github`  | object | none       | `owner`, `repo`, `branch` (default `main`), `tokenFile`. `owner` and `repo` are required when `backend` is `github`. |
+| `gitlab`  | object | none       | `url` (default `https://gitlab.com`), `projectID`, `branch` (default `main`), `token`. `projectID` is required when `backend` is `gitlab`. |
+| `tarball` | object | none       | Source-blob store for `/v1/deploy` (see below).                     |
 
 Tokens in `github.tokenFile` / `gitlab.token` support `env:VAR` and `file:PATH` indirection.
 
@@ -208,8 +208,8 @@ Selects how `/v1/deploy` persists the uploaded source tarball so `vibed-agent` c
 | Key       | Type   | Default  | Description                                                     |
 | --------- | ------ | -------- | -------------------------------------------------------------- |
 | `backend` | string | `served` | `served` (no extra infra) or `s3`.                             |
-| `served`  | object | —        | `basePath` (default `/data/vibed/sources`; should be a PVC), `publicBaseURL` (in-cluster base the agent dials; the store appends `/internal/sources/<id>.tar.gz`). |
-| `s3`      | object | —        | `endpoint` (empty for AWS, set for MinIO), `bucket`, `region`, `accessKey`, `secretKey`, `presignTTL` (GET URL validity, default `15m`). |
+| `served`  | object | none        | `basePath` (default `/data/vibed/sources`; should be a PVC), `publicBaseURL` (in-cluster base the agent dials; the store appends `/internal/sources/<id>.tar.gz`). |
+| `s3`      | object | none        | `endpoint` (empty for AWS, set for MinIO), `bucket`, `region`, `accessKey`, `secretKey`, `presignTTL` (GET URL validity, default `15m`). |
 
 ## `registry`
 
@@ -227,9 +227,9 @@ The state store for control-plane objects (the control plane is stateless; all d
 
 | Key         | Type              | Default  | Description                                                                                  |
 | ----------- | ----------------- | -------- | ------------------------------------------------------------------------------------------- |
-| `backend`   | string            | `sqlite` | `sqlite` (default, recommended — scales per-row), `memory`, or `configmap`. Validated at startup. |
-| `sqlite`    | object            | —        | `path` (default `/data/vibed.db`). Required when `backend` is `sqlite`.                      |
-| `configmap` | object            | —        | `name` (default `vibed-artifacts`), `namespace` (default `vibed-system`). Small/dev deployments only — all artifacts share one ConfigMap, bounded by etcd's ~1MB object ceiling; use `sqlite` at scale. |
+| `backend`   | string            | `sqlite` | `sqlite` (default, recommended; scales per-row), `memory`, or `configmap`. Validated at startup. |
+| `sqlite`    | object            | none        | `path` (default `/data/vibed.db`). Required when `backend` is `sqlite`.                      |
+| `configmap` | object            | none        | `name` (default `vibed-artifacts`), `namespace` (default `vibed-system`). Small/dev deployments only; all artifacts share one ConfigMap, bounded by etcd's ~1MB object ceiling; use `sqlite` at scale. |
 | `options`   | map[string]string | `{}`     | Passed verbatim to the backend factory. Core backends ignore it; an out-of-tree backend reads its own settings (DSN, pool size, …) from here, so adding a backend needs no schema change. See [Store backends](../extending/store-backends.md). |
 
 ## `kubernetes`
@@ -266,7 +266,7 @@ Caps how many concurrent apps an owner or department may hold. Disabled by defau
 
 | Key          | Type | Default | Description                                                                                     |
 | ------------ | ---- | ------- | ---------------------------------------------------------------------------------------------- |
-| `failClosed` | bool | `false` | When `true`, a mutating action (deploy/delete/rollback/suspend) whose audit write cannot be persisted is rejected — preferring availability loss over an untraceable change. The default fails open so dev clusters and the default install don't block deploys; production values flip this to `true`. See [Audit log](audit-log.md). |
+| `failClosed` | bool | `false` | When `true`, a mutating action (deploy/delete/rollback/suspend) whose audit write cannot be persisted is rejected, preferring availability loss over an untraceable change. The default fails open so dev clusters and the default install don't block deploys; production values flip this to `true`. See [Audit log](audit-log.md). |
 
 ## `gc`
 
@@ -381,7 +381,7 @@ See `deploy/helm/vibed/values.yaml` for the fully-documented defaults and `value
 
 Several sections carry an `options` map (or an equivalent seam) so an **out-of-tree Go module** can plug in a provider without changing this schema:
 
-- `auth.options` / `auth.mode` — register a custom authentication mode. See [Auth providers](../extending/auth-providers.md).
-- `store.options` / `store.backend` — register a custom state-store backend that reads its own DSN and tuning from `options`. See [Store backends](../extending/store-backends.md).
+- `auth.options` / `auth.mode`: register a custom authentication mode. See [Auth providers](../extending/auth-providers.md).
+- `store.options` / `store.backend`: register a custom state-store backend that reads its own DSN and tuning from `options`. See [Store backends](../extending/store-backends.md).
 
 Feature availability is governed by an editions/feature-flag seam whose default enables **all** features; integrators building their own module can supply a different resolver. See [Secrets and features](../extending/secrets-and-features.md).

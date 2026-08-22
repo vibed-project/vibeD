@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Local Development Setup
 
-vibeD develops on **Podman + Kind**. The dev install runs the full stack — control plane, a warm pool, deployed apps reachable from your browser — on your laptop. It diverges from production in deliberate ways (no Kata, plain HTTP, served source store, opt-in warm pools) covered below.
+vibeD develops on **Podman + Kind**. The dev install runs the full stack (control plane, a warm pool, deployed apps reachable from your browser) on your laptop. It diverges from production in deliberate ways (no Kata, plain HTTP, served source store, opt-in warm pools) covered below.
 
 ## One command
 
@@ -20,15 +20,15 @@ When it finishes:
 |---|---|
 | `http://localhost:8080/` | vibeD dashboard + REST API + MCP server (`/mcp`) |
 | `http://<id>.localhost/` | Deployed apps (port 80 implicit; `*.localhost` resolves to `127.0.0.1` in Chrome/Firefox) |
-| `http://localhost:3000/` | Grafana (admin/admin) — vibeD traces, logs, metrics |
+| `http://localhost:3000/` | Grafana (admin/admin): vibeD traces, logs, metrics |
 | `http://localhost:9090/` | Prometheus |
 | `http://localhost:31888/` | Keycloak (admin/admin) |
 
-No `kubectl port-forward` is required — kind's `extraPortMappings` bridge host ports to the in-cluster Services.
+No `kubectl port-forward` is required; kind's `extraPortMappings` bridge host ports to the in-cluster Services.
 
 ## What the dev overlay changes vs production
 
-`deploy/helm/vibed/values-kind.yaml` is the dev overlay. Read it before you deploy production with the same chart — the differences matter:
+`deploy/helm/vibed/values-kind.yaml` is the dev overlay. Read it before you deploy production with the same chart, because the differences matter:
 
 - **`runtime.defaultClass: ""`.** No Kata RuntimeClass on kind; sandboxes are plain pods. Production uses `kata-qemu` (or `kata-fc`) for VM-level isolation.
 - **`runtime.sandboxNetworkPolicy: Unmanaged` + `networkPolicy.enabled: false`.** Sandboxes have full DNS and cluster egress so the in-cluster blob store works. Production locks these down.
@@ -40,12 +40,12 @@ No `kubectl port-forward` is required — kind's `extraPortMappings` bridge host
 
 ## Warm pools
 
-`make dev` runs the three common app shapes — `static-nginx` (fast lane) plus
-`node-24` and `python-313` (general lane) — so static, JS and Python sources
+`make dev` runs the three common app shapes, `static-nginx` (fast lane) plus
+`node-24` and `python-313` (general lane), so static, JS and Python sources
 deploy with no extra step. The general lane needs no Kata or nested virt here:
 `runtime.defaultClass` is empty on Kind, so its pods schedule normally.
 
-`go-123` and `base-al2023` stay opt-in — each runner image is its own ~30s
+`go-123` and `base-al2023` stay opt-in; each runner image is its own ~30s
 build, and they are rarely needed in dev. Deploy a Go source without its pool
 and you'll see:
 
@@ -55,7 +55,7 @@ Reason=TemplateMissing
 Message=no SandboxTemplate for template "go-123" (no warm pool configured for it)
 ```
 
-That's by design — vibeD fails fast rather than retrying forever. Note that
+That's by design: vibeD fails fast rather than retrying forever. Note that
 this failure happens *before* a pod exists, so there are no logs: the reason
 and message on the app are the whole diagnosis, and both `GET /v1/apps/{id}`
 and the MCP tools return them. Enable the slot you need:
@@ -71,7 +71,7 @@ make enable-go-pool
 make enable-base-pool
 ```
 
-`make enable-node-pool` and `make enable-python-pool` still exist — use them to
+`make enable-node-pool` and `make enable-python-pool` still exist; use them to
 switch a slot back on if you disabled it.
 
 After ~30s the warm pod is `Ready`, the validation ConfigMap shows `valid:true`,
@@ -97,4 +97,4 @@ bash testbed/kind-cluster/teardown.sh
 # Xcode license prompt
 ```
 
-This deletes the kind cluster and everything in it — control plane, warm pools, deployed apps, observability. Bring it back with `make dev`.
+This deletes the kind cluster and everything in it: control plane, warm pools, deployed apps, observability. Bring it back with `make dev`.

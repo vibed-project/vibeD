@@ -5,7 +5,7 @@ slug: /how-tos
 
 # How-Tos
 
-Task-oriented guides for doing specific things with vibeD. Each one assumes you already have a running instance — locally via [`make dev`](../getting-started/local-dev.md) or a [production install](../deployment/production-guide.md) — and walks through one job end to end.
+Task-oriented guides for doing specific things with vibeD. Each one assumes you already have a running instance (locally via [`make dev`](../getting-started/local-dev.md) or a [production install](../deployment/production-guide.md)) and walks through one job end to end.
 
 ## Connect an AI agent
 
@@ -15,6 +15,7 @@ vibeD exposes its tools over [MCP](../mcp-tools/overview.md) at `/mcp` (streamab
 |---|---|---|
 | [Connect Claude Desktop](./connect-claude-desktop.md) | Claude Desktop / claude.ai | Remote connector, or `mcp-remote` bridge |
 | [Connect Claude Code](./connect-claude-code.md) | Claude Code CLI | Native streamable HTTP (`claude mcp add`) |
+| [Connect Codex](./connect-codex.md) | Codex CLI, IDE extension, ChatGPT desktop | Native streamable HTTP (`codex mcp add`) |
 | [Connect pi](./connect-pi.md) | [pi.dev](https://pi.dev) coding agent | `pi-mcp-adapter` extension |
 
 Goose is covered in [First deployment](../getting-started/first-deployment.md#connect-goose-mcp).
@@ -24,7 +25,7 @@ Goose is covered in [First deployment](../getting-started/first-deployment.md#co
 Whichever client you use, you need the same two things:
 
 1. **The MCP URL.** `http://localhost:8080/mcp` on a dev install; `https://<your-host>/mcp` in production.
-2. **A bearer token, if auth is on.** The dev overlay runs with auth disabled, so no token is needed. A production install uses an [API key](../configuration/authentication.md#api-key-mode-default) or [OIDC](../configuration/authentication.md#oidc-mode) — the guides show where each client takes the `Authorization: Bearer …` header.
+2. **A bearer token, if auth is on.** The dev overlay runs with auth disabled, so no token is needed. A production install uses an [API key](../configuration/authentication.md#api-key-mode-default) or [OIDC](../configuration/authentication.md#oidc-mode); the guides show where each client takes the `Authorization: Bearer …` header.
 
 :::tip Test the endpoint first
 If a client reports "failed to connect", rule out vibeD itself before debugging the client:
@@ -45,4 +46,4 @@ Every client ends up calling the same tools. Try:
 
 > "Deploy a single-page site that says hello from vibeD."
 
-The agent calls [`deploy_artifact`](../mcp-tools/deploy-artifact.md), vibeD claims a warm sandbox, and the reply contains the app URL. From there, `get_artifact_status`, `get_artifact_logs`, `update_artifact` and `delete_artifact` cover the rest of the lifecycle — see the [tool reference](../mcp-tools/overview.md).
+The agent calls [`deploy_artifact`](../mcp-tools/deploy-artifact.md), vibeD claims a warm sandbox, and the reply contains the app URL. From there, `get_artifact_status`, `get_artifact_logs`, `update_artifact` and `delete_artifact` cover the rest of the lifecycle; see the [tool reference](../mcp-tools/overview.md).

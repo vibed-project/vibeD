@@ -68,7 +68,7 @@ const sidebars = {
       type: 'category',
       label: 'Connect an AI agent',
       collapsed: false,
-      items: ['how-tos/connect-claude-desktop', 'how-tos/connect-claude-code', 'how-tos/connect-pi'],
+      items: ['how-tos/connect-claude-desktop', 'how-tos/connect-claude-code', 'how-tos/connect-codex', 'how-tos/connect-pi'],
     },
   ],
 };

@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # update_artifact
 
-Update an existing deployed artifact with new source files. vibeD stores the new source tarball and re-injects it into the app's warm sandbox — there is no per-deploy container build. A new version snapshot is created automatically.
+Update an existing deployed artifact with new source files. vibeD stores the new source tarball and re-injects it into the app's warm sandbox; there is no per-deploy container build. A new version snapshot is created automatically.
 
 ## Input Schema
 
@@ -45,7 +45,7 @@ Update an existing deployed artifact with new source files. vibeD stores the new
 
 1. **Validates** the app exists and the caller owns it
 2. **Stores** the new source tarball (replaces the previous source)
-3. **Re-injects** the new source into the app's sandbox — no rebuild
+3. **Re-injects** the new source into the app's sandbox, with no rebuild
 
 :::note
 Redeploy (`POST /v1/apps/{id}/redeploy`) is not yet fully wired. The supported update path is to deploy again under the same name.

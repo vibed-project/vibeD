@@ -28,7 +28,7 @@ Config values that hold secrets can be **scheme-prefixed**: `<scheme>:<ref>`. vi
 | `env:DB_PASSWORD` | the value of environment variable `DB_PASSWORD` |
 | `file:/var/run/secrets/db` | the contents of that file, trimmed of surrounding whitespace |
 
-A value that has **no scheme** — or a scheme that nobody registered — is returned **unchanged**, so a literal password like `hunter2` (or a value that just happens to contain a `:`) passes through as-is.
+A value that has **no scheme** (or a scheme that nobody registered) is returned **unchanged**, so a literal password like `hunter2` (or a value that just happens to contain a `:`) passes through as-is.
 
 ```yaml
 auth:
@@ -42,12 +42,12 @@ storage:
 ```
 
 :::info Unknown schemes pass through
-Resolution splits on the first `:`. If the token before it is not a registered scheme, the **whole original value** is returned literally — an unknown scheme is never an error. That keeps arbitrary secret strings safe, but it also means a typo (`evn:FOO` instead of `env:FOO`) fails silently by passing `evn:FOO` through. Double-check scheme spellings.
+Resolution splits on the first `:`. If the token before it is not a registered scheme, the **whole original value** is returned literally; an unknown scheme is never an error. That keeps arbitrary secret strings safe, but it also means a typo (`evn:FOO` instead of `env:FOO`) fails silently by passing `evn:FOO` through. Double-check scheme spellings.
 :::
 
 ### Registering a custom scheme
 
-`RegisterSecretScheme(scheme, resolver)` adds a scheme — for example, one that reads from an external secret store. The resolver receives the **reference part only** (everything after the first `:`) plus a `context.Context`, and returns the resolved value or an error.
+`RegisterSecretScheme(scheme, resolver)` adds a scheme, for example one that reads from an external secret store. The resolver receives the **reference part only** (everything after the first `:`) plus a `context.Context`, and returns the resolved value or an error.
 
 ```go
 // SecretSchemeResolver = func(ctx context.Context, ref string) (string, error)
@@ -83,16 +83,16 @@ func resolve(ctx context.Context, ref string) (string, error) {
 
 Notes:
 
-- **Register from an `init()`.** Registration is process-wide; registering the same scheme twice **panics** at startup (a duplicate is a programmer error). So do `env` and `file` — do not re-register them.
+- **Register from an `init()`.** Registration is process-wide; registering the same scheme twice **panics** at startup (a duplicate is a programmer error). `env` and `file` are already registered too, so do not re-register them.
 - **The `context` is honored.** vibeD passes a context through to your resolver so external fetches can be bounded or cancelled; respect it for network calls.
-- An empty scheme name or a `nil` resolver also panics — these surface immediately at startup rather than at deploy time.
+- An empty scheme name or a `nil` resolver also panics; these surface immediately at startup rather than at deploy time.
 
 ## Feature gating
 
-The `Entitlements` seam is a process-wide **feature-flag** mechanism. It lets a build advertise a named **edition** and gate optional code paths behind named features. It is plain extensibility — an integrator who ships their own out-of-tree providers can use it to turn provider registrations on or off from a single switch.
+The `Entitlements` seam is a process-wide **feature-flag** mechanism. It lets a build advertise a named **edition** and gate optional code paths behind named features. It is plain extensibility: an integrator who ships their own out-of-tree providers can use it to turn provider registrations on or off from a single switch.
 
 :::note The default enables everything
-The core **never gates itself**, and the default edition enables **all** features. Out of the box nothing is gated: every `RequireFeature` call that the core makes — and it makes none for its own behavior — would succeed. Feature gating only takes effect once *your* build installs a non-default edition and *your* providers choose to consult it.
+The core **never gates itself**, and the default edition enables **all** features. Out of the box nothing is gated: every `RequireFeature` call that the core makes (and it makes none for its own behavior) would succeed. Feature gating only takes effect once *your* build installs a non-default edition and *your* providers choose to consult it.
 :::
 
 ### The two calls
@@ -152,9 +152,9 @@ func init() {
 }
 ```
 
-Because the default edition enables every feature, a build that does **not** call `SetEntitlements` sees every `RequireFeature` succeed — so the gate is opt-in and inert until you install an edition that returns `false` from `Enabled` for the features you want to withhold.
+Because the default edition enables every feature, a build that does **not** call `SetEntitlements` sees every `RequireFeature` succeed, so the gate is opt-in and inert until you install an edition that returns `false` from `Enabled` for the features you want to withhold.
 
 ## See also
 
-- [Extension overview](./overview.md) — the store / auth / tenancy / policy / metering seams and the custom-binary pattern.
-- [Configuration reference](../configuration/config-reference.md) — where secret-bearing values live in `vibed.yaml`.
+- [Extension overview](./overview.md): the store / auth / tenancy / policy / metering seams and the custom-binary pattern.
+- [Configuration reference](../configuration/config-reference.md): where secret-bearing values live in `vibed.yaml`.

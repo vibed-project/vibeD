@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Store backends
 
-The store is where vibeD keeps **artifact metadata and control-plane state** — the `VibedApp` records, their version history, and (optionally) users, audit events, and share links. The control plane itself is stateless; everything durable lives behind the store interface, so swapping the backend is the supported way to move that state onto your own database.
+The store is where vibeD keeps **artifact metadata and control-plane state**: the `VibedApp` records, their version history, and (optionally) users, audit events, and share links. The control plane itself is stateless; everything durable lives behind the store interface, so swapping the backend is the supported way to move that state onto your own database.
 
 A backend is selected by the `store.backend` config key and built at startup from a factory you register. The core ships three built-ins; an out-of-tree module registers more the same way, with no change to the core.
 
@@ -19,7 +19,7 @@ A backend implements one required interface and up to three optional ones, all i
 | `AuditStore` | Optional | The append-only governance audit log |
 | `ShareLinkStore` | Optional | Public share links to artifacts |
 
-Only `ArtifactStore` is mandatory. The other three are **feature-detected via type assertion**: your factory returns an `ArtifactStore`, and the core checks at startup whether that same value also satisfies `UserStore`, `AuditStore`, or `ShareLinkStore`. Implement only the capabilities you need — a value that implements all four is returned as one object.
+Only `ArtifactStore` is mandatory. The other three are **feature-detected via type assertion**: your factory returns an `ArtifactStore`, and the core checks at startup whether that same value also satisfies `UserStore`, `AuditStore`, or `ShareLinkStore`. Implement only the capabilities you need; a value that implements all four is returned as one object.
 
 ```go
 // ArtifactStore is the required interface.
@@ -77,7 +77,7 @@ type ShareLinkStore interface {
 
 If a backend does **not** implement `AuditStore`, the core falls back to an in-memory audit log (which does not survive a restart) and logs a warning. To persist the governance trail across restarts, implement `AuditStore`.
 
-## `StoreDeps` — what the factory receives
+## `StoreDeps`: what the factory receives
 
 Your factory is a `StoreBackendFactory`:
 
@@ -97,14 +97,14 @@ type StoreBackendFactory = func(StoreDeps) (ArtifactStore, error)
 | `Options` | `map[string]string` | `store.options` (verbatim) |
 | `Logger` | `*slog.Logger` | The server logger |
 
-`Options` is the escape hatch: a DSN, a pool size, TLS settings — anything your backend needs — flows through it, so **adding a backend never requires a new field on the core config struct**.
+`Options` is the escape hatch: a DSN, a pool size, TLS settings, or anything else your backend needs flows through it, so **adding a backend never requires a new field on the core config struct**.
 
 ## Selecting and configuring a backend
 
 Two config keys drive backend selection, both under `store` in `vibed.yaml`:
 
-- `store.backend` — the registered name to build (`sqlite`, `memory`, `configmap`, or one you registered).
-- `store.options` — a free-form `map[string]string` passed straight through to your factory as `StoreDeps.Options`.
+- `store.backend`: the registered name to build (`sqlite`, `memory`, `configmap`, or one you registered).
+- `store.options`: a free-form `map[string]string` passed straight through to your factory as `StoreDeps.Options`.
 
 ```yaml
 store:
@@ -114,21 +114,21 @@ store:
     maxConns: "20"
 ```
 
-If `store.backend` names a backend that was never registered, `store.New` returns an "unknown store backend" error listing the registered names, and the server exits at startup. Registering your backend is what makes the name valid — see below.
+If `store.backend` names a backend that was never registered, `store.New` returns an "unknown store backend" error listing the registered names, and the server exits at startup. Registering your backend is what makes the name valid (see below).
 
 ## Built-in backends
 
 | Name | Backing store | Implements | Use for |
 | --- | --- | --- | --- |
 | `sqlite` | A SQLite file at `store.sqlite.path` | `ArtifactStore` + `UserStore` + `AuditStore` + `ShareLinkStore` + `io.Closer` | The default; single-replica durable state |
-| `memory` | Process memory | `ArtifactStore` | Tests and ephemeral local runs — lost on restart |
+| `memory` | Process memory | `ArtifactStore` | Tests and ephemeral local runs (lost on restart) |
 | `configmap` | A Kubernetes ConfigMap (`store.configmap.name`) | `ArtifactStore` | Small, no-database clusters; **no** audit persistence |
 
 `sqlite` is the only built-in that implements every capability. `configmap` implements just `ArtifactStore`, so audit events fall back to the in-memory log there. Both `memory` and `configmap` are fine for small or dev setups but store no user or share-link data. An out-of-tree backend (e.g. a shared Postgres) is the path to durable, multi-replica state.
 
 ## Registering a backend
 
-Register from your provider package's `init()` with `RegisterStoreBackend(name, factory)`. It's keyed by name and **panics on a nil factory or a duplicate name** — both are programmer errors caught at startup. You may register several backends.
+Register from your provider package's `init()` with `RegisterStoreBackend(name, factory)`. It's keyed by name and **panics on a nil factory or a duplicate name**; both are programmer errors caught at startup. You may register several backends.
 
 ```go
 package vibedpostgres
@@ -208,7 +208,7 @@ GOTOOLCHAIN=auto GO111MODULE=on go build -o bin/vibed ./cmd/vibed
 
 ## Audit enrichment fields
 
-If your backend implements `AuditStore`, persist the full [`api.AuditEvent`](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/api#AuditEvent), including the optional enrichment fields — dropping them silently loses governance context. The first block (`ID`, `Time`, `Actor`, `Action`, `Target`, `Outcome`, `Detail`) is always populated; the enrichment fields are set only when a caller supplies them:
+If your backend implements `AuditStore`, persist the full [`api.AuditEvent`](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/api#AuditEvent), including the optional enrichment fields, because dropping them silently loses governance context. The first block (`ID`, `Time`, `Actor`, `Action`, `Target`, `Outcome`, `Detail`) is always populated; the enrichment fields are set only when a caller supplies them:
 
 | Field | JSON key | Meaning |
 | --- | --- | --- |
@@ -221,10 +221,10 @@ If your backend implements `AuditStore`, persist the full [`api.AuditEvent`](htt
 
 `TenantID` and `SourceHash` are filled by the core on deploys; the remaining fields are populated when an out-of-tree recorder or policy gate supplies them. Model these as columns (not an opaque JSON blob) if you want to query the audit log by tenant, session, or policy decision.
 
-`ListAudit` must return events **newest first** and honor the `AuditQuery` filter — `Actor`, `Action`, `Target` (empty string means "don't filter"), and `Limit` (`0` means the implementation's default cap).
+`ListAudit` must return events **newest first** and honor the `AuditQuery` filter: `Actor`, `Action`, `Target` (empty string means "don't filter"), and `Limit` (`0` means the implementation's default cap).
 
 ## See also
 
-- [Extending vibeD](overview.md) — the registration pattern shared by every seam.
-- [Configuration reference](../configuration/config-reference.md) — the `store.*` keys your backend is selected and configured by.
-- [`pkg/plugin` API docs](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/plugin) — the exact aliased types.
+- [Extending vibeD](overview.md): the registration pattern shared by every seam.
+- [Configuration reference](../configuration/config-reference.md): the `store.*` keys your backend is selected and configured by.
+- [`pkg/plugin` API docs](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/plugin): the exact aliased types.

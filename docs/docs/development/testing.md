@@ -55,7 +55,7 @@ These require a Kind cluster (`make dev` or `make test-integration-setup`). Tagg
 | **ConfigMap Store** | `internal/store/configmap_integration_test.go` | 9 | CRUD, list, filter, duplicates (K8s-backed store) |
 | **HTTP Metrics** | `internal/metrics/middleware_integration_test.go` | 2 | Request recording, path normalization |
 
-### Not Yet Automated — Manual Test Procedures
+### Not Yet Automated: Manual Test Procedures
 
 The following features were implemented in v0.1.2 and need manual verification or future test automation.
 
@@ -134,7 +134,7 @@ done
 | 5 | MCP pagination | `list_artifacts` with `limit: 2, offset: 0` | Response includes `total`, `offset`, `limit` fields |
 | 6 | Empty result | `GET /v1/apps?offset=9999` | Returns empty `items` array, `total` still correct |
 
-**Automation opportunity:** Add to `sqlite_test.go` — create N artifacts, verify List with various offset/limit combos. Add to `handler_integration_test.go` for REST API pagination.
+**Automation opportunity:** Add to `sqlite_test.go`: create N artifacts, verify List with various offset/limit combos. Add to `handler_integration_test.go` for REST API pagination.
 
 ---
 
@@ -183,9 +183,9 @@ The `tests/testutil/` package provides helpers for integration tests:
 
 Based on risk and effort, here's the recommended order for automating manual tests:
 
-1. **Rate Limiting** (low effort, high value) — Unit test with `httptest`, no cluster needed
-2. **Pagination** (low effort) — Extend existing `sqlite_test.go` and `handler_integration_test.go`
-3. **Share Links** (medium effort) — SQLite CRUD unit tests + REST handler integration tests
-4. **Tracing** (medium effort) — In-memory exporter, assert span names/attributes
-5. **Secret References** (medium effort) — Integration test with K8s Secret
-6. **OIDC Auth** (high effort) — Requires mock JWKS server
+1. **Rate Limiting** (low effort, high value): Unit test with `httptest`, no cluster needed
+2. **Pagination** (low effort): Extend existing `sqlite_test.go` and `handler_integration_test.go`
+3. **Share Links** (medium effort): SQLite CRUD unit tests + REST handler integration tests
+4. **Tracing** (medium effort): In-memory exporter, assert span names/attributes
+5. **Secret References** (medium effort): Integration test with K8s Secret
+6. **OIDC Auth** (high effort): Requires mock JWKS server

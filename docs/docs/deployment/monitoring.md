@@ -237,7 +237,7 @@ The Helm chart configures these probes with sensible defaults:
 ## Grafana Dashboard
 
 The `testbed/observability` stack ships a ready-made **vibeD Overview** dashboard
-(`testbed/observability/dashboards/vibed-overview.json`) — installed
+(`testbed/observability/dashboards/vibed-overview.json`), installed
 automatically by `make install-observability`. You can also build your own from
 the metrics above. Recommended panels:
 

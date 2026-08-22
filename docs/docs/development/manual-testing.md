@@ -4,9 +4,9 @@ sidebar_position: 2
 
 # Manual Test Runbook
 
-A hands-on checklist to verify a build end-to-end: deploy one app per **runtime**, then flip the main **config** axes and re-check. It complements the [Testing Guide](testing.md) (which maps features to automated coverage) — use this before cutting a release, when bringing up a new environment, or to reproduce a runtime/config bug.
+A hands-on checklist to verify a build end-to-end: deploy one app per **runtime**, then flip the main **config** axes and re-check. It complements the [Testing Guide](testing.md) (which maps features to automated coverage). Use this before cutting a release, when bringing up a new environment, or to reproduce a runtime/config bug.
 
-Everything here targets a local [`make dev`](../getting-started/local-dev.md) cluster and the `POST /v1/deploy` HTTP path. The MCP `deploy_artifact` tool drives the exact same code, so any case can be run through an agent instead — see [First deployment](../getting-started/first-deployment.md).
+Everything here targets a local [`make dev`](../getting-started/local-dev.md) cluster and the `POST /v1/deploy` HTTP path. The MCP `deploy_artifact` tool drives the exact same code, so any case can be run through an agent instead; see [First deployment](../getting-started/first-deployment.md).
 
 ## 0. Prerequisites
 
@@ -18,7 +18,7 @@ kubectl get pods -n vibed-system           # all Running/Ready
 curl -s http://localhost:8080/v1/apps      # → {"items":[]}  (empty list is fine)
 ```
 
-Paste this helper once — every case below uses it to tar a source dir and deploy it:
+Paste this helper once; every case below uses it to tar a source dir and deploy it:
 
 ```bash
 mkdir -p ~/vibed-test && cd ~/vibed-test
@@ -31,10 +31,10 @@ deploy() {  # deploy <name> <dir>
 }
 ```
 
-A `200` response means the app reached `Ready` within the latency budget and its `url` is live. A `202` with a `status_url` took a slow path — poll `GET /v1/apps/{app_id}` until `phase: Ready`.
+A `200` response means the app reached `Ready` within the latency budget and its `url` is live. A `202` with a `status_url` took a slow path; poll `GET /v1/apps/{app_id}` until `phase: Ready`.
 
 :::note App port contract
-General-lane apps (Node/Python/Go/base) **must listen on `0.0.0.0:8080`** — that's the template's `http` port the router probes and routes to (the control API owns `:9000`). Fast-lane apps don't listen: `static-nginx` serves `/workspace`, and `workerd` runs your `fetch` handler.
+General-lane apps (Node/Python/Go/base) **must listen on `0.0.0.0:8080`**: that's the template's `http` port the router probes and routes to (the control API owns `:9000`). Fast-lane apps don't listen: `static-nginx` serves `/workspace`, and `workerd` runs your `fetch` handler.
 :::
 
 ## 1. Runtime matrix
@@ -55,17 +55,17 @@ The classifier reads only file *names* and `package.json` top-level keys, first 
 :::tip Static, JS and Python work out of the box
 `make install-vibed` (and `make dev`) bring up the `static-nginx`, `node-24` and
 `python-313` pools, so those deploy with no extra step. The general lane runs as
-normal pods on Kind — `runtime.defaultClass` is empty, so no Kata/nested virt is
+normal pods on Kind: `runtime.defaultClass` is empty, so no Kata/nested virt is
 needed.
 
 The heavier `go-123` and `base-al2023` pools stay opt-in. Deploying a source that
 needs a pool you haven't enabled returns `Phase=Failed, Reason=TemplateMissing`
-with the explanation in the app's `message` field — **that message is the only
+with the explanation in the app's `message` field. **That message is the only
 diagnosis, because an app that never gets a pod has no logs**. Enable the pool
 (below), wait ~10s for the controller to re-validate, then redeploy.
 :::
 
-### 1a. static-nginx — fast, always on
+### 1a. static-nginx (fast, always on)
 
 ```bash
 mkdir -p static && printf '<!doctype html><h1>hello static</h1>' > static/index.html
@@ -81,7 +81,7 @@ curl http://<label>.localhost/                      # → the HTML (label from t
 
 `*.localhost` resolves to `127.0.0.1` in Chrome/Firefox; in Safari add an `/etc/hosts` entry or use Chrome.
 
-### 1b. node-24 — general
+### 1b. node-24 (general)
 
 ```bash
 # node-24 is on by default (make install-vibed); `make enable-node-pool`
@@ -97,7 +97,7 @@ deploy hello-node node
 curl http://<label>.localhost/                       # → hello from node
 ```
 
-### 1c. python-313 — general
+### 1c. python-313 (general)
 
 `requirements.txt` (even empty) is what routes to Python; `app.py` is the entrypoint.
 
@@ -117,7 +117,7 @@ deploy hello-python py
 curl http://<label>.localhost/                       # → hello from python
 ```
 
-### 1d. go-123 — general
+### 1d. go-123 (general)
 
 ```bash
 make enable-go-pool
@@ -143,9 +143,9 @@ deploy hello-go goapp
 curl http://<label>.localhost/                       # → hello from go
 ```
 
-The template runs `go run .` on first request-free boot, so the first deploy may take the `202` slow path — poll until `Ready`.
+The template runs `go run .` on first request-free boot, so the first deploy may take the `202` slow path; poll until `Ready`.
 
-### 1e. base-al2023 — general (fallback)
+### 1e. base-al2023 (general, fallback)
 
 A root `Dockerfile` routes here (it's a start-command *hint*, never built). The kitchen-sink entrypoint then autodetects `app.py`:
 
@@ -165,7 +165,7 @@ deploy hello-base base
 curl http://<label>.localhost/                       # → hello from base
 ```
 
-### 1f. workerd — fast (optional)
+### 1f. workerd (fast, optional)
 
 Off by default (`workerd.enabled=false` in `values-kind.yaml`). Enable it, then deploy a worker:
 
@@ -192,15 +192,15 @@ curl -sS -X POST http://localhost:8080/v1/deploy \
 
 ## 2. Config matrix
 
-### 2a. Metadata store — `store.backend`
+### 2a. Metadata store: `store.backend`
 
 App metadata (artifact records, version history, users, share links, audit log) lives in the metadata store, separate from the source-blob store. Only `sqlite` implements the full surface:
 
 | Backend | Artifacts / versions | Users | Share links | Notes |
 | --- | --- | --- | --- | --- |
 | `sqlite` (default) | ✅ | ✅ | ✅ | Durable on the control-plane PVC. Run the full pass here. |
-| `configmap` | ✅ | — | — | State in a ConfigMap; user/share-link routes are unavailable. |
-| `memory` | ✅ | — | — | Ephemeral; wiped on controller restart. Smoke tests only. |
+| `configmap` | ✅ | n/a | n/a | State in a ConfigMap; user/share-link routes are unavailable. |
+| `memory` | ✅ | n/a | n/a | Ephemeral; wiped on controller restart. Smoke tests only. |
 
 Switch and re-verify:
 
@@ -212,29 +212,29 @@ kubectl rollout restart -n vibed-system deploy/vibed-controller
 
 On `configmap`/`memory`, confirm deploys still work and the user/share-link endpoints **degrade gracefully** (not `500`). On `sqlite`, run the full §3 dashboard pass.
 
-### 2b. Source-blob store — `storage.tarball.backend`
+### 2b. Source-blob store: `storage.tarball.backend`
 
 Where the deploy tarball is kept for `vibed-agent` to pull:
 
 | Backend | Reaches the sandbox via | Use when |
 | --- | --- | --- |
-| `served` (default) | in-cluster PVC URL over cluster DNS | dev only — sandboxes run `Unmanaged` with normal DNS |
-| `s3` | pre-signed URL over public egress | production — the only backend that survives a locked-down sandbox NetworkPolicy |
+| `served` (default) | in-cluster PVC URL over cluster DNS | dev only; sandboxes run `Unmanaged` with normal DNS |
+| `s3` | pre-signed URL over public egress | production; the only backend that survives a locked-down sandbox NetworkPolicy |
 
-`served` is correct for `make dev`. To exercise `s3` locally, point it at MinIO (see [Storage](../configuration/storage.md)) and redeploy any runtime from §1 — the app should still reach `Ready`, now pulling from a pre-signed URL. Picking `served` under a restrictive NetworkPolicy is the classic failure: the agent can't resolve cluster DNS and the app never leaves `Pending`.
+`served` is correct for `make dev`. To exercise `s3` locally, point it at MinIO (see [Storage](../configuration/storage.md)) and redeploy any runtime from §1; the app should still reach `Ready`, now pulling from a pre-signed URL. Picking `served` under a restrictive NetworkPolicy is the classic failure: the agent can't resolve cluster DNS and the app never leaves `Pending`.
 
 ## 3. Dashboard regression pass
 
-Open `http://localhost:8080/` and confirm the `/v1` data-plane surfaces populate — each of these regressed when the dashboard still called legacy artifact endpoints with `/v1` app IDs:
+Open `http://localhost:8080/` and confirm the `/v1` data-plane surfaces populate; each of these regressed when the dashboard still called legacy artifact endpoints with `/v1` app IDs:
 
-- **Metrics** — the Deploy Success Rate, Active Artifacts, and MCP Tool Usage panels show data (dashboard + Grafana) after a few deploys.
-- **Live logs** — open an app → **Logs** streams (not "not yet available").
-- **Versions + rollback** — redeploy one app twice → **Versions** lists `v1`/`v2` → **Rollback** to `v1` restores that source.
-- **Share links** — create a password-protected link → open it in a private window → it prompts for the password → resolves to the app URL → **Revoke** → the link then 404s.
+- **Metrics**: the Deploy Success Rate, Active Artifacts, and MCP Tool Usage panels show data (dashboard + Grafana) after a few deploys.
+- **Live logs**: open an app → **Logs** streams (not "not yet available").
+- **Versions + rollback**: redeploy one app twice → **Versions** lists `v1`/`v2` → **Rollback** to `v1` restores that source.
+- **Share links**: create a password-protected link → open it in a private window → it prompts for the password → resolves to the app URL → **Revoke** → the link then 404s.
 
 ## 4. Failure modes
 
-Expected errors — trigger each once and confirm the message, since these are the first-line diagnostics:
+Expected errors: trigger each once and confirm the message, since these are the first-line diagnostics:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |

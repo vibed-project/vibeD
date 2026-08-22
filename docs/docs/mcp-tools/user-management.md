@@ -6,7 +6,7 @@ sidebar_position: 16
 
 Four MCP tools expose vibeD's user and department registry so an admin agent can
 inspect who can deploy and how they are grouped. These are read/list tools plus
-one department creator — vibeD does not create or delete users through MCP.
+one department creator; vibeD does not create or delete users through MCP.
 
 :::note Requires a user store backend
 These tools are only registered when the configured [`store` backend](../configuration/config-reference.md) implements user persistence. The bundled `sqlite` backend does; the `configmap` (and in-memory) backends do **not**. With a non-user store the four tools are simply absent from the MCP tool list. An out-of-tree store that implements the same interface enables them too.

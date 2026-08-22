@@ -4,9 +4,9 @@ sidebar_position: 5
 
 # Custom Base Images (BYO)
 
-vibeD ships a base image per language slot (`node-24`, `python-313`, `go-123`, `base-al2023`, `static-nginx`). You can replace any of them with **your own** image — for example a hardened, CVE-scanned, or internally-blessed base — point vibeD at it, and vibeD will **validate** it before routing real traffic to it.
+vibeD ships a base image per language slot (`node-24`, `python-313`, `go-123`, `base-al2023`, `static-nginx`). You can replace any of them with **your own** image (for example a hardened, CVE-scanned, or internally-blessed base), point vibeD at it, and vibeD will **validate** it before routing real traffic to it.
 
-You don't add new *languages* this way; you swap the image that backs an existing language slot. The classifier still routes (e.g.) Node apps to the `node-24` slot — your image just *is* `node-24` now.
+You don't add new *languages* this way; you swap the image that backs an existing language slot. The classifier still routes (e.g.) Node apps to the `node-24` slot; your image just *is* `node-24` now.
 
 ## How vibeD validates an image
 
@@ -14,7 +14,7 @@ When you register a custom image, the controller boot-checks it against a contra
 
 1. The image's `vibed-agent` answers `GET /info` on `:9000` (it embeds and runs the agent).
 2. The image declares the language the slot expects (e.g. a `node-24` image must declare `node`).
-3. The declared **runtime probe** actually succeeds (e.g. `node --version` exits 0) — proving the runtime is really present.
+3. The declared **runtime probe** actually succeeds (e.g. `node --version` exits 0), proving the runtime is really present.
 
 If validation fails, apps routed to that slot go **`Failed`** with a `TemplateInvalid` condition and the exact reason (wrong language, missing runtime, no agent), instead of silently breaking. Slots not yet validated are allowed through (the validator re-runs every 2 minutes).
 

@@ -75,15 +75,15 @@ Kubernetes when the app is deleted, so the GC no longer drives their removal.
 It is now a `SandboxClaim`-orphan backstop only: it reaps a `SandboxClaim`
 whose owning `VibedApp` is gone and whose owner-ref cascade did not fire, once
 the claim is older than `gc.maxAge`. `gc.enabled`, `gc.interval`, `gc.maxAge`,
-and `gc.dryRun` are unchanged — see
+and `gc.dryRun` are unchanged; see
 [Configuration Reference](./configuration/config-reference.md#gc).
 
 ### One-time cleanup of pre-v0.6 debris
 
 Because the orchestrator is gone, nothing stamps `vibed.dev/artifact-id` any
 more, and the GC does **not** sweep resources that carry it. If you are
-upgrading from `<= v0.5`, the legacy deployer's leftovers — build Jobs, deploy
-ConfigMaps, Deployments, and `Sandbox` CRs — are not reclaimed automatically.
+upgrading from `<= v0.5`, the legacy deployer's leftovers (build Jobs, deploy
+ConfigMaps, Deployments, and `Sandbox` CRs) are not reclaimed automatically.
 They are inert (nothing reconciles them), but they consume quota and clutter
 the namespace, so clean them up once after upgrading:
 
@@ -103,7 +103,7 @@ Re-run each command with `delete` in place of `get` once the output looks
 right. Do this only after every app has been redeployed through `/v1`.
 
 :::caution Keep the artifact store
-The `app.kubernetes.io/component!=artifact-store` selector matters — those
+The `app.kubernetes.io/component!=artifact-store` selector matters: those
 ConfigMaps hold artifact metadata, not deploy state. Deleting them loses app
 history.
 :::
