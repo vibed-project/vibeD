@@ -71,6 +71,35 @@ const config = {
       },
       footer: {
         style: 'dark',
+        links: [
+          {
+            title: 'Docs',
+            items: [
+              {label: 'Overview', to: '/docs/'},
+              {label: 'Installation', to: '/docs/getting-started/installation'},
+              {label: 'First deployment', to: '/docs/getting-started/first-deployment'},
+              {label: 'HTTP API', to: '/docs/reference/http-api'},
+            ],
+          },
+          {
+            title: 'More',
+            items: [
+              {label: 'Blog', to: '/blog'},
+              {label: 'Releases', href: 'https://github.com/vibed-project/vibeD/releases'},
+              {label: 'GitHub', href: 'https://github.com/vibed-project/vibeD'},
+            ],
+          },
+          {
+            // The sibling projects. Each of their sites links back here, so the
+            // four are reachable from any one of them.
+            title: 'The stack',
+            items: [
+              {label: 'hiveD (control plane)', href: 'https://vibed-project.github.io/hiveD/'},
+              {label: 'mindD (memory)', href: 'https://vibed-project.github.io/mindD/'},
+              {label: 'routeD (model routing)', href: 'https://vibed-project.github.io/routeD/'},
+            ],
+          },
+        ],
         copyright: `Copyright ${new Date().getFullYear()} vibeD. Built with Docusaurus.`,
       },
       prism: {
