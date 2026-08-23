@@ -57,7 +57,7 @@ why:
 ```
 
 **Read them before retrying.** A deploy that fails this early never gets a pod,
-so `get_logs` returns nothing — and most such failures are configuration gaps
+so `get_logs` returns nothing, and most such failures are configuration gaps
 that will fail again identically. `get_artifact_status` surfaces the same text
 in its `error` field.
 
@@ -66,7 +66,7 @@ in its `error` field.
 1. **Validates** the name (DNS-safe, unique).
 2. **Stores** the source tarball to the configured [source store](../configuration/storage.md).
 3. **Classifies** the source into a [lane and template](../concepts/lanes-and-templates.md).
-4. **Creates** a [`VibedApp`](../concepts/app-lifecycle.md) and the controller **claims a warm sandbox** and injects the source — no container build on the deploy path.
+4. **Creates** a [`VibedApp`](../concepts/app-lifecycle.md) and the controller **claims a warm sandbox** and injects the source, with no container build on the deploy path.
 5. **Returns** the access URL once the app reaches `Ready` (or a `status_url` to poll if it took a slow path).
 
 See [App lifecycle](../concepts/app-lifecycle.md) for the phases the app moves through.

@@ -44,4 +44,4 @@ Returns the full artifact object:
 
 The status reflects the app's [phase](../concepts/app-lifecycle.md) (`Pending` → `Claiming` → `Starting` → `Ready`, or `Failed`) along with its URL and the bound sandbox.
 
-Note: environment variables and secret references are never included in the response — secret values are never exposed.
+Note: environment variables and secret references are never included in the response, because secret values are never exposed.

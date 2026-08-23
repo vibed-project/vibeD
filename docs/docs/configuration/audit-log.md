@@ -4,7 +4,7 @@ sidebar_position: 8
 
 # Audit Trail
 
-vibeD records mutating actions to an append-only audit trail so you can answer "who changed what, when" — a baseline enterprise-governance requirement. The trail is always on; what differs is whether it persists (see [Storage](#storage)) and whether a failed write blocks the action (see [Fail-closed mode](#fail-closed-mode)).
+vibeD records mutating actions to an append-only audit trail so you can answer "who changed what, when", a baseline enterprise-governance requirement. The trail is always on; what differs is whether it persists (see [Storage](#storage)) and whether a failed write blocks the action (see [Fail-closed mode](#fail-closed-mode)).
 
 ## What's recorded
 
@@ -42,13 +42,13 @@ Beyond the always-present block, each event carries optional **enrichment fields
 | `before`          | Prior state, for a governance diff.            | An out-of-tree recorder/store.                   |
 | `after`           | New state, for a governance diff.              | An out-of-tree recorder/store.                   |
 
-The core populates `tenant_id` on every mutating action and `source_hash` on deploys — a hash of the exact tarball that was injected into the sandbox, so an event ties an action to the precise bytes that ran. The remaining fields (`session_id`, `policy_decision`, `before`, `after`) are left empty by the core; they exist so an out-of-tree recorder or audit store (for example one that adds tamper-evidence or SIEM export) can enrich events without changing the recorder interface.
+The core populates `tenant_id` on every mutating action and `source_hash` on deploys, a hash of the exact tarball that was injected into the sandbox, so an event ties an action to the precise bytes that ran. The remaining fields (`session_id`, `policy_decision`, `before`, `after`) are left empty by the core; they exist so an out-of-tree recorder or audit store (for example one that adds tamper-evidence or SIEM export) can enrich events without changing the recorder interface.
 
 Enrichment is carried on the request context: a caller attaches `audit.Fields` to the context, and every event recorded under that context merges the non-empty values. Empty fields are ignored, so partial enrichment is fine.
 
 ## Querying it
 
-Admins read the trail over the API (the `admin` role is required — non-admins get `403`):
+Admins read the trail over the API (the `admin` role is required; non-admins get `403`):
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -70,11 +70,11 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 ] }
 ```
 
-All filters (`actor`, `action`, `app`, `limit`) are optional; results come back newest-first. Filtering is on the always-present fields only — enrichment fields are returned but not queryable.
+All filters (`actor`, `action`, `app`, `limit`) are optional; results come back newest-first. Filtering is on the always-present fields only; enrichment fields are returned but not queryable.
 
 ## Storage
 
-The audit trail is written to a **pluggable audit store** — the same store backend that holds the rest of vibeD's state:
+The audit trail is written to a **pluggable audit store**, the same store backend that holds the rest of vibeD's state:
 
 - **SQLite backend** (`store.backend: sqlite`): events persist in the same database as everything else and survive restarts. Enrichment fields are persisted alongside the core fields.
 - **Memory / ConfigMap backends**: the trail is kept **in memory only** and is lost on restart (vibeD logs a warning at startup). The ConfigMap backend does not implement the audit store, so the server falls back to an in-memory audit log there. Use SQLite for a durable audit trail.
@@ -97,5 +97,5 @@ audit:
 Fail-closed only affects the persistent store write. The Prometheus counter and structured log are updated on every event whether or not the store append succeeds, and a `nil` (unconfigured) recorder is a no-op that never blocks. Production `values.yaml` sets `failClosed: true`.
 
 :::note Egress denials
-Blocked outbound connections are logged separately by the egress proxy's authorizer (see [Egress Control](./egress-control.md)), not in this trail — they happen in a different process on the request hot path.
+Blocked outbound connections are logged separately by the egress proxy's authorizer (see [Egress Control](./egress-control.md)), not in this trail, because they happen in a different process on the request hot path.
 :::

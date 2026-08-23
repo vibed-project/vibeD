@@ -59,11 +59,11 @@ auth:
 - **Suspension is enforced:** setting a key's user record `status: suspended` revokes access (401). The change propagates within at most [`auth.identityCacheTTL`](config-reference.md#auth) (default 30s) on a warm cache, or immediately when the TTL is `0`. A role change is reflected on the same bound.
 
 :::note Static keys are resolved once at startup
-Static API-key secrets — literal values, `env:VAR`, and `file:/path` — are read **once at startup**. Rotating a key file or environment variable therefore takes effect only after a `vibed` restart. (The API-key user record still self-heals: provisioning is retried until it durably succeeds.)
+Static API-key secrets (literal values, `env:VAR`, and `file:/path`) are read **once at startup**. Rotating a key file or environment variable therefore takes effect only after a `vibed` restart. (The API-key user record still self-heals: provisioning is retried until it durably succeeds.)
 :::
 
 :::caution Upgrading to v0.4.4
-The canonical user ID for a static API key is now `apikey-<name>` everywhere — request identity, the provisioned user record, the role map, and **artifact ownership**. Before v0.4.4 the raw `name` was used for ownership, so artifacts deployed by a static-key user on an older version are owned under the bare `name` and won't match after upgrade. If you rely on static-key owner-scoping with pre-existing artifacts, re-key their ownership or redeploy. OIDC and no-auth users are unaffected.
+The canonical user ID for a static API key is now `apikey-<name>` everywhere: request identity, the provisioned user record, the role map, and **artifact ownership**. Before v0.4.4 the raw `name` was used for ownership, so artifacts deployed by a static-key user on an older version are owned under the bare `name` and won't match after upgrade. If you rely on static-key owner-scoping with pre-existing artifacts, re-key their ownership or redeploy. OIDC and no-auth users are unaffected.
 :::
 
 ### OIDC Mode
@@ -115,7 +115,7 @@ The external proxy (e.g., OAuth2 Proxy, Pomerium, or an API gateway) should:
 
 ### Custom Modes (Extensible Registry)
 
-Auth modes are a registry, not a fixed enum. The core registers `apikey`, `oauth`, and `oidc` from `init()`, and an out-of-tree Go module can register additional modes (for example a SAML SP or a bespoke JWT issuer) the same way — without patching the core. Set `auth.mode` to the registered name and vibeD resolves the provider at startup:
+Auth modes are a registry, not a fixed enum. The core registers `apikey`, `oauth`, and `oidc` from `init()`, and an out-of-tree Go module can register additional modes (for example a SAML SP or a bespoke JWT issuer) the same way, without patching the core. Set `auth.mode` to the registered name and vibeD resolves the provider at startup:
 
 ```yaml
 auth:
@@ -125,9 +125,9 @@ auth:
 
 An unknown `auth.mode` is rejected at startup with an error listing the registered modes, so a typo can never silently disable auth.
 
-Each mode is a **provider** that contributes a required token `Verifier` — checked on every authenticated request — and, optionally, a set of **public login routes**. The built-in bearer-only modes (`apikey`, `oauth`, `oidc`) contribute no routes. A mode whose login flow needs browser-facing endpoints (for example an SSO metadata document or an assertion-consumer / callback endpoint) declares them as routes, and vibeD mounts those routes **outside** the bearer-auth middleware. That is deliberate: a login route is how a caller obtains a session in the first place, so it cannot itself require one. Login routes must live on public paths — not under `/api`, `/v1`, `/mcp`, or `/internal/sources/`.
+Each mode is a **provider** that contributes a required token `Verifier`, checked on every authenticated request, and, optionally, a set of **public login routes**. The built-in bearer-only modes (`apikey`, `oauth`, `oidc`) contribute no routes. A mode whose login flow needs browser-facing endpoints (for example an SSO metadata document or an assertion-consumer / callback endpoint) declares them as routes, and vibeD mounts those routes **outside** the bearer-auth middleware. That is deliberate: a login route is how a caller obtains a session in the first place, so it cannot itself require one. Login routes must live on public paths, not under `/api`, `/v1`, `/mcp`, or `/internal/sources/`.
 
-Clients discover all of this at runtime through the public **`GET /api/auth`**, which reports `{enabled, mode, loginUrl}`. `loginUrl` is non-empty only for modes with a browser login flow, and the dashboard uses it to redirect to SSO rather than showing an API-key prompt that cannot work in that mode. A mode that mounts login routes should therefore also be reachable this way — see the [HTTP API reference](../reference/http-api.md#get-apiauth).
+Clients discover all of this at runtime through the public **`GET /api/auth`**, which reports `{enabled, mode, loginUrl}`. `loginUrl` is non-empty only for modes with a browser login flow, and the dashboard uses it to redirect to SSO rather than showing an API-key prompt that cannot work in that mode. A mode that mounts login routes should therefore also be reachable this way; see the [HTTP API reference](../reference/http-api.md#get-apiauth).
 
 See [Custom Auth Providers](../extending/auth-providers.md) for the extension surface, the exported types in `pkg/plugin`, and how to build a custom binary.
 
@@ -196,11 +196,11 @@ Do **not** use `autoTLS` in production. Use proper certificates from a trusted C
 In Kubernetes, TLS is typically terminated at the Ingress controller. In this case, disable TLS in vibeD and configure your Ingress:
 
 ```yaml
-# vibed.yaml — no TLS needed, Ingress handles it
+# vibed.yaml: no TLS needed, Ingress handles it
 auth:
   enabled: true
   mode: "apikey"
-  # tls not enabled — Ingress terminates TLS
+  # tls not enabled; Ingress terminates TLS
 ```
 
 ```yaml
@@ -291,6 +291,8 @@ When authentication is enabled, vibeD enforces per-user artifact isolation:
 When authentication is disabled, ownership checks are skipped and all users see all artifacts.
 
 ## Connecting MCP Clients
+
+Step-by-step client guides are under [How-Tos](../how-tos/overview.md). The Claude Desktop snippet below is the remote-connector shape; see [Connect Claude Desktop](../how-tos/connect-claude-desktop.md) for the `mcp-remote` variant that works with API keys and local installs.
 
 ### Claude Desktop
 

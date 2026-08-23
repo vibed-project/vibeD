@@ -67,7 +67,7 @@ The app's public URL is derived from a stable 12-character label hashed from `na
 
 ## Egress
 
-The per-app egress policy is default-deny. Only the hosts in `spec.egress.allowedHosts` — plus vibeD's own system hosts (e.g. the source store) — are reachable. Matching is on the CONNECT host / HTTP `Host` at the [egress authorizer](architecture.md) that fronts the per-connection Squid forward proxy. An empty list means the app has no external egress at all.
+The per-app egress policy is default-deny. Only the hosts in `spec.egress.allowedHosts`, plus vibeD's own system hosts (e.g. the source store), are reachable. Matching is on the CONNECT host / HTTP `Host` at the [egress authorizer](architecture.md) that fronts the per-connection Squid forward proxy. An empty list means the app has no external egress at all.
 
 ## Phases
 
@@ -111,16 +111,16 @@ vibeD reports two condition types on `status.conditions`, using the standard `me
 
 ## Suspend & resume
 
-`spec.suspended` is the declarative toggle the controller reconciles. Suspend is **release & re-materialize**: setting `spec.suspended=true` (or `POST /v1/apps/{app_id}/suspend`) deletes the `SandboxClaim` — returning the pod to the warm pool — parks the app in `Suspended`, and clears `podIP`/`routeTarget`. Clearing it (`POST /v1/apps/{app_id}/resume`) re-enters the normal `Claiming → Starting → Ready` machine, re-claiming a pod and re-injecting from the stored source.
+`spec.suspended` is the declarative toggle the controller reconciles. Suspend is **release & re-materialize**: setting `spec.suspended=true` (or `POST /v1/apps/{app_id}/suspend`) deletes the `SandboxClaim` (returning the pod to the warm pool), parks the app in `Suspended`, and clears `podIP`/`routeTarget`. Clearing it (`POST /v1/apps/{app_id}/resume`) re-enters the normal `Claiming → Starting → Ready` machine, re-claiming a pod and re-injecting from the stored source.
 
-In-memory and on-disk state is **not** preserved — appropriate for stateless web apps. Real Firecracker memory snapshots via `status.snapshotRef`, and automatic idle-TTL suspend driven by `spec.ttl`, remain future work.
+In-memory and on-disk state is **not** preserved, which is appropriate for stateless web apps. Real Firecracker memory snapshots via `status.snapshotRef`, and automatic idle-TTL suspend driven by `spec.ttl`, remain future work.
 
 ## Routing target
 
-`status.podIP` is the bound pod's IP — the controller uses it to probe and inject, but it is **not** the routing target because pod IPs change on restart. vibed-router proxies to `status.routeTarget` instead:
+`status.podIP` is the bound pod's IP; the controller uses it to probe and inject, but it is **not** the routing target because pod IPs change on restart. vibed-router proxies to `status.routeTarget` instead:
 
-- **general lane** — the cluster-DNS name of a per-app `Service` that re-selects the bound pod across restarts, so it survives pod-IP churn.
-- **fast lane (workerd)** — the worker's `host:port`.
+- **general lane**: the cluster-DNS name of a per-app `Service` that re-selects the bound pod across restarts, so it survives pod-IP churn.
+- **fast lane (workerd)**: the worker's `host:port`.
 
 When a sandbox pod is recreated, the `Service` follows it and the controller re-injects source, so the app self-heals without a route change. The router falls back to `podIP` when `routeTarget` is unset.
 

@@ -5,7 +5,7 @@ sidebar_position: 4
 # The deploy pipeline
 
 A deploy turns an uploaded source tarball into a running URL. This page walks the
-whole path — from the request to the point where the client gets a URL back —
+whole path, from the request to the point where the client gets a URL back,
 through the `vibed` control plane. Everything here happens in `internal/deploy`;
 the HTTP handler and the MCP `deploy_artifact` tool are thin wrappers that call the
 same `Deploy` service.
@@ -53,7 +53,7 @@ The steps below follow `Service.Deploy` in order.
 
 ### 1. Validate the app name and owner
 
-`Name` must be a DNS label — `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` — because it becomes
+`Name` must be a DNS label (`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`) because it becomes
 the `VibedApp` object name and part of the app URL. `Owner` is required. Both are
 rejected before any bytes are read.
 
@@ -62,20 +62,20 @@ rejected before any bytes are read.
 The request is resolved to a tenant (a namespace plus per-tenant limits). With no
 resolver configured, vibeD runs single-tenant: every request uses the server's
 default namespace (`vibed-apps`) with no per-tenant limits. A *named* tenant must
-carry its own namespace — vibeD refuses to fall back to the shared default, so one
+carry its own namespace: vibeD refuses to fall back to the shared default, so one
 tenant's apps never silently land next to another's.
 
 ### 3. Read, cap, and hash the source
 
 The tarball is read exactly once and capped at **50 MB** (`MaxTarballBytes`); an
 empty upload is rejected too. The same in-memory bytes are then reused for the
-classifier and the store — the source is never read twice.
+classifier and the store; the source is never read twice.
 
 vibeD computes a **sha256** of those exact bytes and attaches it to this deploy's
 audit context as the source provenance hash, so every audit event for the deploy
 records precisely which source produced it.
 
-### 4. Classify — the deterministic decision tree
+### 4. Classify: the deterministic decision tree
 
 If **both** `LaneOverride` and `TemplateOverride` are set, the classifier is
 skipped entirely. Otherwise the classifier runs and fills in whichever field the
@@ -84,7 +84,7 @@ field).
 
 The classifier is deterministic and does not build, install, or execute anything.
 It streams the gzipped tarball, reads **file names** (plus a few top-level keys of a
-root `package.json`), and applies a **9-rule decision tree — first match wins**. It
+root `package.json`), and applies a **9-rule decision tree, first match wins**. It
 must not buffer the whole archive and is bounded by the same 50 MB limit.
 
 The rules, in the priority order they are evaluated:
@@ -97,14 +97,14 @@ The rules, in the priority order they are evaluated:
 | 5 | Node with deps | any other root `package.json` | `general` | `node-24` |
 | 6 | Python | `requirements.txt` or `pyproject.toml` | `general` | `python-313` |
 | 7 | Go | `go.mod` | `general` | `go-123` |
-| 8 | Dockerfile | `Dockerfile` (used as a runtime hint — **not built**) | `general` | `base-al2023` |
+| 8 | Dockerfile | `Dockerfile` (used as a runtime hint, **not built**) | `general` | `base-al2023` |
 | 1 | Static only | only static asset extensions anywhere, at least one `.html`, and no server-signal marker | `fast` | `static-nginx` |
 | 9 | Fallback | unknown shape | `general` | `base-al2023` |
 
 A few things worth calling out:
 
 - The numbering is the stable **rule ID** surfaced on the decision (for logging and
-  support — "why did vibeD pick `python-313`?"), not the evaluation order. The table
+  support, for example "why did vibeD pick `python-313`?"), not the evaluation order. The table
   is listed top-to-bottom in the order the tree actually checks.
 - **Rule 1 (static only) is checked late**, after the marker rules, so a
   `package.json` sitting next to `index.html` still routes as Node (rule 5), not as
@@ -131,8 +131,8 @@ quota-gated.
 
 ### 6. Policy gate
 
-If a policy gate is configured, it is evaluated on **every** deploy — new *and*
-redeploy, since a redeploy can introduce a new violation — after classification and
+If a policy gate is configured, it is evaluated on **every** deploy (new *and*
+redeploy, since a redeploy can introduce a new violation) after classification and
 before anything is stored. The gate sees the tenant, owner, name, resolved
 lane/template, `AllowedHosts`, `Env`, the new-vs-redeploy flag, and the raw source.
 A denial is audited as `denied` and aborts the deploy.
@@ -203,7 +203,7 @@ From here the [`vibed-controller`](app-lifecycle.md) takes over: it reconciles t
 
 On success, vibeD records a `deploy` / `ok` audit event and a usage event
 (tenant, owner, app, namespace). If the auditor is **fail-closed** and the audit
-write fails, the API surfaces the error even though the CR already exists — the
+write fails, the API surfaces the error even though the CR already exists; the
 caller is told the action could not be durably recorded and should retry (deploy is
 idempotent) or alert an operator. See [Audit log](../configuration/audit-log.md).
 
@@ -218,7 +218,7 @@ roughly every 250 ms):
   with `Ready: false`. The API turns this into a **`202`**, and the client polls the
   app's status until it goes `Ready`.
 
-A timeout is **not** an error — it is the normal 202 path for a deploy that needs a
+A timeout is **not** an error; it is the normal 202 path for a deploy that needs a
 little longer to claim and warm its sandbox. The overall ceiling before a deploy is
 considered failed is `deployment.readyTimeout` in the
 [config](../configuration/config-reference.md).
@@ -228,14 +228,14 @@ considered failed is `deployment.readyTimeout` in the
 - **No image build.** No `docker build`, `buildah`, or push. The classifier selects
   a pre-built template and the controller claims a warm sandbox.
 - **No code execution during classify.** The classifier only reads file names and a
-  bounded slice of a root `package.json` — it never runs user code.
+  bounded slice of a root `package.json`; it never runs user code.
 - **No double-read of the source.** The tarball is read and capped once; those bytes
   feed both the classifier and the store.
 
 ## Related
 
-- [Architecture](architecture.md) — the six binaries and how they fit together.
-- [App lifecycle](app-lifecycle.md) — what the controller does with the `VibedApp`.
-- [Lanes & templates](lanes-and-templates.md) — the runtimes behind each template.
-- [The `deploy_artifact` tool](../mcp-tools/deploy-artifact.md) — the MCP entry point.
-- [Storage](../configuration/storage.md) — the `served` vs `s3` tarball backends.
+- [Architecture](architecture.md): the six binaries and how they fit together.
+- [App lifecycle](app-lifecycle.md): what the controller does with the `VibedApp`.
+- [Lanes & templates](lanes-and-templates.md): the runtimes behind each template.
+- [The `deploy_artifact` tool](../mcp-tools/deploy-artifact.md): the MCP entry point.
+- [Storage](../configuration/storage.md): the `served` vs `s3` tarball backends.

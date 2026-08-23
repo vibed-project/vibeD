@@ -4,20 +4,20 @@ sidebar_position: 2
 
 # Lanes & Templates
 
-vibeD exposes a uniform API. You don't pick a runtime — a deterministic **classifier** inspects the uploaded source and routes it to a **lane** and a **template**. You *can* override either via `runtime.lane` / `runtime.template` in the deploy metadata, but that's the exception.
+vibeD exposes a uniform API. You don't pick a runtime; a deterministic **classifier** inspects the uploaded source and routes it to a **lane** and a **template**. You *can* override either via `runtime.lane` / `runtime.template` in the deploy metadata, but that's the exception.
 
 ## Lanes
 
 | Lane | Isolation | Used for |
 |---|---|---|
 | **fast** | V8 isolates (workerd) or static nginx | Static sites and small trusted-language workers. Sub-second cold start. |
-| **general** | Kata **microVM** (QEMU or Firecracker) | Arbitrary code — Node, Python, Go, or any image. Hardware-grade isolation. |
+| **general** | Kata **microVM** (QEMU or Firecracker) | Arbitrary code: Node, Python, Go, or any image. Hardware-grade isolation. |
 
 The fast lane has two flavors: `static-nginx` (a sandbox pod serving `/workspace`) and `workerd` (V8 isolates managed by a loader). The general lane always runs on a Kata microVM sandbox.
 
 ## The classifier
 
-`internal/classifier` is a pure, deterministic function that reads only file *names* and `package.json` top-level keys — it never installs anything and runs in well under 50 ms. Rules run in order, first match wins:
+`internal/classifier` is a pure, deterministic function that reads only file *names* and `package.json` top-level keys; it never installs anything and runs in well under 50 ms. Rules run in order, first match wins:
 
 1. **No server-side code** (only `.html`/`.css`/`.js`/images, no `package.json`/`requirements.txt`/`Dockerfile`) → **fast**, `static-nginx`.
 2. **`package.json` with only browser deps + a `build` script** → build asynchronously, serve the output from `static-nginx`.
@@ -48,4 +48,4 @@ The shipped template set:
 
 ## Source injection, not image builds
 
-The deploy path never builds an image. The user's source is a gzipped tarball; `vibed-agent` extracts it into `/workspace` inside a pre-booted sandbox and starts the process. New runtime/dependency combinations are handled by an **async template builder** that refreshes the warm pool out of band — it never blocks a user-visible deploy.
+The deploy path never builds an image. The user's source is a gzipped tarball; `vibed-agent` extracts it into `/workspace` inside a pre-booted sandbox and starts the process. New runtime/dependency combinations are handled by an **async template builder** that refreshes the warm pool out of band; it never blocks a user-visible deploy.

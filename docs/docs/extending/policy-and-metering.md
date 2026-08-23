@@ -7,22 +7,22 @@ sidebar_position: 1
 vibeD exposes two seams on the deploy path so operators and integrators can plug in
 governance and usage accounting **without forking the core**:
 
-- **`PolicyGate`** — a deploy-time decision hook. It runs after the classifier picks
+- **`PolicyGate`**: a deploy-time decision hook. It runs after the classifier picks
   a lane and template and **before** the `VibedApp` is created, and may reject the deploy.
-- **`MeterSink`** — a usage-event hook. It records `deploy`/`delete` events from the
+- **`MeterSink`**: a usage-event hook. It records `deploy`/`delete` events from the
   server and `app.ready`/`app.stopped` lifecycle transitions from the controller.
 
 Both are ordinary Go extensibility: you build your **own** out-of-tree module, implement the
 interface, register it from an `init()`, and start the server through `server.Main()` (see
 [Building the binary](#building-the-binary)). Nothing here is coupled to a specific
-implementation — the core ships a neutral default for each seam (no gate; a Prometheus
+implementation; the core ships a neutral default for each seam (no gate; a Prometheus
 meter).
 
 The exported types live in package
 [`github.com/vibed-project/vibeD/pkg/plugin`](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/plugin).
 `pkg/plugin` re-exports the internal registry interfaces as **type aliases**, so a type in
-your module that satisfies `plugin.PolicyGate` also satisfies the internal interface — no
-adapter needed.
+your module that satisfies `plugin.PolicyGate` also satisfies the internal interface, so no
+adapter is needed.
 
 :::info Both seams are single-slot
 There is at most **one** registered gate and **one** registered meter sink per process.
@@ -32,8 +32,8 @@ meter sinks with [`TeeMeterSinks`](#composing-sinks) instead of registering twic
 
 ## PolicyGate
 
-A `PolicyGate` evaluates every deploy — **new apps and redeploys alike**, since a redeploy
-can introduce a new violation — after classification and before anything is stored or created.
+A `PolicyGate` evaluates every deploy (**new apps and redeploys alike**, since a redeploy
+can introduce a new violation) after classification and before anything is stored or created.
 Returning a denial aborts the deploy and the API responds `403 Forbidden`; nothing is
 persisted.
 
@@ -135,7 +135,7 @@ func main() { server.Main() }
 :::info `Source` is gzip'd
 `PolicyInput.Source` is the raw gzip'd tarball. For byte-pattern checks you can scan it as
 shown; for path- or file-content policies, decompress and walk the tar entries yourself.
-Treat the slice as borrowed — copy anything you need to keep.
+Treat the slice as borrowed and copy anything you need to keep.
 :::
 
 ## MeterSink
@@ -261,8 +261,8 @@ A build that uses either seam is an ordinary Go module that depends on
 GOTOOLCHAIN=auto GO111MODULE=on go build ./...
 ```
 
-Package `github.com/vibed-project/vibeD/pkg/server` exposes the full entrypoint —
-`server.Main()`, `server.Run(cfg, logger)`, `server.LoadConfig(path)`, and
-`server.NewLogger(cfg)` — and `pkg/plugin` re-exports the other registerable seams (stores,
+Package `github.com/vibed-project/vibeD/pkg/server` exposes the full entrypoint
+(`server.Main()`, `server.Run(cfg, logger)`, `server.LoadConfig(path)`, and
+`server.NewLogger(cfg)`), and `pkg/plugin` re-exports the other registerable seams (stores,
 auth providers, tenancy, secret schemes, feature-gating) the same way as the two documented
 here.

@@ -1,0 +1,92 @@
+name: Docs preview
+
+# Build the Docusaurus site for every pull request that touches docs/ and
+# attach the result as a downloadable artifact, so reviewers can check the
+# rendered pages out locally before merge. ci.yaml deliberately ignores
+# docs/**, and deploy.yml only publishes from main, so without this a docs
+# PR would get no build at all — not even the broken-link check that
+# `onBrokenLinks: 'throw'` provides.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs-preview.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Docusaurus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install dependencies
+        working-directory: docs
+        run: npm ci
+
+      - name: Build website
+        working-directory: docs
+        run: npm run build
+
+      - name: Upload preview artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-preview-pr${{ github.event.pull_request.number }}
+          path: docs/build
+          retention-days: 14
+          if-no-files-found: error
+
+  # Leave (or update) one comment on the PR pointing at the artifact. Runs in
+  # its own job so the build job keeps a read-only token; this job only needs
+  # to write PR comments. Skipped for forks, whose PRs get a read-only token.
+  comment:
+    name: Comment preview link
+    needs: build
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- docs-preview -->';
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request.number;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              marker,
+              '### 📘 Docs preview built',
+              '',
+              `The Docusaurus site for ${context.sha.slice(0, 7)} built cleanly (broken-link check passed).`,
+              '',
+              `**Download:** [docs-preview-pr${pr}](${runUrl}#artifacts) → unzip, then:`,
+              '',
+              '```bash',
+              'npx -y serve docs-preview',
+              '```',
+              '',
+              '_Updated automatically on every push to this PR._',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number: pr, per_page: 100 });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: pr, body });
+            }

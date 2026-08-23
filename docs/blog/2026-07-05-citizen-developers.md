@@ -51,7 +51,7 @@ See [quotas](/docs/configuration/quotas).
 
 ## 5. A record of what happened
 
-Governance means being able to answer "who deployed that, and when?" vibeD keeps an **append-only audit trail** of the mutating actions — deploy, update, rollback, delete — with the actor, the target, and the outcome. It's the baseline you need when a security or compliance team asks how an app got there.
+Governance means being able to answer "who deployed that, and when?" vibeD keeps an **append-only audit trail** of the mutating actions (deploy, update, rollback, delete) with the actor, the target, and the outcome. It's the baseline you need when a security or compliance team asks how an app got there.
 
 See [the audit log](/docs/configuration/audit-log).
 

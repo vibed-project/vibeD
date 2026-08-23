@@ -21,7 +21,9 @@ vibeD speaks **HTTP streamable** MCP at `/mcp`. Bridge Claude Desktop to it with
 }
 ```
 
-Port 8080 is the host port kind's `extraPortMappings` bridges to vibeD's `/mcp` endpoint — no `kubectl port-forward` needed (see [local dev](local-dev.md) for the full bridge table). Fully quit and reopen Claude Desktop. With auth disabled (dev default) no token is needed.
+Port 8080 is the host port kind's `extraPortMappings` bridges to vibeD's `/mcp` endpoint, so no `kubectl port-forward` is needed (see [local dev](local-dev.md) for the full bridge table). Fully quit and reopen Claude Desktop. With auth disabled (dev default) no token is needed.
+
+Using a different agent? The [How-Tos](../how-tos/overview.md) cover [Claude Code](../how-tos/connect-claude-code.md) and [pi](../how-tos/connect-pi.md), plus the authenticated / production variants for Claude Desktop.
 
 Then ask Claude to deploy something:
 
@@ -31,7 +33,7 @@ Claude calls `deploy_artifact`; vibeD classifies the source, claims a warm sandb
 
 ## Connect Goose (MCP)
 
-[Goose](https://block.github.io/goose/) speaks MCP natively, so it connects to vibeD's `/mcp` endpoint directly as a **Streamable HTTP** extension — no `mcp-remote` bridge needed.
+[Goose](https://block.github.io/goose/) speaks MCP natively, so it connects to vibeD's `/mcp` endpoint directly as a **Streamable HTTP** extension, with no `mcp-remote` bridge needed.
 
 Interactively:
 
@@ -61,7 +63,7 @@ If you've enabled auth on the vibeD API, pass the token as a header (dev install
       Authorization: "Bearer <your-token>"
 ```
 
-Then start a session and ask Goose to deploy — it calls the same `deploy_artifact` tool:
+Then start a session and ask Goose to deploy; it calls the same `deploy_artifact` tool:
 
 ```bash
 goose session
@@ -90,10 +92,10 @@ The classifier picks `static-nginx` automatically. To force a lane/template, add
 {"name":"hello","runtime":{"template":"static-nginx"}}
 ```
 
-A `200` means the app reached `Ready` within the latency budget and the `url` is live. A `202` with a `status_url` means it took a slow path — poll `GET /v1/apps/{app_id}` until `phase: Ready`.
+A `200` means the app reached `Ready` within the latency budget and the `url` is live. A `202` with a `status_url` means it took a slow path; poll `GET /v1/apps/{app_id}` until `phase: Ready`.
 
 :::tip Deploying Go or a custom base image
-The dev install runs the `static-nginx`, `node-24` and `python-313` warm pools, so static, JS and Python sources deploy with no extra step. The heavier `go-123` and `base-al2023` slots stay opt-in: deploying one of those first returns `Phase=Failed, Reason=TemplateMissing`, and the app's `message` field says which slot is missing — that message is the only diagnosis available, because an app that never gets a pod has no logs. Enable the slot with `make enable-go-pool` / `make enable-base-pool`; see [Local development → warm pools](local-dev.md#warm-pools).
+The dev install runs the `static-nginx`, `node-24` and `python-313` warm pools, so static, JS and Python sources deploy with no extra step. The heavier `go-123` and `base-al2023` slots stay opt-in: deploying one of those first returns `Phase=Failed, Reason=TemplateMissing`, and the app's `message` field says which slot is missing. That message is the only diagnosis available, because an app that never gets a pod has no logs. Enable the slot with `make enable-go-pool` / `make enable-base-pool`; see [Local development → warm pools](local-dev.md#warm-pools).
 :::
 
 ## See it

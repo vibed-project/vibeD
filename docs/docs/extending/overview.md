@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Extending vibeD
 
-vibeD's control plane is assembled from **registries**. Storage, authentication, tenancy, deploy-time policy, usage metering, and secret schemes are all looked up at startup by name, so you can supply your own implementation of any of them from a **separate Go module** — no fork, no patch, no rebuild of the core.
+vibeD's control plane is assembled from **registries**. Storage, authentication, tenancy, deploy-time policy, usage metering, and secret schemes are all looked up at startup by name, so you can supply your own implementation of any of them from a **separate Go module**: no fork, no patch, no rebuild of the core.
 
 The seam is the public [`pkg/plugin`](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/plugin) package plus the reusable [`pkg/server`](https://pkg.go.dev/github.com/vibed-project/vibeD/pkg/server) entry point. You blank-import your provider package into a tiny `main.go`, call `server.Main()`, and select your provider through the same `vibed.yaml` config keys everyone else uses.
 
@@ -19,7 +19,7 @@ Go forbids importing another module's `internal/` packages. vibeD keeps its regi
 type ArtifactStore = store.ArtifactStore // alias, not a new type
 ```
 
-Because these are aliases and not new types, a value in your module that satisfies `plugin.ArtifactStore` **is** the same type as `internal/store.ArtifactStore` — there is no adapter, no wrapper, and no reflection. Registration is a plain function call.
+Because these are aliases and not new types, a value in your module that satisfies `plugin.ArtifactStore` **is** the same type as `internal/store.ArtifactStore`. There is no adapter, no wrapper, and no reflection. Registration is a plain function call.
 
 ## The registration pattern
 
@@ -41,11 +41,11 @@ func init() {
 }
 ```
 
-`RegisterStoreBackend`, `RegisterAuthProvider`, and `RegisterSecretScheme` are keyed by a **name** and panic on a duplicate — you may register several. `RegisterTenantResolver`, `RegisterPolicyGate`, and `RegisterMeterSink` are **process-wide singletons** — the last registration wins, and the core installs a sensible default (single tenant, no policy gate, Prometheus meter) when none is registered.
+`RegisterStoreBackend`, `RegisterAuthProvider`, and `RegisterSecretScheme` are keyed by a **name** and panic on a duplicate; you may register several. `RegisterTenantResolver`, `RegisterPolicyGate`, and `RegisterMeterSink` are **process-wide singletons**: the last registration wins, and the core installs a sensible default (single tenant, no policy gate, Prometheus meter) when none is registered.
 
-## `pkg/server.Main` — the reusable entry point
+## `pkg/server.Main`: the reusable entry point
 
-`cmd/vibed` is a three-line `main()` that just calls `server.Main()`. All wiring — tracing, Kubernetes clients, storage, the artifact store, the deploy service, MCP, auth, and the HTTP server — lives in `pkg/server`, so a second binary never has to fork `main()`.
+`cmd/vibed` is a three-line `main()` that just calls `server.Main()`. All wiring (tracing, Kubernetes clients, storage, the artifact store, the deploy service, MCP, auth, and the HTTP server) lives in `pkg/server`, so a second binary never has to fork `main()`.
 
 `server.Main()` parses the `-config` and `-transport` flags, loads and validates the config, builds the logger, and runs the server. Two lower-level helpers are exported for custom bootstraps that need to do work before serving:
 
@@ -72,7 +72,7 @@ Each row is one registry. Register from your provider's `init()`; select it with
 
 A few notes on selection:
 
-- **Store backends** are chosen by the `store.backend` config value. A backend that also implements `UserStore`, `AuditStore`, or `ShareLinkStore` gets those capabilities feature-detected via type assertion — implement only what you need.
+- **Store backends** are chosen by the `store.backend` config value. A backend that also implements `UserStore`, `AuditStore`, or `ShareLinkStore` gets those capabilities feature-detected via type assertion, so implement only what you need.
 - **Auth providers** are chosen by `auth.mode`; the core ships `apikey` and `oidc`. A provider may contribute public HTTP `Route`s (e.g. a SAML SP's metadata/ACS endpoints) that are mounted outside the bearer-auth middleware.
 - **Secret schemes** resolve `"<scheme>:<ref>"` config values through `config.ResolveSecret`. The core handles `env:` and `file:`; register `vault:`, `kms:`, etc. yourself.
 - **Feature gating** is an editions/feature-flag seam. The default edition enables **all** features, so a plain build serves everything; an out-of-tree build may call `SetEntitlements` once at startup to select a different edition, and provider registrations can call `RequireFeature` to gate their own activation.
@@ -119,13 +119,13 @@ Your factory reads its settings from `plugin.StoreDeps.Options` (here, `d.Option
 
 Each extension point has its own page with the exact interfaces, the `Deps` bag its factory receives, and a worked example:
 
-- [Store backends](store-backends.md) — `ArtifactStore` and the optional `UserStore` / `AuditStore` / `ShareLinkStore` capabilities.
-- [Auth providers](auth-providers.md) — `TokenVerifier`, `TokenInfo`, and login `Route`s.
-- [Tenancy](tenancy.md) — resolving a request to a `Tenant` with its namespace and limits.
-- [Policy & metering](policy-and-metering.md) — the deploy-time `PolicyGate` and usage `MeterSink`.
-- [Secrets & features](secrets-and-features.md) — secret scheme resolvers and the entitlements seam.
+- [Store backends](store-backends.md): `ArtifactStore` and the optional `UserStore` / `AuditStore` / `ShareLinkStore` capabilities.
+- [Auth providers](auth-providers.md): `TokenVerifier`, `TokenInfo`, and login `Route`s.
+- [Tenancy](tenancy.md): resolving a request to a `Tenant` with its namespace and limits.
+- [Policy & metering](policy-and-metering.md): the deploy-time `PolicyGate` and usage `MeterSink`.
+- [Secrets & features](secrets-and-features.md): secret scheme resolvers and the entitlements seam.
 
 ## See also
 
-- [Configuration reference](../configuration/config-reference.md) — the `vibed.yaml` keys your providers are selected by.
-- [Architecture](../concepts/architecture.md) — where these seams sit in the control plane.
+- [Configuration reference](../configuration/config-reference.md): the `vibed.yaml` keys your providers are selected by.
+- [Architecture](../concepts/architecture.md): where these seams sit in the control plane.

@@ -44,4 +44,4 @@ List all version snapshots for a deployed artifact, ordered by version number. E
 }
 ```
 
-A new version is created on each `update_artifact` or `rollback_artifact` call. Versions are immutable snapshots — they are never modified after creation.
+A new version is created on each `update_artifact` or `rollback_artifact` call. Versions are immutable snapshots; they are never modified after creation.

@@ -22,7 +22,7 @@ storage:
 This works **only in dev**, where sandboxes run `Unmanaged` and keep normal cluster DNS. Once a restrictive NetworkPolicy is in place (production), sandboxes can't resolve cluster DNS or reach in-cluster Services, so `served` fails.
 
 :::tip
-Leave `publicBaseURL` empty so it defaults to the Service DNS name. Don't hardcode the Service ClusterIP — it changes on every reinstall and silently breaks the agent's source pull.
+Leave `publicBaseURL` empty so it defaults to the Service DNS name. Don't hardcode the Service ClusterIP; it changes on every reinstall and silently breaks the agent's source pull.
 :::
 
 ## `s3` (production)
@@ -44,11 +44,11 @@ Credentials come from the standard AWS SDK chain (env vars, IRSA, instance profi
 
 ## Why the dev/prod split exists
 
-agent-sandbox's network model gives sandbox pods no cluster-internal egress and no cluster DNS once a NetworkPolicy is enforced — by design, this is where enterprise data-egress controls live. A pre-signed S3 URL is a *public* (or external-egress-allowed) URL the sandbox can reach without touching the cluster network, which is exactly why `s3` is required in production. See the [production guide](../deployment/production-guide.md).
+agent-sandbox's network model gives sandbox pods no cluster-internal egress and no cluster DNS once a NetworkPolicy is enforced. By design, this is where enterprise data-egress controls live. A pre-signed S3 URL is a *public* (or external-egress-allowed) URL the sandbox can reach without touching the cluster network, which is exactly why `s3` is required in production. See the [production guide](../deployment/production-guide.md).
 
 ## Metadata store
 
-The source-blob store above holds the tarball bytes. App **metadata** — the artifact records, version history, users, share links, and the audit log — lives in a separate **metadata store**, selected by the top-level `store.backend` key (this is `store.*`, not `storage.tarball.*`).
+The source-blob store above holds the tarball bytes. App **metadata** (the artifact records, version history, users, share links, and the audit log) lives in a separate **metadata store**, selected by the top-level `store.backend` key (this is `store.*`, not `storage.tarball.*`).
 
 | Backend    | `store.backend` | Persistence                                   | Use                                  |
 | ---------- | --------------- | --------------------------------------------- | ------------------------------------ |

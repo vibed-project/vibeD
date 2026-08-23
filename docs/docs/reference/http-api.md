@@ -9,7 +9,7 @@ The `vibed` control plane serves an HTTP API under `/v1`, alongside the MCP endp
 The API is defined by an OpenAPI spec committed at [`api/openapi.yaml`](https://github.com/vibed-project/vibeD/blob/main/api/openapi.yaml). The Go server stubs are generated from it by oapi-codegen (`make openapi-gen`); the spec is the source of truth for routing. A browsable **Swagger UI** is served at [`/api/docs/`](#swagger-ui), and the raw spec at `/api/docs/openapi.yaml`.
 
 :::info Base URL
-Everything below is relative to the server's base URL — `http://localhost:8080` in local dev, or `https://vibed.<your-domain>` in production. Set it via [`server.baseURL`](../configuration/config-reference.md) so generated share links are correct.
+Everything below is relative to the server's base URL: `http://localhost:8080` in local dev, or `https://vibed.<your-domain>` in production. Set it via [`server.baseURL`](../configuration/config-reference.md) so generated share links are correct.
 :::
 
 ## Authentication
@@ -20,11 +20,11 @@ All `/v1/*` routes require a **bearer token** unless auth is disabled (dev only)
 Authorization: Bearer <token>
 ```
 
-The token is either an OIDC-issued JWT or a configured API key, depending on `auth.mode`. See [Authentication & HTTPS](../configuration/authentication.md) for how tokens are issued and validated. When `auth.enabled` is `false`, every request is treated as an admin — convenient for a local Kind cluster, never acceptable when the API is exposed.
+The token is either an OIDC-issued JWT or a configured API key, depending on `auth.mode`. See [Authentication & HTTPS](../configuration/authentication.md) for how tokens are issued and validated. When `auth.enabled` is `false`, every request is treated as an admin, which is convenient for a local Kind cluster, never acceptable when the API is exposed.
 
-Requests without a valid token get `401` with an [error body](#errors). The operational probes (`/healthz`, `/readyz`, `/metrics`) are **public** — they carry no auth so a load balancer or Prometheus can scrape them.
+Requests without a valid token get `401` with an [error body](#errors). The operational probes (`/healthz`, `/readyz`, `/metrics`) are **public**; they carry no auth so a load balancer or Prometheus can scrape them.
 
-Apps are **owner-scoped**: `GET /v1/apps` and the per-app routes only return apps whose `owner` matches the authenticated user. A caller asking for an app it doesn't own gets `404`, not `403` — vibeD deliberately does not confirm that another user's app exists. The governance audit trail ([`GET /v1/audit`](#get-v1audit)) is the one **admin-only** route.
+Apps are **owner-scoped**: `GET /v1/apps` and the per-app routes only return apps whose `owner` matches the authenticated user. A caller asking for an app it doesn't own gets `404`, not `403`; vibeD deliberately does not confirm that another user's app exists. The governance audit trail ([`GET /v1/audit`](#get-v1audit)) is the one **admin-only** route.
 
 ## Operational endpoints
 
@@ -34,7 +34,7 @@ These carry no auth and are meant for probes, load balancers, and metrics scrape
 | ------ | ---------- | -------------------------------- | ------- | ------- |
 | `GET`  | `/healthz` | Liveness probe                   | `200`   | `503`   |
 | `GET`  | `/readyz`  | Readiness probe                  | `200`   | `503`   |
-| `GET`  | `/metrics` | Prometheus exposition            | `200`   | —       |
+| `GET`  | `/metrics` | Prometheus exposition            | `200`   | none    |
 
 `/readyz` returns `503` until Kubernetes clients, storage, the artifact store, and the HTTP server have all come up. Wire it as your readiness probe so traffic isn't routed before dependencies are live. `/metrics` returns the standard Prometheus text format; see [Monitoring](../deployment/monitoring.md).
 
@@ -55,7 +55,7 @@ Deploy a new app. This is a **multipart upload** with two parts:
 | `source`   | file (binary)     | yes      | gzipped tarball of the source tree, **≤ 50 MB**   |
 | `metadata` | JSON string field | yes      | at least `name`; see [metadata](#deploy-metadata) |
 
-The classifier inspects the source file names to pick a lane and template; an explicit `runtime.lane` or `runtime.template` in `metadata` is an override. There is no container build on this path — the source is injected into a pre-booted warm sandbox.
+The classifier inspects the source file names to pick a lane and template; an explicit `runtime.lane` or `runtime.template` in `metadata` is an override. There is no container build on this path; the source is injected into a pre-booted warm sandbox.
 
 ```bash
 curl -X POST http://localhost:8080/v1/deploy \
@@ -64,7 +64,7 @@ curl -X POST http://localhost:8080/v1/deploy \
   -F 'source=@my-tool.tar.gz;type=application/gzip'
 ```
 
-**Responses.** The endpoint is bound by a latency contract — it returns within ~10 s with one of:
+**Responses.** The endpoint is bound by a latency contract: it returns within ~10 s with one of:
 
 | Status | Meaning                                                                        |
 | ------ | ------------------------------------------------------------------------------ |
@@ -87,7 +87,7 @@ The `200`/`202` body is a `DeployResponse`:
 }
 ```
 
-`app_id` is always present. On `200`, `url` is set and the app is live. On `202`, `status_url` points at [`GET /v1/apps/{id}`](#get-v1appsid) — poll it until `phase` reaches `Ready` or `Failed`.
+`app_id` is always present. On `200`, `url` is set and the app is live. On `202`, `status_url` points at [`GET /v1/apps/{id}`](#get-v1appsid); poll it until `phase` reaches `Ready` or `Failed`.
 
 #### Deploy metadata
 
@@ -117,11 +117,11 @@ List apps owned by the authenticated user. Optional query parameters page the re
 
 | Param    | Type | Default | Description                                                          |
 | -------- | ---- | ------- | -------------------------------------------------------------------- |
-| `limit`  | int  | —       | Max number of apps to return. Omitted (or `0`) returns **all** apps. |
+| `limit`  | int  | none    | Max number of apps to return. Omitted (or `0`) returns **all** apps. |
 | `offset` | int  | `0`     | Number of apps to skip before collecting the page.                   |
 
 ```bash
-# all apps (default — no params)
+# all apps (default, no params)
 curl -H "Authorization: Bearer $VIBED_TOKEN" http://localhost:8080/v1/apps
 
 # a page of 20, starting at the 40th
@@ -148,9 +148,9 @@ curl -H "Authorization: Bearer $VIBED_TOKEN" \
 }
 ```
 
-`items` is the requested page; `total` is the number of apps the caller can see **after** owner/authorization filtering — the full count, not the page size — so a client can tell whether more pages remain. With no `limit`/`offset` the whole list is returned and `total` equals the length of `items`. `phase` is one of `Pending`, `Claiming`, `Starting`, `Ready`, `Suspended`, `Failed` (see [App Lifecycle](../concepts/app-lifecycle.md)). Returns `401` without a token.
+`items` is the requested page; `total` is the number of apps the caller can see **after** owner/authorization filtering (the full count, not the page size), so a client can tell whether more pages remain. With no `limit`/`offset` the whole list is returned and `total` equals the length of `items`. `phase` is one of `Pending`, `Claiming`, `Starting`, `Ready`, `Suspended`, `Failed` (see [App Lifecycle](../concepts/app-lifecycle.md)). Returns `401` without a token.
 
-`reason` and `message` carry the app's Ready condition — a short machine-readable code and a human explanation. On a **failed** app this is often the only diagnosis available: a deploy that fails before a pod exists (no warm pool for the required template, say) produces no logs at all, so `GET /v1/apps/{id}/logs` returns nothing to explain it. Read these before retrying — most such failures are configuration gaps that will fail again identically. Healthy apps carry them too (`Running` / "user process listening"), so treat them as an error only when `phase` is `Failed`.
+`reason` and `message` carry the app's Ready condition: a short machine-readable code and a human explanation. On a **failed** app this is often the only diagnosis available: a deploy that fails before a pod exists (no warm pool for the required template, say) produces no logs at all, so `GET /v1/apps/{id}/logs` returns nothing to explain it. Read these before retrying; most such failures are configuration gaps that will fail again identically. Healthy apps carry them too (`Running` / "user process listening"), so treat them as an error only when `phase` is `Failed`.
 
 ### `GET /v1/apps/{id}`
 
@@ -254,7 +254,7 @@ List an app's share links (owner or admin only). Returns `{items, total}`. Respo
 
 ### `GET /api/share/{token}` · `POST /api/share/{token}`
 
-**Public** resolution of a share link — no bearer token. `GET` returns the app's name, status, and URL; a password-protected link returns `401` until the password is supplied via `POST` with `{"password": "..."}`. Expired or revoked links return `404` (no information leakage). This route is intentionally exempt from the auth middleware.
+**Public** resolution of a share link, with no bearer token. `GET` returns the app's name, status, and URL; a password-protected link returns `401` until the password is supplied via `POST` with `{"password": "..."}`. Expired or revoked links return `404` (no information leakage). This route is intentionally exempt from the auth middleware.
 
 ### `DELETE /api/share-links/{token}`
 
@@ -297,7 +297,7 @@ curl -H "Authorization: Bearer $VIBED_TOKEN" \
 }
 ```
 
-Whether events persist depends on the store backend — see [Audit Trail](../configuration/audit-log.md). With the SQLite backend the trail is durable; with the memory/configmap backends it is in-memory and does not survive a restart.
+Whether events persist depends on the store backend; see [Audit Trail](../configuration/audit-log.md). With the SQLite backend the trail is durable; with the memory/configmap backends it is in-memory and does not survive a restart.
 
 ## Internal source blobs
 
@@ -311,7 +311,7 @@ It sits behind the same auth middleware as `/v1`, so only the shared agent token
 
 The original REST surface under **`/api/artifacts*`** and **`/api/targets`** were **removed in v0.6**; the artifact lifecycle now lives entirely under `/v1/apps`. See [Migrating to v0.6](../migrating-to-v0.6.md) for the endpoint mapping.
 
-These `/api` routes remain — they have no `/v1` equivalent:
+These `/api` routes remain; they have no `/v1` equivalent:
 
 | Path                          | Purpose                                                        |
 | ----------------------------- | ------------------------------------------------------------- |
@@ -325,7 +325,7 @@ These `/api` routes remain — they have no `/v1` equivalent:
 ### `GET /api/auth`
 
 Reports which auth mode the server runs and, for modes with a browser login
-flow, where that flow starts. **Unauthenticated by design** — a login screen
+flow, where that flow starts. **Unauthenticated by design**: a login screen
 needs the mode *before* it can authenticate, and the response reveals nothing
 the login endpoints don't already.
 
@@ -344,7 +344,7 @@ work in that mode.
 
 ## MCP endpoint
 
-The Model Context Protocol server is exposed over streamable HTTP at **`/mcp`** (and `/mcp/`). MCP clients (Claude Desktop, Cursor, Goose, …) connect there to call vibeD's tools; the same bearer-token auth applies. The MCP tools cover the same deploy/list/status/logs surface as this API — see the [MCP Tools](../mcp-tools/overview.md) reference.
+The Model Context Protocol server is exposed over streamable HTTP at **`/mcp`** (and `/mcp/`). MCP clients (Claude Desktop, Cursor, Goose, …) connect there to call vibeD's tools; the same bearer-token auth applies. The MCP tools cover the same deploy/list/status/logs surface as this API; see the [MCP Tools](../mcp-tools/overview.md) reference.
 
 ## Swagger UI
 
